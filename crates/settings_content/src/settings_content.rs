@@ -992,6 +992,9 @@ pub struct DevContainerConnection {
     pub remote_user: String,
     pub container_id: String,
     pub use_podman: bool,
+    /// Absolute path to the devcontainer.json on the host where `devcontainer up` was run.
+    /// This is used to show a stable binding between a stored dev container and its config.
+    pub config_path: Option<String>,
     #[serde(default)]
     pub projects: BTreeSet<RemoteProject>,
     #[serde(default)]

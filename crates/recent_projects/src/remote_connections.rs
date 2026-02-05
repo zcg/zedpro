@@ -174,6 +174,7 @@ pub(crate) fn upsert_dev_container_connection(
     connection: DevContainerConnection,
     starting_dir: String,
     host_starting_dir: Option<String>,
+    config_path: Option<String>,
 ) {
     if let Some(existing) = connections.iter_mut().find(|existing| {
         existing.container_id == connection.container_id
@@ -181,6 +182,9 @@ pub(crate) fn upsert_dev_container_connection(
             && existing.host == connection.host
     }) {
         existing.name = connection.name.clone();
+        if config_path.is_some() {
+            existing.config_path = config_path;
+        }
         existing.projects.insert(RemoteProject {
             paths: vec![starting_dir],
         });
@@ -199,6 +203,9 @@ pub(crate) fn upsert_dev_container_connection(
     });
 
     let mut entry = connection;
+    if config_path.is_some() {
+        entry.config_path = config_path;
+    }
     entry.projects.insert(RemoteProject {
         paths: vec![starting_dir],
     });

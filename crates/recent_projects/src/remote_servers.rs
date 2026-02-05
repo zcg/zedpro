@@ -79,6 +79,7 @@ pub struct RemoteServerProjects {
     workspace: WeakEntity<Workspace>,
     retained_connections: Vec<Entity<RemoteClient>>,
     ssh_config_updates: Task<()>,
+    _dev_container_status_poll: Task<()>,
     ssh_config_servers: BTreeSet<SharedString>,
     ssh_config_entries: HashMap<String, SshConfigEntry>,
     create_new_window: bool,
@@ -90,6 +91,8 @@ pub struct RemoteServerProjects {
     ssh_page: usize,
     wsl_page: usize,
     dev_container_page: usize,
+    dev_container_statuses: HashMap<DevContainerKey, DevContainerProbe>,
+    dev_container_refresh_in_flight: bool,
     _ssh_search_subscription: Subscription,
     _wsl_search_subscription: Subscription,
     _dev_container_search_subscription: Subscription,
@@ -103,6 +106,7 @@ const START_PROXY_TIMEOUT: Duration = Duration::from_secs(90);
 const START_PROXY_TIMEOUT_WITH_BUILD: Duration = Duration::from_secs(6 * 60);
 const DEV_CONTAINER_PROBE_TIMEOUT: Duration = Duration::from_secs(6);
 const DEV_CONTAINER_PROBE_CONCURRENCY: usize = 6;
+const DEV_CONTAINER_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const SAVED_CONNECTIONS_LIMIT: usize = 5;
 const REMOTE_SERVERS_PAGE_SIZE: usize = 5;
 
@@ -361,7 +365,6 @@ struct DevContainerBuildState {
     log_editor: Entity<Editor>,
     log_contents: String,
     back_entry: NavigableEntry,
-    close_entry: NavigableEntry,
     copy_entry: NavigableEntry,
     finish_entry: NavigableEntry,
 }
@@ -584,7 +587,6 @@ impl DevContainerBuildState {
             log_editor,
             log_contents: String::new(),
             back_entry: NavigableEntry::focusable(cx),
-            close_entry: NavigableEntry::focusable(cx),
             copy_entry: NavigableEntry::focusable(cx),
             finish_entry: NavigableEntry::focusable(cx),
         }
@@ -1775,12 +1777,34 @@ impl RemoteServerProjects {
             },
         );
 
+        // Periodically probe dev container runtime status while this modal is open.
+        // Use a weak handle so this task naturally stops once the modal is dropped.
+        let weak = cx.weak_entity();
+        let _dev_container_status_poll = cx.spawn_in(window, async move |_, cx| {
+            loop {
+                smol::Timer::after(DEV_CONTAINER_STATUS_POLL_INTERVAL).await;
+                let Some(entity) = weak.upgrade() else {
+                    break;
+                };
+                entity
+                    .update_in(cx, |this, window, cx| {
+                        if matches!(this.mode, Mode::Default(_))
+                            && this.selected_tab == RemoteProjectsTab::DevContainers
+                        {
+                            this.refresh_dev_container_connections_silent(window, cx);
+                        }
+                    })
+                    .ok();
+            }
+        });
+
         Self {
             mode,
             focus_handle,
             workspace,
             retained_connections: Vec::new(),
             ssh_config_updates,
+            _dev_container_status_poll,
             ssh_config_servers: BTreeSet::new(),
             ssh_config_entries: HashMap::new(),
             create_new_window,
@@ -1792,6 +1816,8 @@ impl RemoteServerProjects {
             ssh_page: 0,
             wsl_page: 0,
             dev_container_page: 0,
+            dev_container_statuses: HashMap::new(),
+            dev_container_refresh_in_flight: false,
             _ssh_search_subscription,
             _wsl_search_subscription,
             _dev_container_search_subscription,
@@ -2894,6 +2920,7 @@ impl RemoteServerProjects {
                 };
                 let mut projects = Default::default();
                 let mut host_projects = Default::default();
+                let mut config_path: Option<String> = None;
                 if let Some(saved) = RemoteSettings::get_global(cx)
                     .dev_container_connections()
                     .nth(server_index.0)
@@ -2904,6 +2931,7 @@ impl RemoteServerProjects {
                     {
                         projects = saved.projects.clone();
                         host_projects = saved.host_projects.clone();
+                        config_path = saved.config_path.clone();
                     }
                 }
                 ViewServerOptionsState::DevContainer {
@@ -2912,6 +2940,7 @@ impl RemoteServerProjects {
                         remote_user: connection.remote_user,
                         container_id: connection.container_id,
                         use_podman: connection.use_podman,
+                        config_path,
                         projects,
                         host_projects,
                         host,
@@ -3298,7 +3327,13 @@ impl RemoteServerProjects {
                     (IconName::Linux, connection.distro_name.clone().into(), None)
                 }
                 Connection::DevContainer(connection) => {
-                    (IconName::Box, connection.name.clone().into(), None)
+                    let host = Self::format_devcontainer_host(connection.host.as_ref());
+                    let aux = if let Some(config_path) = connection.config_path.as_ref() {
+                        SharedString::from(format!("{host} • {config_path}"))
+                    } else {
+                        host.into()
+                    };
+                    (IconName::Box, connection.name.clone().into(), Some(aux))
                 }
             },
             RemoteEntry::SshConfig { host, .. } => (
@@ -3504,15 +3539,66 @@ impl RemoteServerProjects {
         let is_selected = selected_key.is_some_and(|key| key.matches(&remote_server));
         let select = remote_server.select_entry().clone();
         let (icon, main_label, aux_label) = self.server_row_labels(&remote_server);
+
+        let (devcontainer_probe, tooltip_text) = match &remote_server {
+            RemoteEntry::Project {
+                connection: Connection::DevContainer(connection),
+                ..
+            } => {
+                let key = DevContainerKey::from_connection(connection);
+                let probe = self
+                    .dev_container_statuses
+                    .get(&key)
+                    .copied()
+                    .unwrap_or(DevContainerProbe::Unknown);
+                let status_text = match probe {
+                    DevContainerProbe::Running => "Running",
+                    DevContainerProbe::Stopped => "Stopped",
+                    DevContainerProbe::Missing => "Missing",
+                    DevContainerProbe::DockerUnavailable => "Docker unavailable",
+                    DevContainerProbe::Unknown => "Unknown",
+                };
+                let tooltip = if let Some(aux) = aux_label.as_ref() {
+                    SharedString::from(format!("{main_label} ({status_text}) - {aux}"))
+                } else {
+                    SharedString::from(format!("{main_label} ({status_text})"))
+                };
+                (
+                    Some(probe),
+                    Some(tooltip),
+                )
+            }
+            _ => (None, None),
+        };
+
         let build_row = {
             let entry_key = entry_key.clone();
             let select = select.clone();
             let main_label = main_label.clone();
             let aux_label = aux_label.clone();
+            let tooltip_text = tooltip_text.clone();
             move |window: &mut Window, cx: &mut Context<Self>| {
                 let entry_key = entry_key.clone();
                 let select = select.clone();
                 let aux_label = aux_label.clone();
+                let tooltip_text = tooltip_text.clone();
+
+                let start_slot = if let Some(probe) = devcontainer_probe {
+                    let dot_color = match probe {
+                        DevContainerProbe::Running => cx.theme().status().success,
+                        DevContainerProbe::Stopped => cx.theme().status().error,
+                        _ => cx.theme().colors().text_muted.opacity(0.5),
+                    };
+
+                    h_flex()
+                        .gap_0p5()
+                        .items_center()
+                        .child(div().size(px(6.)).rounded_full().bg(dot_color))
+                        .child(Icon::new(icon).color(Color::Muted))
+                        .into_any_element()
+                } else {
+                    Icon::new(icon).color(Color::Muted).into_any_element()
+                };
 
                 h_flex()
                     .id(("remote-server-row-container", ix))
@@ -3532,7 +3618,7 @@ impl RemoteServerProjects {
                             )
                             .inset(true)
                             .spacing(ui::ListItemSpacing::Sparse)
-                            .start_slot(Icon::new(icon).color(Color::Muted))
+                            .start_slot(start_slot)
                             .child(
                                 h_flex()
                                     .gap_1()
@@ -3542,6 +3628,9 @@ impl RemoteServerProjects {
                                         Label::new(label).size(LabelSize::Small).color(Color::Muted)
                                     })),
                             )
+                            .when_some(tooltip_text, |this, text| {
+                                this.tooltip(Tooltip::text(text))
+                            })
                             .on_click(cx.listener(move |this, _, _window, cx| {
                                 this.selected_entry = Some(entry_key.clone());
                                 cx.notify();
@@ -3585,44 +3674,47 @@ impl RemoteServerProjects {
                             cx,
                         ))
                     }))
-                    .child(
-                        h_flex()
-                            .id(("new-remote-project-container", ix))
-                            .track_focus(&open_folder.focus_handle)
-                            .anchor_scroll(open_folder.scroll_anchor.clone())
-                            .on_action(cx.listener({
-                                let connection = connection.clone();
-                                move |this, _: &menu::Confirm, window, cx| {
-                                    this.create_remote_project(
-                                        index,
-                                        connection.clone().into(),
-                                        window,
-                                        cx,
-                                    );
-                                }
-                            }))
-                            .child(
-                                ListItem::new(("new-remote-project", ix))
-                                    .toggle_state(
-                                        open_folder.focus_handle.contains_focused(window, cx),
-                                    )
-                                    .inset(true)
-                                    .spacing(ui::ListItemSpacing::Sparse)
-                                    .start_slot(Icon::new(IconName::Plus).color(Color::Muted))
-                                    .child(Label::new("Open Folder"))
-                                    .on_click(cx.listener({
-                                        let connection = connection.clone();
-                                        move |this, _, window, cx| {
-                                            this.create_remote_project(
-                                                index,
-                                                connection.clone().into(),
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                    })),
-                            ),
-                    );
+                    // Dev Containers don't support opening a folder on a different host from this UI.
+                    .when(!is_devcontainer, |this| {
+                        this.child(
+                            h_flex()
+                                .id(("new-remote-project-container", ix))
+                                .track_focus(&open_folder.focus_handle)
+                                .anchor_scroll(open_folder.scroll_anchor.clone())
+                                .on_action(cx.listener({
+                                    let connection = connection.clone();
+                                    move |this, _: &menu::Confirm, window, cx| {
+                                        this.create_remote_project(
+                                            index,
+                                            connection.clone().into(),
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                }))
+                                .child(
+                                    ListItem::new(("new-remote-project", ix))
+                                        .toggle_state(
+                                            open_folder.focus_handle.contains_focused(window, cx),
+                                        )
+                                        .inset(true)
+                                        .spacing(ui::ListItemSpacing::Sparse)
+                                        .start_slot(Icon::new(IconName::Plus).color(Color::Muted))
+                                        .child(Label::new("Open Folder"))
+                                        .on_click(cx.listener({
+                                            let connection = connection.clone();
+                                            move |this, _, window, cx| {
+                                                this.create_remote_project(
+                                                    index,
+                                                    connection.clone().into(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
+                                        })),
+                                ),
+                        )
+                    });
 
                 if can_configure {
                     list = list.child(
@@ -3663,6 +3755,66 @@ impl RemoteServerProjects {
                     );
                 }
 
+                let devcontainer_meta = if is_devcontainer {
+                    if let Connection::DevContainer(connection) = connection {
+                        let key = DevContainerKey::from_connection(connection);
+                        let probe = self
+                            .dev_container_statuses
+                            .get(&key)
+                            .copied()
+                            .unwrap_or(DevContainerProbe::Unknown);
+                        let (dot_color, status_text) = match probe {
+                            DevContainerProbe::Running => (cx.theme().status().success, "Running"),
+                            DevContainerProbe::Stopped => (cx.theme().status().error, "Stopped"),
+                            DevContainerProbe::Missing => (cx.theme().status().error, "Missing"),
+                            DevContainerProbe::DockerUnavailable => {
+                                (cx.theme().status().warning, "Docker unavailable")
+                            }
+                            DevContainerProbe::Unknown => {
+                                (cx.theme().colors().text_muted.opacity(0.5), "Unknown")
+                            }
+                        };
+
+                        let host = Self::format_devcontainer_host(connection.host.as_ref());
+                        let config_path = connection.config_path.clone();
+
+                        Some(
+                            v_flex()
+                                .px_2()
+                                .py_1()
+                                .gap_0p5()
+                                .child(
+                                    h_flex()
+                                        .gap_0p5()
+                                        .items_center()
+                                        .child(div().size(px(6.)).rounded_full().bg(dot_color))
+                                        .child(
+                                            Label::new(status_text)
+                                                .size(LabelSize::Small)
+                                                .color(Color::Muted),
+                                        ),
+                                )
+                                .child(
+                                    Label::new(format!("Host: {host}"))
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                )
+                                .when_some(config_path, |this, path| {
+                                    this.child(
+                                        Label::new(format!("Config: {path}"))
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted),
+                                    )
+                                })
+                                .into_any_element(),
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 let header = SshConnectionHeader {
                     connection_string,
                     paths: Default::default(),
@@ -3672,7 +3824,11 @@ impl RemoteServerProjects {
                 }
                 .render(window, cx);
 
-                v_flex().child(header).child(ListSeparator).child(list)
+                v_flex()
+                    .child(header)
+                    .child(ListSeparator)
+                    .when_some(devcontainer_meta, |this, meta| this.child(meta))
+                    .child(list)
             }
             RemoteEntry::SshConfig {
                 open_folder, host, ..
@@ -3932,6 +4088,7 @@ impl RemoteServerProjects {
         connection: DevContainerConnection,
         starting_dir: String,
         host_starting_dir: Option<String>,
+        config_path: Option<String>,
         cx: &mut Context<Self>,
     ) {
         self.update_settings_file(cx, move |setting, _| {
@@ -3943,6 +4100,7 @@ impl RemoteServerProjects {
                 connection,
                 starting_dir,
                 host_starting_dir,
+                config_path,
             );
         });
     }
@@ -4379,10 +4537,18 @@ impl RemoteServerProjects {
         cx: &mut Context<Self>,
         notify: bool,
     ) {
+        if self.dev_container_refresh_in_flight {
+            return;
+        }
+
         let connections: Vec<DevContainerConnection> = RemoteSettings::get_global(cx)
             .dev_container_connections()
             .collect();
         if connections.is_empty() {
+            if !self.dev_container_statuses.is_empty() {
+                self.dev_container_statuses.clear();
+                cx.notify();
+            }
             if notify {
                 self.show_devcontainer_toast("No dev containers to refresh.", cx);
             }
@@ -4391,10 +4557,12 @@ impl RemoteServerProjects {
 
         let workspace = self.workspace.clone();
         let remote_servers = cx.entity();
+        self.dev_container_refresh_in_flight = true;
         cx.spawn_in(window, async move |_, cx| {
             let mut missing = Vec::new();
             let mut unknown = 0usize;
             let mut docker_unavailable = 0usize;
+            let mut statuses: HashMap<DevContainerKey, DevContainerProbe> = HashMap::new();
             let executor = cx.background_executor().clone();
             let mut probes = futures::stream::iter(connections.into_iter().map(|connection| {
                 let executor = executor.clone();
@@ -4409,8 +4577,9 @@ impl RemoteServerProjects {
             .buffer_unordered(DEV_CONTAINER_PROBE_CONCURRENCY);
 
             while let Some((connection, result)) = probes.next().await {
+                statuses.insert(DevContainerKey::from_connection(&connection), result);
                 match result {
-                    DevContainerProbe::Exists => {}
+                    DevContainerProbe::Running | DevContainerProbe::Stopped => {}
                     DevContainerProbe::Missing => {
                         missing.push(DevContainerKey::from_connection(&connection));
                     }
@@ -4422,6 +4591,13 @@ impl RemoteServerProjects {
                     }
                 }
             }
+
+            // Update runtime statuses used by the UI (green running / red stopped / grey unknown).
+            remote_servers.update(cx, |this, cx| {
+                this.dev_container_statuses = statuses;
+                this.dev_container_refresh_in_flight = false;
+                cx.notify();
+            });
 
             let missing_count = missing.len();
             if missing_count > 0 {
@@ -4633,6 +4809,7 @@ impl RemoteServerProjects {
             })
             .detach();
 
+            let config_for_binding = config.clone();
             let (dev_connection, starting_dir) = match start_dev_container_with_progress(
                 cx,
                 app_state.node_runtime.clone(),
@@ -4690,12 +4867,18 @@ impl RemoteServerProjects {
             let connection = Connection::DevContainer(dev_connection.clone());
             let host_starting_dir =
                 Self::normalize_host_starting_dir(&dev_connection, host_starting_dir).await;
+            let config_path = Self::devcontainer_config_binding_path(
+                &dev_connection,
+                host_starting_dir.as_deref(),
+                config_for_binding.as_ref(),
+            );
             entity
                 .update(cx, |remote_server_projects, cx| {
                     remote_server_projects.save_dev_container_connection(
                         dev_connection,
                         starting_dir.clone(),
                         host_starting_dir.clone(),
+                        config_path.clone(),
                         cx,
                     );
                 })
@@ -4799,6 +4982,73 @@ impl RemoteServerProjects {
         #[cfg(not(target_os = "windows"))]
         {
             Some(path)
+        }
+    }
+
+    fn format_devcontainer_host(host: Option<&DevContainerHost>) -> String {
+        match host {
+            None => "Local".to_string(),
+            Some(DevContainerHost::Wsl { distro_name, user }) => {
+                if let Some(user) = user.as_ref().filter(|u| !u.is_empty()) {
+                    format!("WSL:{distro_name} ({user})")
+                } else {
+                    format!("WSL:{distro_name}")
+                }
+            }
+            Some(DevContainerHost::Ssh {
+                host,
+                username,
+                port,
+                ..
+            }) => {
+                let user_prefix = username
+                    .as_ref()
+                    .filter(|u| !u.is_empty())
+                    .map(|u| format!("{u}@"))
+                    .unwrap_or_default();
+                let port_suffix = port.map(|p| format!(":{p}")).unwrap_or_default();
+                format!("SSH:{user_prefix}{host}{port_suffix}")
+            }
+        }
+    }
+
+    fn devcontainer_config_binding_path(
+        connection: &DevContainerConnection,
+        host_starting_dir: Option<&str>,
+        config: Option<&DevContainerConfig>,
+    ) -> Option<String> {
+        let config = config?;
+
+        // Best-effort: if we know the host workspace folder, store an absolute config path.
+        // This is used for UI display and for a stable "this container came from this config".
+        let Some(base) = host_starting_dir else {
+            return Some(config.config_path.to_string_lossy().into_owned());
+        };
+
+        let rel = &config.config_path;
+        if connection.host.is_some() {
+            // Remote hosts (WSL/SSH): treat stored paths as POSIX strings.
+            let base = base.replace('\\', "/").trim_end_matches('/').to_string();
+            let rel = rel
+                .to_string_lossy()
+                .replace('\\', "/")
+                .trim_start_matches('/')
+                .to_string();
+            if base.is_empty() {
+                Some(rel)
+            } else if rel.is_empty() {
+                Some(base)
+            } else {
+                Some(format!("{}/{}", base, rel))
+            }
+        } else {
+            // Local host: keep native path semantics.
+            Some(
+                Path::new(base)
+                    .join(rel)
+                    .to_string_lossy()
+                    .into_owned(),
+            )
         }
     }
 
@@ -5068,21 +5318,6 @@ impl RemoteServerProjects {
                                             cx.focus_self(window);
                                         })),
                                 ),
-                        )
-                        .child(
-                            div()
-                                .id("devcontainer-progress-close")
-                                .track_focus(&build_state.close_entry.focus_handle)
-                                .on_action(cx.listener(|_, _: &menu::Confirm, _, cx| {
-                                    cx.emit(DismissEvent);
-                                }))
-                                .child(
-                                    Button::new("devcontainer-progress-close-button", "Close")
-                                        .icon(IconName::Close)
-                                        .on_click(cx.listener(|_, _, _, cx| {
-                                            cx.emit(DismissEvent);
-                                        })),
-                                ),
                         ),
                 )
                 .child(
@@ -5160,7 +5395,6 @@ impl RemoteServerProjects {
             );
 
             view = view.entry(build_state.back_entry.clone());
-            view = view.entry(build_state.close_entry.clone());
             view = view.entry(build_state.copy_entry.clone());
             view = view.entry(build_state.finish_entry.clone());
 
@@ -8341,7 +8575,8 @@ impl Render for RemoteServerProjects {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DevContainerProbe {
-    Exists,
+    Running,
+    Stopped,
     Missing,
     DockerUnavailable,
     Unknown,
@@ -8353,7 +8588,12 @@ async fn probe_dev_container(connection: &DevContainerConnection) -> DevContaine
     } else {
         "docker"
     };
-    let args = vec!["inspect".to_string(), connection.container_id.clone()];
+    let args = vec![
+        "inspect".to_string(),
+        "--format".to_string(),
+        "{{.State.Status}}".to_string(),
+        connection.container_id.clone(),
+    ];
 
     let output = match &connection.host {
         None => new_smol_command(docker_bin)
@@ -8420,7 +8660,14 @@ async fn probe_dev_container(connection: &DevContainerConnection) -> DevContaine
     };
 
     match output {
-        Ok(output) if output.status.success() => DevContainerProbe::Exists,
+        Ok(output) if output.status.success() => {
+            let status = output_message(&output).trim().to_ascii_lowercase();
+            if status == "running" {
+                DevContainerProbe::Running
+            } else {
+                DevContainerProbe::Stopped
+            }
+        }
         Ok(output) => {
             let message = output_message(&output);
             let message = message.to_lowercase();
