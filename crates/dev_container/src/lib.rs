@@ -47,8 +47,9 @@ use crate::devcontainer_api::DevContainerError;
 use crate::devcontainer_api::apply_dev_container_template;
 
 pub use devcontainer_api::{
-    DevContainerBuildStep, DevContainerLogLine, DevContainerLogStream, DevContainerProgressEvent,
-    start_dev_container, start_dev_container_with_progress,
+    DevContainerBuildStep, DevContainerConfig, DevContainerLogLine, DevContainerLogStream,
+    DevContainerProgressEvent, find_devcontainer_configs, start_dev_container,
+    start_dev_container_with_config, start_dev_container_with_progress,
 };
 
 #[derive(RegisterSetting)]

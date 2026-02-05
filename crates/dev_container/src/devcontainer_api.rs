@@ -14,10 +14,28 @@ use remote::{DockerConnectionOptions, DockerHost, RemoteConnectionOptions};
 use serde::Deserialize;
 use settings::{DevContainerConnection, DevContainerHost, RegisterSetting, Settings};
 use smol::{fs, io::BufReader, process::Command};
-use util::shell::ShellKind;
+use util::{rel_path::RelPath, shell::ShellKind};
 use workspace::Workspace;
 
 use crate::{DevContainerFeature, DevContainerSettings, DevContainerTemplate};
+
+/// Represents a discovered devcontainer configuration
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DevContainerConfig {
+    /// Display name for the configuration (subfolder name or "default")
+    pub name: String,
+    /// Relative path to the devcontainer.json file from the project root
+    pub config_path: PathBuf,
+}
+
+impl DevContainerConfig {
+    pub fn default_config() -> Self {
+        Self {
+            name: "default".to_string(),
+            config_path: PathBuf::from(".devcontainer/devcontainer.json"),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,11 +123,11 @@ impl Display for DevContainerError {
                 }
                 DevContainerError::DevContainerCliNotAvailable =>
                     "Dev Container CLI not available. Ensure @devcontainers/cli is installed and on PATH for login shells (e.g. ~/.profile or ~/.zprofile)".to_string(),
-                DevContainerError::DevContainerUpFailed(message) => {
-                    format!("DevContainer creation failed with error: {}", message)
-                }
                 DevContainerError::DevContainerTemplateApplyFailed(message) => {
                     format!("DevContainer template apply failed with error: {}", message)
+                }
+                DevContainerError::DevContainerUpFailed(message) => {
+                    format!("DevContainer creation failed with error: {}", message)
                 }
                 DevContainerError::DevContainerNotFound =>
                     "No valid dev container definition found in project".to_string(),
@@ -157,7 +175,7 @@ pub(crate) async fn read_devcontainer_configuration_for_project(
 
     if let Some(remote_options) = remote_options {
         ensure_devcontainer_cli_remote(&remote_options).await?;
-        devcontainer_read_configuration_remote(&remote_options, &directory, use_podman).await
+        devcontainer_read_configuration_remote(&remote_options, &directory, None, use_podman).await
     } else {
         let (path_to_devcontainer_cli, found_in_path) =
             ensure_devcontainer_cli(&node_runtime).await?;
@@ -166,6 +184,7 @@ pub(crate) async fn read_devcontainer_configuration_for_project(
             found_in_path,
             node_runtime,
             &directory,
+            None,
             use_podman,
         )
         .await
@@ -216,16 +235,131 @@ fn use_podman(cx: &mut AsyncWindowContext) -> bool {
         .unwrap_or(false)
 }
 
+/// Finds all available devcontainer configurations in the project.
+///
+/// This function scans for:
+/// 1. `.devcontainer/devcontainer.json` (the default location)
+/// 2. `.devcontainer/<subfolder>/devcontainer.json` (named configurations)
+///
+/// Returns a list of found configurations, or an empty list if none are found.
+pub fn find_devcontainer_configs(cx: &mut AsyncWindowContext) -> Vec<DevContainerConfig> {
+    let Some(workspace) = cx.window_handle().downcast::<Workspace>() else {
+        log::debug!("find_devcontainer_configs: No workspace found");
+        return Vec::new();
+    };
+
+    let Ok(configs) = workspace.update(cx, |workspace, _, cx| {
+        let project = workspace.project().read(cx);
+
+        let worktree = project
+            .visible_worktrees(cx)
+            .find_map(|tree| tree.read(cx).root_entry()?.is_dir().then_some(tree));
+
+        let Some(worktree) = worktree else {
+            log::debug!("find_devcontainer_configs: No worktree found");
+            return Vec::new();
+        };
+
+        let worktree = worktree.read(cx);
+        let mut configs = Vec::new();
+
+        let devcontainer_path = RelPath::unix(".devcontainer").expect("valid path");
+
+        let Some(devcontainer_entry) = worktree.entry_for_path(devcontainer_path) else {
+            log::debug!("find_devcontainer_configs: .devcontainer directory not found in worktree");
+            return Vec::new();
+        };
+
+        if !devcontainer_entry.is_dir() {
+            log::debug!("find_devcontainer_configs: .devcontainer is not a directory");
+            return Vec::new();
+        }
+
+        log::debug!("find_devcontainer_configs: Scanning .devcontainer directory");
+        let devcontainer_json_path =
+            RelPath::unix(".devcontainer/devcontainer.json").expect("valid path");
+        for entry in worktree.child_entries(devcontainer_path) {
+            log::debug!(
+                "find_devcontainer_configs: Found entry: {:?}, is_file: {}, is_dir: {}",
+                entry.path.as_unix_str(),
+                entry.is_file(),
+                entry.is_dir()
+            );
+
+            if entry.is_file() && entry.path.as_ref() == devcontainer_json_path {
+                log::debug!("find_devcontainer_configs: Found default devcontainer.json");
+                configs.push(DevContainerConfig::default_config());
+            } else if entry.is_dir() {
+                let subfolder_name = entry
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string())
+                    .unwrap_or_default();
+
+                let config_json_path = format!("{}/devcontainer.json", entry.path.as_unix_str());
+                if let Ok(rel_config_path) = RelPath::unix(&config_json_path) {
+                    if worktree.entry_for_path(rel_config_path).is_some() {
+                        log::debug!(
+                            "find_devcontainer_configs: Found config in subfolder: {}",
+                            subfolder_name
+                        );
+                        configs.push(DevContainerConfig {
+                            name: subfolder_name,
+                            config_path: PathBuf::from(&config_json_path),
+                        });
+                    } else {
+                        log::debug!(
+                            "find_devcontainer_configs: Subfolder {} has no devcontainer.json",
+                            subfolder_name
+                        );
+                    }
+                }
+            }
+        }
+
+        log::info!(
+            "find_devcontainer_configs: Found {} configurations",
+            configs.len()
+        );
+
+        configs.sort_by(|a, b| {
+            if a.name == "default" {
+                std::cmp::Ordering::Less
+            } else if b.name == "default" {
+                std::cmp::Ordering::Greater
+            } else {
+                a.name.cmp(&b.name)
+            }
+        });
+
+        configs
+    }) else {
+        log::debug!("find_devcontainer_configs: Failed to update workspace");
+        return Vec::new();
+    };
+
+    configs
+}
+
 pub async fn start_dev_container(
     cx: &mut AsyncWindowContext,
     node_runtime: NodeRuntime,
 ) -> Result<(DevContainerConnection, String), DevContainerError> {
-    start_dev_container_with_progress(cx, node_runtime, None).await
+    start_dev_container_with_progress(cx, node_runtime, None, None).await
+}
+
+pub async fn start_dev_container_with_config(
+    cx: &mut AsyncWindowContext,
+    node_runtime: NodeRuntime,
+    config: Option<DevContainerConfig>,
+) -> Result<(DevContainerConnection, String), DevContainerError> {
+    start_dev_container_with_progress(cx, node_runtime, config, None).await
 }
 
 pub async fn start_dev_container_with_progress(
     cx: &mut AsyncWindowContext,
     node_runtime: NodeRuntime,
+    config: Option<DevContainerConfig>,
     progress_tx: Option<UnboundedSender<DevContainerProgressEvent>>,
 ) -> Result<(DevContainerConnection, String), DevContainerError> {
     let send_progress =
@@ -296,6 +430,10 @@ pub async fn start_dev_container_with_progress(
             &progress_tx,
         );
 
+        let config_path = config
+            .as_ref()
+            .map(|c| join_posix_path(&directory, &c.config_path));
+
         send_progress(
             DevContainerProgressEvent::StepStarted(DevContainerBuildStep::DevcontainerUp),
             &progress_tx,
@@ -309,6 +447,7 @@ pub async fn start_dev_container_with_progress(
         } = match devcontainer_up_remote(
             &remote_options,
             &directory,
+            config_path.as_deref(),
             use_podman,
             progress_tx.as_ref(),
         )
@@ -339,6 +478,7 @@ pub async fn start_dev_container_with_progress(
         let project_name = match devcontainer_read_configuration_remote(
             &remote_options,
             &directory,
+            config_path.as_deref(),
             use_podman,
         )
         .await
@@ -368,6 +508,7 @@ pub async fn start_dev_container_with_progress(
 
         Ok((connection, remote_workspace_folder))
     } else {
+        let config_path = config.as_ref().map(|c| directory.join(&c.config_path));
         send_progress(
             DevContainerProgressEvent::StepStarted(DevContainerBuildStep::CheckDocker),
             &progress_tx,
@@ -427,6 +568,7 @@ pub async fn start_dev_container_with_progress(
             found_in_path,
             &node_runtime,
             directory.clone(),
+            config_path.clone(),
             use_podman,
             progress_tx.as_ref(),
         )
@@ -459,6 +601,7 @@ pub async fn start_dev_container_with_progress(
             found_in_path,
             &node_runtime,
             &directory,
+            config_path.as_ref(),
             use_podman,
         )
         .await
@@ -498,6 +641,21 @@ fn dev_container_cli() -> String {
 #[cfg(target_os = "windows")]
 fn dev_container_cli() -> String {
     "devcontainer.cmd".to_string()
+}
+
+fn join_posix_path(base: &Path, rel: &Path) -> String {
+    let base = base.to_string_lossy().replace('\\', "/");
+    let rel = rel.to_string_lossy().replace('\\', "/");
+
+    let base = base.trim_end_matches('/');
+    let rel = rel.trim_start_matches('/');
+    if base.is_empty() {
+        rel.to_string()
+    } else if rel.is_empty() {
+        base.to_string()
+    } else {
+        format!("{}/{}", base, rel)
+    }
 }
 
 fn dev_container_script() -> &'static str {
@@ -918,6 +1076,7 @@ async fn devcontainer_up(
     found_in_path: bool,
     node_runtime: &NodeRuntime,
     path: Arc<Path>,
+    config_path: Option<PathBuf>,
     use_podman: bool,
     progress_tx: Option<&UnboundedSender<DevContainerProgressEvent>>,
 ) -> Result<DevContainerUp, DevContainerError> {
@@ -932,6 +1091,11 @@ async fn devcontainer_up(
     command.arg("--workspace-folder");
     command.arg(path.display().to_string());
 
+    if let Some(config) = config_path {
+        command.arg("--config");
+        command.arg(config.display().to_string());
+    }
+
     log::info!("Running full devcontainer up command: {:?}", command);
 
     match run_command_with_logging(command, progress_tx).await {
@@ -941,7 +1105,7 @@ async fn devcontainer_up(
                 parse_json_from_cli(&raw)
             } else {
                 let message = format!(
-                    "Non-success status running devcontainer up for workspace: out: {:?}, err: {:?}",
+                    "Non-success status running devcontainer up for workspace: out: {}, err: {}",
                     String::from_utf8_lossy(&output.stdout),
                     String::from_utf8_lossy(&output.stderr)
                 );
@@ -961,6 +1125,7 @@ async fn devcontainer_up(
 async fn devcontainer_up_remote(
     remote_options: &RemoteConnectionOptions,
     path: &Arc<Path>,
+    config_path: Option<&str>,
     use_podman: bool,
     progress_tx: Option<&UnboundedSender<DevContainerProgressEvent>>,
 ) -> Result<DevContainerUp, DevContainerError> {
@@ -969,6 +1134,11 @@ async fn devcontainer_up_remote(
         "--workspace-folder".to_string(),
         path.display().to_string(),
     ];
+
+    if let Some(config) = config_path {
+        args.push("--config".to_string());
+        args.push(config.to_string());
+    }
 
     if use_podman {
         args.push("--docker-path".to_string());
@@ -1006,6 +1176,7 @@ async fn devcontainer_read_configuration(
     found_in_path: bool,
     node_runtime: &NodeRuntime,
     path: &Arc<Path>,
+    config_path: Option<&PathBuf>,
     use_podman: bool,
 ) -> Result<DevContainerConfigurationOutput, DevContainerError> {
     let Ok(node_runtime_path) = node_runtime.binary_path().await else {
@@ -1018,6 +1189,11 @@ async fn devcontainer_read_configuration(
     command.arg("read-configuration");
     command.arg("--workspace-folder");
     command.arg(path.display().to_string());
+
+    if let Some(config) = config_path {
+        command.arg("--config");
+        command.arg(config.display().to_string());
+    }
 
     match command.output().await {
         Ok(output) => {
@@ -1044,6 +1220,7 @@ async fn devcontainer_read_configuration(
 async fn devcontainer_read_configuration_remote(
     remote_options: &RemoteConnectionOptions,
     path: &Arc<Path>,
+    config_path: Option<&str>,
     use_podman: bool,
 ) -> Result<DevContainerConfigurationOutput, DevContainerError> {
     let mut args = vec![
@@ -1051,6 +1228,10 @@ async fn devcontainer_read_configuration_remote(
         "--workspace-folder".to_string(),
         path.display().to_string(),
     ];
+    if let Some(config) = config_path {
+        args.push("--config".to_string());
+        args.push(config.to_string());
+    }
     if use_podman {
         args.push("--docker-path".to_string());
         args.push("podman".to_string());
