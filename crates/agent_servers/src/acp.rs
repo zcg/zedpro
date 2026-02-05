@@ -7,6 +7,7 @@ use action_log::ActionLog;
 use agent_client_protocol::{self as acp, Agent as _, ErrorCode};
 use anyhow::anyhow;
 use collections::HashMap;
+use db::kvp::KEY_VALUE_STORE;
 use feature_flags::{AcpBetaFeatureFlag, FeatureFlagAppExt as _};
 use futures::AsyncBufReadExt as _;
 use futures::io::BufReader;
@@ -82,15 +83,17 @@ pub struct AcpSessionList {
     connection: Rc<acp::ClientSideConnection>,
     updates_tx: smol::channel::Sender<acp_thread::SessionListUpdate>,
     updates_rx: smol::channel::Receiver<acp_thread::SessionListUpdate>,
+    tombstone_key: String,
 }
 
 impl AcpSessionList {
-    fn new(connection: Rc<acp::ClientSideConnection>) -> Self {
+    fn new(connection: Rc<acp::ClientSideConnection>, tombstone_key: String) -> Self {
         let (tx, rx) = smol::channel::unbounded();
         Self {
             connection,
             updates_tx: tx,
             updates_rx: rx,
+            tombstone_key,
         }
     }
 
@@ -107,6 +110,29 @@ impl AcpSessionList {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct SerializedDeletedSessions {
+    deleted: Vec<String>,
+}
+
+fn tombstone_key_for_server(server_name: &str) -> String {
+    format!("acp_session_history_deleted:{server_name}")
+}
+
+fn parse_deleted_sessions(raw: Option<String>) -> std::collections::HashSet<String> {
+    raw.and_then(|raw| serde_json::from_str::<SerializedDeletedSessions>(&raw).ok())
+        .unwrap_or_default()
+        .deleted
+        .into_iter()
+        .collect()
+}
+
+fn serialize_deleted_sessions(ids: std::collections::HashSet<String>) -> String {
+    let mut deleted: Vec<String> = ids.into_iter().collect();
+    deleted.sort();
+    serde_json::to_string(&SerializedDeletedSessions { deleted }).unwrap_or_else(|_| "{}".into())
+}
+
 impl AgentSessionList for AcpSessionList {
     fn list_sessions(
         &self,
@@ -114,7 +140,14 @@ impl AgentSessionList for AcpSessionList {
         cx: &mut App,
     ) -> Task<Result<AgentSessionListResponse>> {
         let conn = self.connection.clone();
+        let tombstone_key = self.tombstone_key.clone();
+        let deleted_ids_task =
+            cx.background_spawn(async move { KEY_VALUE_STORE.read_kvp(&tombstone_key).ok().flatten() });
+
         cx.foreground_executor().spawn(async move {
+            let deleted_ids = deleted_ids_task.await;
+            let deleted_ids = parse_deleted_sessions(deleted_ids);
+
             let acp_request = acp::ListSessionsRequest::new()
                 .cwd(request.cwd)
                 .cursor(request.cursor);
@@ -123,6 +156,7 @@ impl AgentSessionList for AcpSessionList {
                 sessions: response
                     .sessions
                     .into_iter()
+                    .filter(|s| !deleted_ids.contains(s.session_id.0.as_ref()))
                     .map(|s| AgentSessionInfo {
                         session_id: s.session_id,
                         cwd: Some(s.cwd),
@@ -138,6 +172,74 @@ impl AgentSessionList for AcpSessionList {
                 next_cursor: response.next_cursor,
                 meta: response.meta,
             })
+        })
+    }
+
+    fn supports_delete(&self) -> bool {
+        // ACP does not currently define a standard session deletion method, but we can still
+        // support deleting entries from Zed's local history view by persisting tombstones.
+        true
+    }
+
+    fn delete_session(&self, session_id: &acp::SessionId, cx: &mut App) -> Task<Result<()>> {
+        let tombstone_key = self.tombstone_key.clone();
+        let id = session_id.to_string();
+        let updates_tx = self.updates_tx.clone();
+        cx.background_spawn(async move {
+            let existing = KEY_VALUE_STORE.read_kvp(&tombstone_key).ok().flatten();
+            let mut deleted = parse_deleted_sessions(existing);
+            deleted.insert(id);
+            KEY_VALUE_STORE
+                .write_kvp(tombstone_key, serialize_deleted_sessions(deleted))
+                .await?;
+            updates_tx
+                .try_send(acp_thread::SessionListUpdate::Refresh)
+                .log_err();
+            Ok(())
+        })
+    }
+
+    fn delete_sessions(&self, cx: &mut App) -> Task<Result<()>> {
+        let conn = self.connection.clone();
+        let tombstone_key = self.tombstone_key.clone();
+        let tombstone_key_for_read = tombstone_key.clone();
+        let updates_tx = self.updates_tx.clone();
+
+        let existing_task = cx
+            .background_spawn(async move { KEY_VALUE_STORE.read_kvp(&tombstone_key_for_read).ok().flatten() });
+
+        cx.foreground_executor().spawn(async move {
+            let existing = existing_task.await;
+            let mut deleted = parse_deleted_sessions(existing);
+
+            let mut cursor: Option<String> = None;
+            loop {
+                let response = conn
+                    .list_sessions(acp::ListSessionsRequest::new().cursor(cursor.clone()))
+                    .await?;
+
+                for session in response.sessions {
+                    deleted.insert(session.session_id.to_string());
+                }
+
+                match response.next_cursor {
+                    Some(next_cursor) => {
+                        if cursor.as_ref() == Some(&next_cursor) {
+                            break;
+                        }
+                        cursor = Some(next_cursor);
+                    }
+                    None => break,
+                }
+            }
+
+            KEY_VALUE_STORE
+                .write_kvp(tombstone_key, serialize_deleted_sessions(deleted))
+                .await?;
+            updates_tx
+                .try_send(acp_thread::SessionListUpdate::Refresh)
+                .log_err();
+            Ok(())
         })
     }
 
@@ -319,7 +421,10 @@ impl AcpConnection {
             .list
             .is_some()
         {
-            let list = Rc::new(AcpSessionList::new(connection.clone()));
+            let list = Rc::new(AcpSessionList::new(
+                connection.clone(),
+                tombstone_key_for_server(server_name.as_ref()),
+            ));
             *client_session_list.borrow_mut() = Some(list.clone());
             Some(list)
         } else {

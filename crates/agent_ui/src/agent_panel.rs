@@ -534,6 +534,9 @@ impl AgentPanel {
 
         let thread_store = ThreadStore::global(cx);
         let acp_history = cx.new(|cx| AcpThreadHistory::new(None, window, cx));
+        acp_history.update(cx, |history, cx| {
+            history.set_context(workspace.clone(), project.clone(), cx);
+        });
         let text_thread_history =
             cx.new(|cx| TextThreadHistory::new(text_thread_store.clone(), window, cx));
         cx.subscribe_in(

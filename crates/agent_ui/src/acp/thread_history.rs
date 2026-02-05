@@ -1,14 +1,18 @@
 use crate::acp::AcpServerView;
 use crate::{AgentPanel, RemoveHistory, RemoveSelectedThread};
-use acp_thread::{AgentSessionInfo, AgentSessionList, AgentSessionListRequest, SessionListUpdate};
+use acp_thread::{
+    AgentConnection, AgentSessionInfo, AgentSessionList, AgentSessionListRequest, SessionListUpdate,
+};
 use agent_client_protocol as acp;
 use chrono::{Datelike as _, Local, NaiveDate, TimeDelta, Utc};
-use editor::{Editor, EditorEvent};
+use editor::{Editor, EditorEvent, MultiBuffer};
 use fuzzy::StringMatchCandidate;
 use gpui::{
     App, Entity, EventEmitter, FocusHandle, Focusable, ScrollStrategy, Task,
     UniformListScrollHandle, WeakEntity, Window, uniform_list,
 };
+use language::Capability;
+use project::Project;
 use std::{fmt::Display, ops::Range, rc::Rc};
 use text::Bias;
 use time::{OffsetDateTime, UtcOffset};
@@ -16,6 +20,8 @@ use ui::{
     ElementId, HighlightedLabel, IconButtonShape, ListItem, ListItemSpacing, Tab, Tooltip,
     WithScrollbar, prelude::*,
 };
+use util::paths;
+use workspace::Workspace;
 
 const DEFAULT_TITLE: &SharedString = &SharedString::new_static("New Thread");
 
@@ -29,6 +35,9 @@ fn thread_title(entry: &AgentSessionInfo) -> &SharedString {
 
 pub struct AcpThreadHistory {
     session_list: Option<Rc<dyn AgentSessionList>>,
+    connection: Option<Rc<dyn AgentConnection>>,
+    workspace: Option<WeakEntity<Workspace>>,
+    project: Option<Entity<Project>>,
     sessions: Vec<AgentSessionInfo>,
     scroll_handle: UniformListScrollHandle,
     selected_index: usize,
@@ -98,6 +107,9 @@ impl AcpThreadHistory {
 
         let mut this = Self {
             session_list: None,
+            connection: None,
+            workspace: None,
+            project: None,
             sessions: Vec::new(),
             scroll_handle,
             selected_index: 0,
@@ -114,7 +126,7 @@ impl AcpThreadHistory {
             _update_task: Task::ready(()),
             _watch_task: None,
         };
-        this.set_session_list(session_list, cx);
+        this.set_session_list(session_list, None, cx);
         this
     }
 
@@ -155,11 +167,24 @@ impl AcpThreadHistory {
         });
     }
 
+    pub fn set_context(
+        &mut self,
+        workspace: WeakEntity<Workspace>,
+        project: Entity<Project>,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace = Some(workspace);
+        self.project = Some(project);
+        cx.notify();
+    }
+
     pub fn set_session_list(
         &mut self,
         session_list: Option<Rc<dyn AgentSessionList>>,
+        connection: Option<Rc<dyn AgentConnection>>,
         cx: &mut Context<Self>,
     ) {
+        self.connection = connection;
         if let (Some(current), Some(next)) = (&self.session_list, &session_list)
             && Rc::ptr_eq(current, next)
         {
@@ -211,6 +236,105 @@ impl AcpThreadHistory {
                 .ok();
             }
         }));
+    }
+
+    fn can_export_as_markdown(&self, cx: &App) -> bool {
+        let Some(connection) = self.connection.as_ref() else {
+            return false;
+        };
+        if !connection.supports_load_session(cx) {
+            return false;
+        }
+        self.project.is_some()
+            && self
+                .workspace
+                .as_ref()
+                .is_some_and(|workspace| workspace.upgrade().is_some())
+    }
+
+    fn export_thread_as_markdown(
+        &mut self,
+        visible_item_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(entry) = self.get_history_entry(visible_item_ix).cloned() else {
+            return;
+        };
+        let Some(connection) = self.connection.as_ref().cloned() else {
+            return;
+        };
+        if !connection.supports_load_session(cx) {
+            return;
+        }
+        let Some(project) = self.project.as_ref().cloned() else {
+            return;
+        };
+        let Some(workspace) = self
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.upgrade())
+        else {
+            return;
+        };
+
+        let markdown_language_task = workspace
+            .read(cx)
+            .app_state()
+            .languages
+            .language_for_name("Markdown");
+
+        let session_cwd = entry
+            .cwd
+            .clone()
+            .unwrap_or_else(|| paths::home_dir().as_path().into());
+        let load_task =
+            connection.load_session(entry, project.clone(), session_cwd.as_path(), cx);
+
+        window
+            .spawn(cx, async move |cx| {
+                let thread = load_task.await?;
+                let markdown_language = markdown_language_task.await?;
+
+                // Entity::read and to_markdown need an &App, so collect the data on the UI thread.
+                let (markdown, thread_title) = cx.update(|_, app| {
+                    let thread = thread.read(app);
+                    (thread.to_markdown(app), thread.title().to_string())
+                })?;
+
+                let buffer = project
+                    .update(cx, |project, cx| {
+                        project.create_buffer(Some(markdown_language), false, cx)
+                    })
+                    .await?;
+
+                buffer.update(cx, |buffer, cx| {
+                    buffer.set_text(markdown, cx);
+                    buffer.set_capability(Capability::ReadWrite, cx);
+                });
+
+                workspace.update_in(cx, |workspace, window, cx| {
+                    let buffer = cx.new(|cx| {
+                        MultiBuffer::singleton(buffer, cx).with_title(thread_title.clone())
+                    });
+
+                    workspace.add_item_to_active_pane(
+                        Box::new(cx.new(|cx| {
+                            let mut editor =
+                                Editor::for_multibuffer(buffer, Some(project.clone()), window, cx);
+                            editor.set_breadcrumb_header(thread_title);
+                            editor
+                        })),
+                        None,
+                        true,
+                        window,
+                        cx,
+                    );
+                })?;
+
+                anyhow::Ok(())
+            })
+            .detach_and_log_err(cx);
     }
 
     fn apply_info_update(
@@ -642,6 +766,49 @@ impl AcpThreadHistory {
             })
             .unwrap_or_else(|| "Unknown".to_string());
 
+        let end_hover_slot = if hovered {
+            let can_export = self.can_export_as_markdown(cx);
+            let supports_delete = self.supports_delete();
+            if can_export || supports_delete {
+                Some(
+                    h_flex()
+                        .gap_1()
+                        .when(can_export, |this| {
+                            this.child(
+                                IconButton::new("export-markdown", IconName::FileMarkdown)
+                                    .shape(IconButtonShape::Square)
+                                    .icon_size(IconSize::XSmall)
+                                    .icon_color(Color::Muted)
+                                    .tooltip(Tooltip::text("Export as Markdown"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.export_thread_as_markdown(ix, window, cx);
+                                        cx.stop_propagation();
+                                    })),
+                            )
+                        })
+                        .when(supports_delete, |this| {
+                            this.child(
+                                IconButton::new("delete", IconName::Trash)
+                                    .shape(IconButtonShape::Square)
+                                    .icon_size(IconSize::XSmall)
+                                    .icon_color(Color::Muted)
+                                    .tooltip(move |_window, cx| {
+                                        Tooltip::for_action("Delete", &RemoveSelectedThread, cx)
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.remove_thread(ix, cx);
+                                        cx.stop_propagation()
+                                    })),
+                            )
+                        }),
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         h_flex()
             .w_full()
             .pb_1()
@@ -678,23 +845,7 @@ impl AcpThreadHistory {
 
                         cx.notify();
                     }))
-                    .end_slot::<IconButton>(if hovered && self.supports_delete() {
-                        Some(
-                            IconButton::new("delete", IconName::Trash)
-                                .shape(IconButtonShape::Square)
-                                .icon_size(IconSize::XSmall)
-                                .icon_color(Color::Muted)
-                                .tooltip(move |_window, cx| {
-                                    Tooltip::for_action("Delete", &RemoveSelectedThread, cx)
-                                })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.remove_thread(ix, cx);
-                                    cx.stop_propagation()
-                                })),
-                        )
-                    } else {
-                        None
-                    })
+                    .end_hover_slot::<gpui::Div>(end_hover_slot)
                     .on_click(cx.listener(move |this, _, _, cx| this.confirm_entry(ix, cx))),
             )
             .into_any_element()

@@ -126,6 +126,9 @@ impl AgentsPanel {
 
         let thread_store = ThreadStore::global(cx);
         let history = cx.new(|cx| AcpThreadHistory::new(None, window, cx));
+        history.update(cx, |history, cx| {
+            history.set_context(workspace.clone(), project.clone(), cx);
+        });
 
         let history_handle = history.clone();
         let connect_project = project.clone();
@@ -155,7 +158,11 @@ impl AgentsPanel {
                     && let Some(session_list) = connection.session_list(cx)
                 {
                     history_handle.update(cx, |history, cx| {
-                        history.set_session_list(Some(session_list), cx);
+                        history.set_session_list(
+                            Some(session_list),
+                            Some(connection.clone()),
+                            cx,
+                        );
                     });
                 }
             });
