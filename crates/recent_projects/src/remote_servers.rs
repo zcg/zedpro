@@ -8938,7 +8938,11 @@ async fn probe_dev_container(connection: &DevContainerConnection) -> DevContaine
 
     match output {
         Ok(output) if output.status.success() => {
-            let status = output_message(&output).trim().to_ascii_lowercase();
+            // On some setups (notably Podman emulating the Docker CLI), warnings may be printed to
+            // stderr even on success. The `--format` output we care about is on stdout.
+            let status = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .to_ascii_lowercase();
             if status == "running" {
                 DevContainerProbe::Running
             } else {
