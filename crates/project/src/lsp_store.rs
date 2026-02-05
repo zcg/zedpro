@@ -7119,7 +7119,27 @@ impl LspStore {
             cx.background_spawn(async move {
                 let mut responses = Vec::new();
                 for diagnostics in join_all(pull_diagnostics).await {
-                    responses.extend(diagnostics?);
+                    match diagnostics {
+                        Ok(diags) => responses.extend(diags),
+                        Err(e) => {
+                            let msg = format!("{e:#}");
+                            // Some language servers don't implement the LSP 3.17 pull-diagnostics
+                            // method even if they are otherwise functional (e.g. `jj_lsp`), and
+                            // some requests are commonly cancelled during startup/reload.
+                            //
+                            // Treat these cases as non-fatal so they don't spam the logs and
+                            // don't prevent other servers' diagnostics from being applied.
+                            let ignorable = msg.contains("Method not found")
+                                || msg.contains("-32601")
+                                || msg.contains("server cancelled the request")
+                                || msg.ends_with("content modified");
+                            if ignorable {
+                                log::debug!("Ignoring diagnostics pull error: {msg}");
+                            } else {
+                                log::warn!("Failed to pull diagnostics: {msg}");
+                            }
+                        }
+                    }
                 }
                 Ok(Some(responses))
             })
