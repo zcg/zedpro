@@ -698,6 +698,44 @@ echo "/tmp"
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
+    fn exec_error_indicates_container_not_running(stderr: &str) -> bool {
+        let msg = stderr.to_ascii_lowercase();
+        // Podman (rootless) typically:
+        // "can only create exec sessions on running containers: container state improper"
+        // Docker typically:
+        // "container <id> is not running"
+        msg.contains("container state improper")
+            || msg.contains("can only create exec sessions on running containers")
+            || msg.contains(" is not running")
+            || msg.contains(" not running")
+    }
+
+    async fn ensure_container_running(&self) -> Result<()> {
+        let id = self.connection_options.container_id.as_str();
+        let status = self
+            .run_docker_command(
+                "inspect",
+                &["--format", "{{.State.Status}}", id],
+            )
+            .await
+            .context("docker inspect")?;
+        let status = status.trim().to_ascii_lowercase();
+        if status == "running" {
+            return Ok(());
+        }
+
+        log::info!(
+            "Dev container `{}` not running (status: {}); starting",
+            id,
+            status
+        );
+        // Only start if inspect says it's not running; starting a running container can be an error.
+        self.run_docker_command("start", &[id])
+            .await
+            .context("docker start")?;
+        Ok(())
+    }
+
     async fn run_docker_exec(
         &self,
         inner_program: &str,
@@ -725,7 +763,45 @@ echo "/tmp"
         for arg in program_args {
             args.push(arg.as_ref().to_owned());
         }
-        self.run_docker_command("exec", args.as_ref()).await
+
+        // `docker exec` fails if the container is stopped. On startup Zed may try to
+        // reopen the last Dev Container workspace even if the container isn't running yet.
+        // In that case, start it and retry once.
+        let exec_args = args;
+        let run_once = |exec_args: Vec<String>| async move {
+            let template = self.docker_command_template(
+                std::iter::once("exec".to_string())
+                    .chain(exec_args.into_iter())
+                    .collect(),
+                Interactive::No,
+            )?;
+            let mut command = command_from_template(template);
+            let output = command.output().await?;
+            log::debug!("{:?}: {:?}", command, output);
+            Ok::<_, anyhow::Error>(output)
+        };
+
+        let output = run_once(exec_args.clone()).await?;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if Self::exec_error_indicates_container_not_running(&stderr) {
+            self.ensure_container_running().await?;
+            let output = run_once(exec_args).await?;
+            anyhow::ensure!(
+                output.status.success(),
+                "failed to run command after starting container: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+        }
+
+        anyhow::bail!(
+            "failed to run docker exec: {}",
+            stderr
+        );
     }
 
     async fn download_binary_on_server(
