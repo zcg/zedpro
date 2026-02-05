@@ -8938,12 +8938,21 @@ async fn probe_dev_container(connection: &DevContainerConnection) -> DevContaine
 
     match output {
         Ok(output) if output.status.success() => {
-            // On some setups (notably Podman emulating the Docker CLI), warnings may be printed to
-            // stderr even on success. The `--format` output we care about is on stdout.
-            let status = String::from_utf8_lossy(&output.stdout)
+            // On some setups (notably Podman emulating the Docker CLI), warnings may be printed
+            // alongside the formatted output even on success. Extract the last non-empty line
+            // from stdout, and fall back to stderr if needed.
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let line = stdout
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .or_else(|| stderr.lines().rev().find(|l| !l.trim().is_empty()))
+                .unwrap_or("")
                 .trim()
                 .to_ascii_lowercase();
-            if status == "running" {
+
+            if line == "running" || line.contains("running") {
                 DevContainerProbe::Running
             } else {
                 DevContainerProbe::Stopped

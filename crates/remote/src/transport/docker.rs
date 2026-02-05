@@ -719,7 +719,13 @@ echo "/tmp"
             )
             .await
             .context("docker inspect")?;
-        let status = status.trim().to_ascii_lowercase();
+        let status = status
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
         if status == "running" {
             return Ok(());
         }
