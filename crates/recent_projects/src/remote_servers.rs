@@ -4359,6 +4359,10 @@ impl RemoteServerProjects {
         name: SharedString,
         cx: &mut Context<RemoteServerProjects>,
     ) {
+        // Disconnect first so we don't race with remote-client auto-reconnect, which can
+        // otherwise restart a just-stopped container while trying to exec for platform probing.
+        self.disconnect_active_dev_container(&connection, true, cx);
+
         let remote_servers = cx.entity();
         cx.spawn(async move |_, cx| {
             let result = stop_dev_container_container(&connection).await;

@@ -1020,9 +1020,10 @@ impl RemoteClient {
         server_not_running: bool,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
-        let Some(connection) = self.remote_connection() else {
-            return Task::ready(Err(anyhow!("no active remote connection to disconnect")));
-        };
+        // We may be in the middle of reconnecting (State::Reconnecting), in which case there is no
+        // active `remote_connection` to kill. In that scenario we still want to transition into a
+        // disconnected state so we stop reconnect attempts and ignore any in-flight reconnect.
+        let connection = self.remote_connection();
 
         // Drop any in-flight tasks before forcing a disconnected state.
         self.state.take();
@@ -1034,10 +1035,14 @@ impl RemoteClient {
         };
         self.set_state(state, cx);
 
-        cx.spawn(async move |_, _| {
-            connection.kill().await?;
-            Ok(())
-        })
+        if let Some(connection) = connection {
+            cx.spawn(async move |_, _| {
+                connection.kill().await?;
+                Ok(())
+            })
+        } else {
+            Task::ready(Ok(()))
+        }
     }
 
     /// Simulates a timeout by pausing heartbeat responses.
