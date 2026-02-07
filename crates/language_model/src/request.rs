@@ -456,6 +456,7 @@ pub struct LanguageModelRequest {
     /// "part of" a rate-limited request to avoid deadlocks.
     #[serde(default)]
     pub bypass_rate_limit: bool,
+    pub thinking_effort: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]

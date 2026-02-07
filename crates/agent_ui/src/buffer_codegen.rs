@@ -545,6 +545,7 @@ impl CodegenAlternative {
                 messages,
                 thinking_allowed: false,
                 bypass_rate_limit: false,
+                thinking_effort: None,
             }
         }))
     }
@@ -624,6 +625,7 @@ impl CodegenAlternative {
                 messages: vec![request_message],
                 thinking_allowed: false,
                 bypass_rate_limit: false,
+                thinking_effort: None,
             }
         }))
     }

@@ -20,7 +20,6 @@ use windows::{
     Win32::{
         Foundation::*,
         Graphics::{Direct3D11::ID3D11Device, Gdi::*},
-        Media::{timeBeginPeriod, timeEndPeriod},
         Security::Credentials::*,
         System::{Com::*, LibraryLoader::*, Ole::*, SystemInformation::*},
         UI::{Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
@@ -100,10 +99,6 @@ impl WindowsPlatform {
     pub(crate) fn new(headless: bool) -> Result<Self> {
         unsafe {
             OleInitialize(None).context("unable to initialize Windows OLE")?;
-            // Set the system timer resolution to 1ms so that short timeouts
-            // (e.g. in Scheduler::block) are not rounded up to the default
-            // ~15.6ms tick interval.
-            timeBeginPeriod(1);
         }
         let (directx_devices, text_system, direct_write_text_system) = if !headless {
             let devices = DirectXDevices::new().context("Creating DirectX devices")?;
@@ -401,6 +396,12 @@ impl Platform for WindowsPlatform {
             .callbacks
             .keyboard_layout_change
             .set(Some(callback));
+    }
+
+    fn on_thermal_state_change(&self, _callback: Box<dyn FnMut()>) {}
+
+    fn thermal_state(&self) -> ThermalState {
+        ThermalState::Nominal
     }
 
     fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>) {
@@ -996,7 +997,6 @@ impl WindowsPlatformInner {
 impl Drop for WindowsPlatform {
     fn drop(&mut self) {
         unsafe {
-            timeEndPeriod(1);
             DestroyWindow(self.handle)
                 .context("Destroying platform window")
                 .log_err();

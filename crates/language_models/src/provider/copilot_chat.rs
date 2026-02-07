@@ -951,6 +951,7 @@ fn into_copilot_responses(
         temperature,
         thinking_allowed: _,
         bypass_rate_limit: _,
+        thinking_effort: _,
     } = request;
 
     let mut input_items: Vec<responses::ResponseInputItem> = Vec::new();

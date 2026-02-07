@@ -562,6 +562,7 @@ pub fn into_open_ai_response(
         temperature,
         thinking_allowed: _,
         bypass_rate_limit: _,
+        thinking_effort: _,
     } = request;
 
     let mut input_items = Vec::new();
@@ -1445,6 +1446,7 @@ mod tests {
             temperature: None,
             thinking_allowed: true,
             bypass_rate_limit: false,
+            thinking_effort: None,
         };
 
         // Validate that all models are supported by tiktoken-rs
@@ -1582,6 +1584,7 @@ mod tests {
             temperature: None,
             thinking_allowed: false,
             bypass_rate_limit: false,
+            thinking_effort: None,
         };
 
         let response = into_open_ai_response(

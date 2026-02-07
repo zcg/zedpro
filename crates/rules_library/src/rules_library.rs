@@ -1104,6 +1104,7 @@ impl RulesLibrary {
                                     temperature: None,
                                     thinking_allowed: true,
                                     bypass_rate_limit: false,
+                                    thinking_effort: None,
                                 },
                                 cx,
                             )
