@@ -3175,6 +3175,7 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "serde_json",
+ "strum 0.27.2",
 ]
 
 [[package]]
@@ -3336,6 +3337,7 @@ dependencies = [
  "chrono",
  "client",
  "clock",
+ "cloud_api_types",
  "collab",
  "collab_ui",
  "collections",
@@ -6058,6 +6060,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "cloud_api_types",
  "env_logger 0.11.8",
  "extension",
  "fs",
@@ -6065,7 +6068,6 @@ dependencies = [
  "language",
  "log",
  "reqwest_client",
- "rpc",
  "serde",
  "serde_json",
  "serde_json_lenient",
@@ -6086,6 +6088,7 @@ dependencies = [
  "async-tar",
  "async-trait",
  "client",
+ "cloud_api_types",
  "collections",
  "criterion",
  "ctor",
@@ -6136,6 +6139,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "client",
+ "cloud_api_types",
  "collections",
  "db",
  "editor",
@@ -14167,7 +14171,6 @@ dependencies = [
  "anyhow",
  "async-tungstenite",
  "base64 0.22.1",
- "chrono",
  "collections",
  "futures 0.3.31",
  "gpui",
