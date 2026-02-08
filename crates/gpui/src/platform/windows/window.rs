@@ -1008,16 +1008,21 @@ impl PlatformWindow for WindowsWindow {
 
     #[cfg(target_os = "windows")]
     fn merge_into_tabbing_group(&self, target_identifier: String, target_hwnd: HWND) {
-        // Register this window into the target group.
+        let inner = self.0.clone();
         self.0
-            .set_tabbing_identifier(Some(target_identifier.clone()));
+            .executor
+            .spawn(async move {
+                // Register this window into the target group.
+                inner.set_tabbing_identifier(Some(target_identifier.clone()));
 
-        // Hide and position this window so it behaves like a "tab" under the target window.
-        self.0.tab_coordinator.absorb_window_into_group(
-            &target_identifier,
-            target_hwnd,
-            self.0.hwnd,
-        );
+                // Hide and position this window so it behaves like a "tab" under the target window.
+                inner.tab_coordinator.absorb_window_into_group(
+                    &target_identifier,
+                    target_hwnd,
+                    inner.hwnd,
+                );
+            })
+            .detach();
     }
 
     fn tab_bar_visible(&self) -> bool {
@@ -1073,25 +1078,29 @@ impl PlatformWindow for WindowsWindow {
             self.state.callbacks.merge_all_windows.set(Some(callback));
         }
 
-        let Some(target_identifier) = self.0.tabbing_identifier() else {
-            return;
-        };
-
-        // Ensure every window uses the merged identifier, so our platform coordinator and the
-        // SystemWindowTabController converge on the same grouping.
-        for hwnd in self.0.tab_coordinator.all_windows() {
-            if hwnd == self.0.hwnd {
-                continue;
-            }
-
-            if let Some(inner) = window_from_hwnd(hwnd) {
-                inner.set_tabbing_identifier(Some(target_identifier.clone()));
-            }
-        }
-
+        let inner = self.0.clone();
         self.0
-            .tab_coordinator
-            .merge_all(&target_identifier, self.0.hwnd);
+            .executor
+            .spawn(async move {
+                let Some(target_identifier) = inner.tabbing_identifier() else {
+                    return;
+                };
+
+                // Ensure every window uses the merged identifier, so our platform coordinator and the
+                // SystemWindowTabController converge on the same grouping.
+                for hwnd in inner.tab_coordinator.all_windows() {
+                    if hwnd == inner.hwnd {
+                        continue;
+                    }
+
+                    if let Some(window_inner) = window_from_hwnd(hwnd) {
+                        window_inner.set_tabbing_identifier(Some(target_identifier.clone()));
+                    }
+                }
+
+                inner.tab_coordinator.merge_all(&target_identifier, inner.hwnd);
+            })
+            .detach();
     }
 
     fn move_tab_to_new_window(&self) {
@@ -1103,10 +1112,17 @@ impl PlatformWindow for WindowsWindow {
                 .set(Some(callback));
         }
 
-        let Some(new_identifier) = self.0.tab_coordinator.move_to_new_group(self.0.hwnd) else {
-            return;
-        };
-        self.0.set_tabbing_identifier(Some(new_identifier));
+        let inner = self.0.clone();
+        self.0
+            .executor
+            .spawn(async move {
+                let Some(new_identifier) = inner.tab_coordinator.move_to_new_group(inner.hwnd)
+                else {
+                    return;
+                };
+                inner.set_tabbing_identifier(Some(new_identifier));
+            })
+            .detach();
     }
 
     fn toggle_window_tab_overview(&self) {

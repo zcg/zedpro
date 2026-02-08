@@ -585,6 +585,68 @@ impl SystemWindowTabController {
         }
     }
 
+    /// Move a window tab into the tab group containing `target_id`.
+    ///
+    /// This is primarily used by Zed's custom Windows tab bar, which updates controller state
+    /// directly and performs the platform operation separately.
+    pub fn merge_window_into_group(
+        cx: &mut App,
+        source_id: WindowId,
+        target_id: WindowId,
+        insert_ix: usize,
+    ) {
+        let (source_group_id, target_group_id) = {
+            let controller = cx.global::<SystemWindowTabController>();
+            let source_group_id = controller.tab_groups.iter().find_map(|(group_id, tabs)| {
+                tabs.iter().any(|tab| tab.id == source_id).then_some(*group_id)
+            });
+            let target_group_id = controller.tab_groups.iter().find_map(|(group_id, tabs)| {
+                tabs.iter().any(|tab| tab.id == target_id).then_some(*group_id)
+            });
+            (source_group_id, target_group_id)
+        };
+
+        let Some(target_group_id) = target_group_id else {
+            return;
+        };
+
+        // If both windows are already in the same group, just reposition the source tab.
+        if source_group_id == Some(target_group_id) {
+            let controller = cx.global::<SystemWindowTabController>();
+            let target_len = controller
+                .tab_groups
+                .get(&target_group_id)
+                .map(|tabs| tabs.len())
+                .unwrap_or(0);
+            let clamped_ix = if insert_ix == usize::MAX {
+                target_len.saturating_sub(1)
+            } else {
+                insert_ix.min(target_len.saturating_sub(1))
+            };
+            Self::update_tab_position(cx, source_id, clamped_ix);
+            return;
+        }
+
+        let Some(tab) = Self::remove_tab(cx, source_id) else {
+            return;
+        };
+
+        let mut controller = cx.global_mut::<SystemWindowTabController>();
+        let Some(tabs) = controller.tab_groups.get_mut(&target_group_id) else {
+            // Target group vanished; preserve the source tab as a singleton group.
+            let new_group_id = controller.tab_groups.keys().max().map_or(0, |k| k + 1);
+            controller.tab_groups.insert(new_group_id, vec![tab]);
+            return;
+        };
+
+        let insert_ix = if insert_ix == usize::MAX {
+            tabs.len()
+        } else {
+            insert_ix.min(tabs.len())
+        };
+        tabs.insert(insert_ix, tab);
+    }
+
     /// Merge all tab groups into a single group.
     pub fn merge_all_windows(cx: &mut App, id: WindowId) {
         let mut controller = cx.global_mut::<SystemWindowTabController>();
@@ -623,6 +685,29 @@ impl SystemWindowTabController {
                 window.refresh();
             });
         }
+    }
+
+    /// Refresh the tab bar for specific windows.
+    pub fn refresh_window_ids(cx: &mut App, window_ids: impl IntoIterator<Item = WindowId>) {
+        let ids = window_ids.into_iter().collect::<FxHashSet<_>>();
+        if ids.is_empty() {
+            return;
+        }
+
+        for handle in cx.windows() {
+            if ids.contains(&handle.window_id()) {
+                let _ = handle.update(cx, |_, window, _| window.refresh());
+            }
+        }
+    }
+
+    /// Get the window ids in the same tab group as `id`.
+    pub fn tab_group_window_ids(cx: &App, id: WindowId) -> Vec<WindowId> {
+        let controller = cx.global::<SystemWindowTabController>();
+        controller
+            .tabs(id)
+            .map(|tabs| tabs.iter().map(|tab| tab.id).collect())
+            .unwrap_or_default()
     }
 
     /// Selects the next tab in the tab group in the trailing direction.
@@ -1608,6 +1693,13 @@ impl App {
                 cx.window_update_stack.pop();
 
                 if window.removed {
+                    let window_ids_to_refresh = SystemWindowTabController::tab_group_window_ids(cx, id);
+                    if SystemWindowTabController::remove_tab(cx, id).is_some() {
+                        cx.defer(move |cx| {
+                            SystemWindowTabController::refresh_window_ids(cx, window_ids_to_refresh);
+                        });
+                    }
+
                     cx.window_handles.remove(&id);
                     cx.windows.remove(id);
 

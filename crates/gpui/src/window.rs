@@ -1177,13 +1177,11 @@ impl Window {
         }
 
         platform_window.on_close(Box::new({
-            let window_id = handle.window_id();
             let mut cx = cx.to_async();
             move || {
-                let _ = handle.update(&mut cx, |_, window, _| window.remove_window());
-                let _ = cx.update(|cx| {
-                    SystemWindowTabController::remove_tab(cx, window_id);
-                });
+                // `SystemWindowTabController` cleanup is centralized in `App::update_window_id`
+                // when the window is actually removed.
+                let _ = handle.update(&mut cx, |_, window, _cx| window.remove_window());
             }
         }));
         platform_window.on_request_frame(Box::new({
@@ -1194,6 +1192,9 @@ impl Window {
             let next_frame_callbacks = next_frame_callbacks.clone();
             let input_rate_tracker = input_rate_tracker.clone();
             move |request_frame_options| {
+                #[cfg(target_os = "windows")]
+                let thermal_state = ThermalState::Nominal;
+                #[cfg(not(target_os = "windows"))]
                 let thermal_state = cx.update(|cx| cx.thermal_state());
 
                 if thermal_state == ThermalState::Serious || thermal_state == ThermalState::Critical

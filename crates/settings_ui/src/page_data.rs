@@ -4076,7 +4076,7 @@ fn window_and_layout_page() -> SettingsPage {
             // todo(settings_ui): Should we filter by platform.as_ref()?
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Use System Window Tabs",
-                description: "(macOS only) whether to allow Windows to tab together.",
+                description: "(macOS and Windows) whether to allow windows to tab together.",
                 field: Box::new(SettingField {
                     json_path: Some("use_system_window_tabs"),
                     pick: |settings_content| {

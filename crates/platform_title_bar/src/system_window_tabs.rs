@@ -3,7 +3,7 @@ use settings::{Settings, SettingsStore};
 use gpui::{
     AnyElement, AnyWindowHandle, App, Bounds, Context, DragMoveEvent, Hsla, InteractiveElement,
     MouseButton, ParentElement, ScrollHandle, Styled, SystemWindowTab, SystemWindowTabController,
-    Window, WindowId, actions, canvas, div, point, size,
+    Window, WindowId, actions, canvas, div, hsla, point, size,
 };
 
 use theme::ThemeSettings;
@@ -11,6 +11,8 @@ use ui::{
     Color, ContextMenu, DynamicSpacing, IconButton, IconButtonShape, IconName, IconSize, Label,
     LabelSize, Tab, h_flex, prelude::*, right_click_menu,
 };
+use std::hash::{Hash as _, Hasher as _};
+use std::collections::hash_map::DefaultHasher;
 use workspace::{
     CloseWindow, ItemSettings, Workspace, WorkspaceSettings,
     item::{ClosePosition, ShowCloseButton},
@@ -48,6 +50,19 @@ pub struct SystemWindowTabs {
 }
 
 impl SystemWindowTabs {
+    fn pseudo_random_active_border_color(window_id: WindowId, cx: &mut App) -> Hsla {
+        // Derive a stable "random-ish" color from the window id. This avoids flicker while still
+        // helping the active tab stand out visually.
+        let mut hasher = DefaultHasher::new();
+        window_id.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        let hue = (hash % 360) as f32 / 360.;
+        let saturation = 0.75;
+        let lightness = if cx.theme().appearance.is_light() { 0.42 } else { 0.68 };
+        hsla(hue, saturation, lightness, 0.95)
+    }
+
     pub fn new() -> Self {
         Self {
             tab_bar_scroll_handle: ScrollHandle::new(),
@@ -137,13 +152,14 @@ impl SystemWindowTabs {
                     .on_action(move |_: &MoveTabToNewWindow, window, cx| {
                         #[cfg(target_os = "windows")]
                         {
-                            SystemWindowTabController::move_tab_to_new_window(
+                            Self::defer_move_tab_to_new_window(
                                 cx,
                                 window.window_handle().window_id(),
                             );
-                            SystemWindowTabController::refresh_all_windows(cx);
+                            return;
                         }
 
+                        #[cfg(not(target_os = "windows"))]
                         window.move_tab_to_new_window();
                     })
                 })
@@ -151,13 +167,14 @@ impl SystemWindowTabs {
                     div.on_action(move |_: &MergeAllWindows, window, cx| {
                         #[cfg(target_os = "windows")]
                         {
-                            SystemWindowTabController::merge_all_windows(
+                            Self::defer_merge_all_windows(
                                 cx,
                                 window.window_handle().window_id(),
                             );
-                            SystemWindowTabController::refresh_all_windows(cx);
+                            return;
                         }
 
+                        #[cfg(not(target_os = "windows"))]
                         window.merge_all_windows();
                     })
                 })
@@ -287,15 +304,23 @@ impl SystemWindowTabs {
                     .update(cx, |_, window, _| window.activate_window())
                     .ok();
             })
-            .on_mouse_up(MouseButton::Middle, move |_, window, cx| {
-                if item.handle.window_id() == window.window_handle().window_id() {
-                    window.dispatch_action(Box::new(CloseWindow), cx);
-                } else {
-                    item.handle
-                        .update(cx, |_, window, cx| {
-                            window.dispatch_action(Box::new(CloseWindow), cx);
-                        })
-                        .ok();
+            .on_mouse_up(MouseButton::Middle, move |_, _window, cx| {
+                #[cfg(target_os = "windows")]
+                {
+                    Self::defer_close_windows(cx, vec![item.id]);
+                }
+
+                #[cfg(not(target_os = "windows"))]
+                {
+                    if item.handle.window_id() == _window.window_handle().window_id() {
+                        _window.dispatch_action(Box::new(CloseWindow), cx);
+                    } else {
+                        item.handle
+                            .update(cx, |_, window, cx| {
+                                window.dispatch_action(Box::new(CloseWindow), cx);
+                            })
+                            .ok();
+                    }
                 }
             })
             .child(label)
@@ -317,18 +342,28 @@ impl SystemWindowTabs {
                                 .icon_color(Color::Muted)
                                 .icon_size(IconSize::XSmall)
                                 .on_click({
-                                    move |_, window, cx| {
-                                        if item.handle.window_id()
-                                            == window.window_handle().window_id()
+                                    move |_, _window, cx| {
+                                        #[cfg(target_os = "windows")]
                                         {
-                                            window.dispatch_action(Box::new(CloseWindow), cx);
-                                        } else {
-                                            item.handle
-                                                .update(cx, |_, window, cx| {
-                                                    window
-                                                        .dispatch_action(Box::new(CloseWindow), cx);
-                                                })
-                                                .ok();
+                                            Self::defer_close_windows(cx, vec![item.id]);
+                                        }
+
+                                        #[cfg(not(target_os = "windows"))]
+                                        {
+                                            if item.handle.window_id()
+                                                == _window.window_handle().window_id()
+                                            {
+                                                _window.dispatch_action(Box::new(CloseWindow), cx);
+                                            } else {
+                                                item.handle
+                                                    .update(cx, |_, window, cx| {
+                                                        window.dispatch_action(
+                                                            Box::new(CloseWindow),
+                                                            cx,
+                                                        );
+                                                    })
+                                                    .ok();
+                                            }
                                         }
                                     }
                                 })
@@ -348,14 +383,43 @@ impl SystemWindowTabs {
                 let tabs = tabs.clone();
                 let other_tabs = tabs.clone();
                 let move_tabs = tabs.clone();
-                let merge_tabs = tabs.clone();
+                let detach_tabs = tabs.clone();
                 let merge_all_tabs = tabs.clone();
+                #[cfg(not(target_os = "windows"))]
+                let show_all_tabs = tabs.clone();
+                #[cfg(target_os = "windows")]
+                let merge_target_windows = {
+                    let live_window_ids = cx
+                        .windows()
+                        .into_iter()
+                        .map(|handle| handle.window_id())
+                        .collect::<std::collections::HashSet<_>>();
+                    let controller = cx.global::<SystemWindowTabController>();
+                    controller
+                        .tab_groups()
+                        .values()
+                        .filter(|group_tabs| !group_tabs.iter().any(|tab| tab.id == item.id))
+                        .filter_map(|group_tabs| {
+                            group_tabs
+                                .iter()
+                                .filter(|tab| live_window_ids.contains(&tab.id))
+                                .max_by_key(|tab| tab.last_active_at)
+                                .map(|tab| (tab.id, tab.title.to_string()))
+                        })
+                        .collect::<Vec<_>>()
+                };
 
                 ContextMenu::build(window, cx, move |mut menu, _window_, cx| {
-                    menu = menu.entry("Close Tab", None, move |window, cx| {
+                    menu = menu.entry("Close Tab", None, move |_window, cx| {
+                        #[cfg(target_os = "windows")]
+                        {
+                            Self::defer_close_windows(cx, vec![item.id]);
+                        }
+
+                        #[cfg(not(target_os = "windows"))]
                         Self::handle_right_click_action(
                             cx,
-                            window,
+                            _window,
                             &tabs,
                             |tab| tab.id == item.id,
                             |window, cx| {
@@ -364,10 +428,21 @@ impl SystemWindowTabs {
                         );
                     });
 
-                    menu = menu.entry("Close Other Tabs", None, move |window, cx| {
+                    menu = menu.entry("Close Other Tabs", None, move |_window, cx| {
+                        #[cfg(target_os = "windows")]
+                        {
+                            let close_other_window_ids = other_tabs
+                                .iter()
+                                .filter(|tab| tab.id != item.id)
+                                .map(|tab| tab.id)
+                                .collect::<Vec<_>>();
+                            Self::defer_close_windows(cx, close_other_window_ids);
+                        }
+
+                        #[cfg(not(target_os = "windows"))]
                         Self::handle_right_click_action(
                             cx,
-                            window,
+                            _window,
                             &other_tabs,
                             |tab| tab.id != item.id,
                             |window, cx| {
@@ -385,17 +460,29 @@ impl SystemWindowTabs {
                             |window, cx| {
                                 #[cfg(target_os = "windows")]
                                 {
-                                    SystemWindowTabController::move_tab_to_new_window(
+                                    Self::defer_move_tab_to_new_window(
                                         cx,
                                         window.window_handle().window_id(),
                                     );
-                                    SystemWindowTabController::refresh_all_windows(cx);
+                                    return;
                                 }
 
+                                #[cfg(not(target_os = "windows"))]
                                 window.move_tab_to_new_window();
                             },
                         );
                     });
+
+                    #[cfg(target_os = "windows")]
+                    if detach_tabs.len() >= 2 {
+                        let detach_window_ids = detach_tabs
+                            .iter()
+                            .map(|tab| tab.id)
+                            .collect::<Vec<_>>();
+                        menu = menu.entry("Detach All Windows", None, move |_window, cx| {
+                            Self::defer_detach_all_windows(cx, detach_window_ids.clone());
+                        });
+                    }
 
                     // Add "Merge All Windows" when there are multiple tab groups
                     let controller = cx.global::<SystemWindowTabController>();
@@ -409,46 +496,78 @@ impl SystemWindowTabs {
                                 |window, cx| {
                                     #[cfg(target_os = "windows")]
                                     {
-                                        SystemWindowTabController::merge_all_windows(
+                                        Self::defer_merge_all_windows(
                                             cx,
                                             window.window_handle().window_id(),
                                         );
-                                        SystemWindowTabController::refresh_all_windows(cx);
+                                        return;
                                     }
 
+                                    #[cfg(not(target_os = "windows"))]
                                     window.merge_all_windows();
                                 },
                             );
                         });
                     }
 
-                    menu = menu.entry("Show All Tabs", None, move |window, cx| {
-                        Self::handle_right_click_action(
-                            cx,
-                            window,
-                            &merge_tabs,
-                            |tab| tab.id == item.id,
-                            |window, _cx| {
-                                window.toggle_window_tab_overview();
-                            },
-                        );
-                    });
+                    #[cfg(target_os = "windows")]
+                    for (target_window_id, target_title) in merge_target_windows.clone() {
+                        let source_window_id = item.id;
+                        let source_handle = item.handle.clone();
+                        let label = format!("Merge Into \"{}\" Window", target_title);
+                        menu = menu.entry(label, None, move |_window, cx| {
+                            Self::defer_merge_window_into_target_group(
+                                cx,
+                                source_window_id,
+                                source_handle.clone(),
+                                target_window_id,
+                                usize::MAX,
+                            );
+                        });
+                    }
+
+                    // `Show All Tabs` is a macOS-style window tab overview concept. Windows does not
+                    // have an equivalent overview UI, so omit it there to avoid confusion.
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        menu = menu.entry("Show All Tabs", None, move |window, cx| {
+                            Self::handle_right_click_action(
+                                cx,
+                                window,
+                                &show_all_tabs,
+                                |tab| tab.id == item.id,
+                                |window, cx| {
+                                    window.toggle_window_tab_overview();
+                                },
+                            );
+                        });
+                    }
 
                     menu.context(focus_handle)
                 })
             });
 
+        let active_border_color = if is_active {
+            Self::pseudo_random_active_border_color(item.id, cx)
+        } else {
+            cx.theme().colors().border_transparent
+        };
+
         div()
             .flex_1()
+            .h_full()
             .min_w(rem_size * 10)
             .when(is_active, |this| this.bg(active_background_color))
-            .border_t_1()
-            .border_color(if is_active {
-                active_background_color
-            } else {
-                cx.theme().colors().border
-            })
-            .child(menu)
+            // Reserve 1px inset on all sides so the top border stays visible in
+            // the Windows title bar region instead of being clipped.
+            .p(px(1.))
+            .child(
+                div()
+                    .size_full()
+                    .border_1()
+                    .border_color(active_border_color)
+                    .child(menu),
+            )
     }
 
     fn handle_tab_drop(
@@ -482,6 +601,23 @@ impl SystemWindowTabs {
         target_window_id: WindowId,
         ix: usize,
     ) {
+        Self::merge_window_into_target_group(
+            cx,
+            dragged_tab.id,
+            dragged_tab.handle,
+            target_window_id,
+            ix,
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    fn merge_window_into_target_group(
+        cx: &mut App,
+        source_window_id: WindowId,
+        source_handle: AnyWindowHandle,
+        target_window_id: WindowId,
+        ix: usize,
+    ) {
         let Some(target_handle) = cx
             .windows()
             .into_iter()
@@ -505,42 +641,137 @@ impl SystemWindowTabs {
             return;
         };
 
-        // Perform platform merge by updating the dragged window (no nested window updates).
-        if dragged_tab.id != target_window_id {
-            if dragged_tab
-                .handle
-                .update(cx, |_, dragged_window, _| {
-                    dragged_window.merge_into_tabbing_group(target_identifier.clone(), target_hwnd);
-                })
-                .is_err()
-            {
-                return;
-            }
-        } else {
-            // Dragging the active tab "into itself" is a no-op.
+        // Dragging the active tab "into itself" is a no-op.
+        if source_window_id == target_window_id {
             return;
         }
 
-        // Snapshot the target group after the platform coordinator updates.
-        let Ok(tabs) =
-            target_handle.update(cx, |_, target_window, _| target_window.tabbed_windows())
-        else {
-            return;
-        };
-        let Some(tabs) = tabs else {
-            return;
-        };
+        let mut to_refresh = SystemWindowTabController::tab_group_window_ids(cx, source_window_id);
+        to_refresh.extend(SystemWindowTabController::tab_group_window_ids(cx, target_window_id));
 
-        // Update controller to match the platform grouping.
-        SystemWindowTabController::remove_tab(cx, dragged_tab.id);
-        SystemWindowTabController::add_tab(cx, target_window_id, tabs);
-        let controller = cx.global::<SystemWindowTabController>();
-        let clamped_ix = controller
-            .tabs(target_window_id)
-            .map(|tabs| ix.min(tabs.len().saturating_sub(1)))
-            .unwrap_or(ix);
-        SystemWindowTabController::update_tab_position(cx, dragged_tab.id, clamped_ix);
-        SystemWindowTabController::refresh_all_windows(cx);
+        // Update controller state synchronously; perform the platform operation separately.
+        SystemWindowTabController::merge_window_into_group(
+            cx,
+            source_window_id,
+            target_window_id,
+            ix,
+        );
+        SystemWindowTabController::refresh_window_ids(cx, to_refresh);
+
+        // Perform the platform operation (may show/hide windows; keep it out of nested updates).
+        let _ = source_handle.update(cx, |_, source_window, _| {
+            source_window.merge_into_tabbing_group(target_identifier.clone(), target_hwnd);
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    fn defer_move_tab_to_new_window(cx: &mut App, tab_id: WindowId) {
+        cx.defer(move |cx| {
+            let to_refresh = SystemWindowTabController::tab_group_window_ids(cx, tab_id);
+            SystemWindowTabController::move_tab_to_new_window(cx, tab_id);
+            SystemWindowTabController::refresh_window_ids(cx, to_refresh);
+
+            if let Some(handle) = cx.windows().into_iter().find(|h| h.window_id() == tab_id) {
+                handle
+                    .update(cx, |_, window, _cx| window.move_tab_to_new_window())
+                    .ok();
+            }
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    fn defer_merge_all_windows(cx: &mut App, tab_id: WindowId) {
+        cx.defer(move |cx| {
+            let to_refresh = cx
+                .windows()
+                .into_iter()
+                .map(|handle| handle.window_id())
+                .collect::<Vec<_>>();
+            SystemWindowTabController::merge_all_windows(cx, tab_id);
+            SystemWindowTabController::refresh_window_ids(cx, to_refresh);
+
+            if let Some(handle) = cx.windows().into_iter().find(|h| h.window_id() == tab_id) {
+                handle
+                    .update(cx, |_, window, _cx| window.merge_all_windows())
+                    .ok();
+            }
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    fn defer_merge_window_into_target_group(
+        cx: &mut App,
+        source_window_id: WindowId,
+        source_handle: AnyWindowHandle,
+        target_window_id: WindowId,
+        ix: usize,
+    ) {
+        cx.defer(move |cx| {
+            Self::merge_window_into_target_group(
+                cx,
+                source_window_id,
+                source_handle,
+                target_window_id,
+                ix,
+            );
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    fn defer_detach_all_windows(cx: &mut App, window_ids: Vec<WindowId>) {
+        cx.defer(move |cx| {
+            let to_refresh = window_ids.clone();
+            for window_id in &window_ids {
+                SystemWindowTabController::move_tab_to_new_window(cx, *window_id);
+            }
+            SystemWindowTabController::refresh_window_ids(cx, to_refresh);
+
+            for window_id in &window_ids {
+                if let Some(handle) = cx.windows().into_iter().find(|h| h.window_id() == *window_id)
+                {
+                    handle
+                        .update(cx, |_, window, _cx| window.move_tab_to_new_window())
+                        .ok();
+                }
+            }
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    fn defer_close_windows(cx: &mut App, window_ids: Vec<WindowId>) {
+        cx.defer(move |cx| {
+            let window_ids = window_ids
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>();
+
+            let mut to_refresh = Vec::new();
+            for window_id in &window_ids {
+                to_refresh.extend(SystemWindowTabController::tab_group_window_ids(cx, *window_id));
+            }
+
+            for window_id in window_ids {
+                let Some(handle) = cx.windows().into_iter().find(|h| h.window_id() == window_id)
+                else {
+                    continue;
+                };
+
+                if let Some(workspace_window) = handle.downcast::<Workspace>() {
+                    workspace_window
+                        .update(cx, |workspace, window, cx| {
+                            workspace.close_window(&CloseWindow, window, cx);
+                        })
+                        .ok();
+                } else {
+                    handle
+                        .update(cx, |_, window, cx| {
+                            window.dispatch_action(Box::new(CloseWindow), cx);
+                        })
+                        .ok();
+                }
+            }
+
+            SystemWindowTabController::refresh_window_ids(cx, to_refresh);
+        });
     }
 
     #[cfg(target_os = "windows")]
@@ -548,21 +779,14 @@ impl SystemWindowTabs {
         let previous = cx.global::<SystemWindowTabController>().drag_preview();
         if SystemWindowTabController::set_drag_preview(cx, None) {
             if let Some(previous) = previous {
-                Self::refresh_window_ids(cx, [previous.target_window_id]);
+                SystemWindowTabController::refresh_window_ids(cx, [previous.target_window_id]);
             } else {
-                SystemWindowTabController::refresh_all_windows(cx);
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    fn refresh_window_ids(cx: &mut App, window_ids: impl IntoIterator<Item = WindowId>) {
-        let ids = window_ids
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        for handle in cx.windows() {
-            if ids.contains(&handle.window_id()) {
-                handle.update(cx, |_, window, _| window.refresh()).ok();
+                let to_refresh = cx
+                    .windows()
+                    .into_iter()
+                    .map(|handle| handle.window_id())
+                    .collect::<Vec<_>>();
+                SystemWindowTabController::refresh_window_ids(cx, to_refresh);
             }
         }
     }
@@ -751,7 +975,7 @@ impl Render for SystemWindowTabs {
                         to_refresh.push(next.target_window_id);
                     }
                     to_refresh.push(window.window_handle().window_id());
-                    Self::refresh_window_ids(cx, to_refresh);
+                    SystemWindowTabController::refresh_window_ids(cx, to_refresh);
                 }
 
                 // `on_mouse_up_out` uses this to decide whether to detach.
@@ -764,7 +988,7 @@ impl Render for SystemWindowTabs {
         tab_bar
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _event, window, cx| {
+                cx.listener(|this, _event, _window, cx| {
                     if let Some(tab) = this.last_dragged_tab.take() {
                         #[cfg(target_os = "windows")]
                         {
@@ -790,17 +1014,20 @@ impl Render for SystemWindowTabs {
                             }
 
                             // No valid merge target: detach.
-                            SystemWindowTabController::move_tab_to_new_window(cx, tab.id);
-                            SystemWindowTabController::refresh_all_windows(cx);
+                            Self::defer_move_tab_to_new_window(cx, tab.id);
+                            return;
                         }
 
-                        // Perform the platform operation to actually detach into a new group.
-                        if tab.id == window.window_handle().window_id() {
-                            window.move_tab_to_new_window();
-                        } else {
-                            tab.handle
-                                .update(cx, |_, window, _cx| window.move_tab_to_new_window())
-                                .ok();
+                        #[cfg(not(target_os = "windows"))]
+                        {
+                            // Perform the platform operation to actually detach into a new group.
+                            if tab.id == _window.window_handle().window_id() {
+                                _window.move_tab_to_new_window();
+                            } else {
+                                tab.handle
+                                    .update(cx, |_, window, _cx| window.move_tab_to_new_window())
+                                    .ok();
+                            }
                         }
                     }
                 }),
