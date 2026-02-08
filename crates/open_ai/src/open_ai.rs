@@ -16,6 +16,19 @@ use thiserror::Error;
 
 pub const OPEN_AI_API_URL: &str = "https://api.openai.com/v1";
 
+pub(crate) fn build_api_uri(api_url: &str, endpoint: &str) -> String {
+    let trimmed_url = api_url.trim_end_matches('/');
+    let endpoint = endpoint.trim_start_matches('/');
+
+    if trimmed_url.ends_with(endpoint) {
+        trimmed_url.to_string()
+    } else if trimmed_url.ends_with("/v1") {
+        format!("{trimmed_url}/{endpoint}")
+    } else {
+        format!("{trimmed_url}/v1/{endpoint}")
+    }
+}
+
 fn is_none_or_empty<T: AsRef<[U]>, U>(opt: &Option<T>) -> bool {
     opt.as_ref().is_none_or(|v| v.as_ref().is_empty())
 }
@@ -536,7 +549,7 @@ pub async fn non_streaming_completion(
     api_key: &str,
     request: Request,
 ) -> Result<Response, RequestError> {
-    let uri = format!("{api_url}/chat/completions");
+    let uri = build_api_uri(api_url, "chat/completions");
     let request_builder = HttpRequest::builder()
         .method(Method::POST)
         .uri(uri)
@@ -583,7 +596,7 @@ pub async fn stream_completion(
     api_key: &str,
     request: Request,
 ) -> Result<BoxStream<'static, Result<ResponseStreamEvent>>, RequestError> {
-    let uri = format!("{api_url}/chat/completions");
+    let uri = build_api_uri(api_url, "chat/completions");
     let request_builder = HttpRequest::builder()
         .method(Method::POST)
         .uri(uri)
@@ -677,7 +690,7 @@ pub fn embed<'a>(
     model: OpenAiEmbeddingModel,
     texts: impl IntoIterator<Item = &'a str>,
 ) -> impl 'static + Future<Output = Result<OpenAiEmbeddingResponse>> {
-    let uri = format!("{api_url}/embeddings");
+    let uri = build_api_uri(api_url, "embeddings");
 
     let request = OpenAiEmbeddingRequest {
         model,
@@ -706,5 +719,29 @@ pub fn embed<'a>(
         let response: OpenAiEmbeddingResponse =
             serde_json::from_str(&body).context("failed to parse OpenAI embedding response")?;
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_api_uri;
+
+    #[test]
+    fn build_api_uri_accepts_base_or_endpoint_url() {
+        assert_eq!(
+            build_api_uri("https://example.com", "chat/completions"),
+            "https://example.com/v1/chat/completions"
+        );
+        assert_eq!(
+            build_api_uri("https://example.com/v1", "chat/completions"),
+            "https://example.com/v1/chat/completions"
+        );
+        assert_eq!(
+            build_api_uri(
+                "https://example.com/v1/chat/completions",
+                "chat/completions"
+            ),
+            "https://example.com/v1/chat/completions"
+        );
     }
 }

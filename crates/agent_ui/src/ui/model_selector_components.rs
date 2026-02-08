@@ -48,6 +48,7 @@ pub struct ModelSelectorListItem {
     index: usize,
     title: SharedString,
     icon: Option<ModelIcon>,
+    icon_color: Option<Color>,
     is_selected: bool,
     is_focused: bool,
     is_latest: bool,
@@ -61,6 +62,7 @@ impl ModelSelectorListItem {
             index,
             title: title.into(),
             icon: None,
+            icon_color: None,
             is_selected: false,
             is_focused: false,
             is_latest: false,
@@ -76,6 +78,11 @@ impl ModelSelectorListItem {
 
     pub fn icon_path(mut self, path: SharedString) -> Self {
         self.icon = Some(ModelIcon::Path(path));
+        self
+    }
+
+    pub fn icon_color(mut self, icon_color: Color) -> Self {
+        self.icon_color = Some(icon_color);
         self
     }
 
@@ -108,12 +115,95 @@ impl ModelSelectorListItem {
     }
 }
 
+#[derive(IntoElement)]
+pub struct ModelSelectorProviderItem {
+    index: usize,
+    title: SharedString,
+    model_count: usize,
+    is_collapsible: bool,
+    is_collapsed: bool,
+    is_focused: bool,
+}
+
+impl ModelSelectorProviderItem {
+    pub fn new(index: usize, title: impl Into<SharedString>) -> Self {
+        Self {
+            index,
+            title: title.into(),
+            model_count: 0,
+            is_collapsible: false,
+            is_collapsed: false,
+            is_focused: false,
+        }
+    }
+
+    pub fn model_count(mut self, model_count: usize) -> Self {
+        self.model_count = model_count;
+        self
+    }
+
+    pub fn is_collapsible(mut self, is_collapsible: bool) -> Self {
+        self.is_collapsible = is_collapsible;
+        self
+    }
+
+    pub fn is_collapsed(mut self, is_collapsed: bool) -> Self {
+        self.is_collapsed = is_collapsed;
+        self
+    }
+
+    pub fn is_focused(mut self, is_focused: bool) -> Self {
+        self.is_focused = is_focused;
+        self
+    }
+}
+
+impl RenderOnce for ModelSelectorProviderItem {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let chevron = if self.is_collapsed {
+            IconName::ChevronRight
+        } else {
+            IconName::ChevronDown
+        };
+
+        ListItem::new(self.index)
+            .inset(true)
+            .spacing(ListItemSpacing::Sparse)
+            .toggle_state(self.is_focused)
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .children(
+                                self.is_collapsible
+                                    .then_some(
+                                        Icon::new(chevron)
+                                            .size(IconSize::XSmall)
+                                            .color(Color::Muted)
+                                            .into_any_element(),
+                                    ),
+                            )
+                            .child(Label::new(self.title).size(LabelSize::Small).color(Color::Muted)),
+                    )
+                    .child(
+                        Label::new(format!("{}", self.model_count))
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    ),
+            )
+    }
+}
+
 impl RenderOnce for ModelSelectorListItem {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let model_icon_color = if self.is_selected {
             Color::Accent
         } else {
-            Color::Muted
+            self.icon_color.unwrap_or(Color::Muted)
         };
 
         let is_favorite = self.is_favorite;

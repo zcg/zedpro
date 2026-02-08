@@ -4,10 +4,11 @@ use crate::{
     ui::ModelSelectorTooltip,
 };
 use fs::Fs;
-use gpui::{Entity, FocusHandle, SharedString};
+use gpui::{App, Entity, FocusHandle, SharedString};
+use language_models::AllLanguageModelSettings;
 use language_model::IconOrSvg;
 use picker::popover_menu::PickerPopoverMenu;
-use settings::update_settings_file;
+use settings::{Settings, update_settings_file};
 use std::sync::Arc;
 use ui::{ButtonLike, PopoverMenuHandle, TintColor, Tooltip, prelude::*};
 
@@ -15,6 +16,36 @@ pub struct AgentModelSelector {
     selector: Entity<LanguageModelSelector>,
     menu_handle: PopoverMenuHandle<LanguageModelSelector>,
     focus_handle: FocusHandle,
+}
+
+#[derive(Clone, Copy)]
+enum CompatibleApiKind {
+    OpenAi,
+    Anthropic,
+    Gemini,
+}
+
+impl CompatibleApiKind {
+    fn icon_color(self) -> Color {
+        match self {
+            CompatibleApiKind::OpenAi => Color::Info,
+            CompatibleApiKind::Anthropic => Color::Hint,
+            CompatibleApiKind::Gemini => Color::Created,
+        }
+    }
+}
+
+fn compatible_api_kind(provider_id: &str, cx: &App) -> Option<CompatibleApiKind> {
+    let settings = AllLanguageModelSettings::get_global(cx);
+    if settings.openai_compatible.contains_key(provider_id) {
+        Some(CompatibleApiKind::OpenAi)
+    } else if settings.anthropic_compatible.contains_key(provider_id) {
+        Some(CompatibleApiKind::Anthropic)
+    } else if settings.google_compatible.contains_key(provider_id) {
+        Some(CompatibleApiKind::Gemini)
+    } else {
+        None
+    }
 }
 
 impl AgentModelSelector {
@@ -98,6 +129,10 @@ impl Render for AgentModelSelector {
             .unwrap_or_else(|| SharedString::from("Select a Model"));
 
         let provider_icon = model.as_ref().map(|model| model.provider.icon());
+        let provider_icon_color = model
+            .as_ref()
+            .and_then(|model| compatible_api_kind(model.provider.id().0.as_ref(), cx))
+            .map(CompatibleApiKind::icon_color);
         let color = if self.menu_handle.is_deployed() {
             Color::Accent
         } else {
@@ -125,7 +160,7 @@ impl Render for AgentModelSelector {
                             IconOrSvg::Svg(path) => Icon::from_external_svg(path),
                             IconOrSvg::Icon(name) => Icon::new(name),
                         }
-                        .color(color)
+                        .color(provider_icon_color.unwrap_or(color))
                         .size(IconSize::XSmall),
                     )
                 })

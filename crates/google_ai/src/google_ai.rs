@@ -8,25 +8,179 @@ pub use settings::ModelMode as GoogleModelMode;
 
 pub const API_URL: &str = "https://generativelanguage.googleapis.com";
 
-pub async fn stream_generate_content(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoogleAuthMode {
+    Auto,
+    Query,
+    XGoogApiKey,
+    Bearer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoogleTransportOptions {
+    pub auth_mode: GoogleAuthMode,
+    pub api_version: Option<String>,
+}
+
+impl Default for GoogleTransportOptions {
+    fn default() -> Self {
+        Self {
+            auth_mode: GoogleAuthMode::Query,
+            api_version: Some("v1beta".to_string()),
+        }
+    }
+}
+
+fn build_model_uri(
+    api_url: &str,
+    options: &GoogleTransportOptions,
+    model_id: &str,
+    method: &str,
+    api_key: &str,
+    query_suffix: Option<&str>,
+) -> String {
+    let trimmed_url = api_url.trim_end_matches('/');
+    let api_version = options.api_version.as_deref().unwrap_or("v1beta");
+    let version_trimmed = api_version.trim_matches('/');
+    let model_endpoint = format!("models/{model_id}:{method}");
+
+    let base = if trimmed_url.ends_with(&model_endpoint) {
+        trimmed_url.to_string()
+    } else if trimmed_url.ends_with(&format!("/models/{model_id}")) {
+        format!("{trimmed_url}:{method}")
+    } else if trimmed_url.ends_with("/models") {
+        format!("{trimmed_url}/{model_id}:{method}")
+    } else if trimmed_url.ends_with(&format!("/{version_trimmed}")) {
+        format!("{trimmed_url}/{model_endpoint}")
+    } else {
+        format!("{trimmed_url}/{version_trimmed}/{model_endpoint}")
+    };
+
+    let mut query_pairs = Vec::new();
+    if matches!(options.auth_mode, GoogleAuthMode::Query) {
+        query_pairs.push(format!("key={}", api_key.trim()));
+    }
+    if let Some(query_suffix) = query_suffix {
+        query_pairs.push(query_suffix.to_string());
+    }
+
+    if query_pairs.is_empty() {
+        base
+    } else {
+        format!("{base}?{}", query_pairs.join("&"))
+    }
+}
+
+pub async fn generate_content(
+    client: &dyn HttpClient,
+    api_url: &str,
+    api_key: &str,
+    request: GenerateContentRequest,
+) -> Result<GenerateContentResponse> {
+    generate_content_with_options(
+        client,
+        api_url,
+        api_key,
+        request,
+        &GoogleTransportOptions::default(),
+    )
+    .await
+}
+
+pub async fn generate_content_with_options(
     client: &dyn HttpClient,
     api_url: &str,
     api_key: &str,
     mut request: GenerateContentRequest,
+    options: &GoogleTransportOptions,
+) -> Result<GenerateContentResponse> {
+    let api_key = api_key.trim();
+    validate_generate_content_request(&request)?;
+
+    let model_id = mem::take(&mut request.model.model_id);
+    let uri = build_model_uri(api_url, options, &model_id, "generateContent", api_key, None);
+
+    let mut request_builder = HttpRequest::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header("Content-Type", "application/json");
+
+    request_builder = match options.auth_mode {
+        GoogleAuthMode::Auto => request_builder
+            .header("X-Goog-Api-Key", api_key)
+            .header("Authorization", format!("Bearer {api_key}")),
+        GoogleAuthMode::Query => request_builder,
+        GoogleAuthMode::XGoogApiKey => request_builder.header("X-Goog-Api-Key", api_key),
+        GoogleAuthMode::Bearer => {
+            request_builder.header("Authorization", format!("Bearer {api_key}"))
+        }
+    };
+
+    let request = request_builder.body(AsyncBody::from(serde_json::to_string(&request)?))?;
+    let mut response = client.send(request).await?;
+    let mut text = String::new();
+    response.body_mut().read_to_string(&mut text).await?;
+    anyhow::ensure!(
+        response.status().is_success(),
+        "error during generateContent, status code: {:?}, body: {}",
+        response.status(),
+        text
+    );
+    serde_json::from_str::<GenerateContentResponse>(&text).map_err(Into::into)
+}
+
+pub async fn stream_generate_content(
+    client: &dyn HttpClient,
+    api_url: &str,
+    api_key: &str,
+    request: GenerateContentRequest,
+) -> Result<BoxStream<'static, Result<GenerateContentResponse>>> {
+    stream_generate_content_with_options(
+        client,
+        api_url,
+        api_key,
+        request,
+        &GoogleTransportOptions::default(),
+    )
+    .await
+}
+
+pub async fn stream_generate_content_with_options(
+    client: &dyn HttpClient,
+    api_url: &str,
+    api_key: &str,
+    mut request: GenerateContentRequest,
+    options: &GoogleTransportOptions,
 ) -> Result<BoxStream<'static, Result<GenerateContentResponse>>> {
     let api_key = api_key.trim();
     validate_generate_content_request(&request)?;
 
     // The `model` field is emptied as it is provided as a path parameter.
     let model_id = mem::take(&mut request.model.model_id);
+    let uri = build_model_uri(
+        api_url,
+        options,
+        &model_id,
+        "streamGenerateContent",
+        api_key,
+        Some("alt=sse"),
+    );
 
-    let uri =
-        format!("{api_url}/v1beta/models/{model_id}:streamGenerateContent?alt=sse&key={api_key}",);
-
-    let request_builder = HttpRequest::builder()
+    let mut request_builder = HttpRequest::builder()
         .method(Method::POST)
         .uri(uri)
         .header("Content-Type", "application/json");
+
+    request_builder = match options.auth_mode {
+        GoogleAuthMode::Auto => request_builder
+            .header("X-Goog-Api-Key", api_key)
+            .header("Authorization", format!("Bearer {api_key}")),
+        GoogleAuthMode::Query => request_builder,
+        GoogleAuthMode::XGoogApiKey => request_builder.header("X-Goog-Api-Key", api_key),
+        GoogleAuthMode::Bearer => {
+            request_builder.header("Authorization", format!("Bearer {api_key}"))
+        }
+    };
 
     let request = request_builder.body(AsyncBody::from(serde_json::to_string(&request)?))?;
     let mut response = client.send(request).await?;
@@ -69,18 +223,51 @@ pub async fn count_tokens(
     api_key: &str,
     request: CountTokensRequest,
 ) -> Result<CountTokensResponse> {
+    count_tokens_with_options(
+        client,
+        api_url,
+        api_key,
+        request,
+        &GoogleTransportOptions::default(),
+    )
+    .await
+}
+
+pub async fn count_tokens_with_options(
+    client: &dyn HttpClient,
+    api_url: &str,
+    api_key: &str,
+    request: CountTokensRequest,
+    options: &GoogleTransportOptions,
+) -> Result<CountTokensResponse> {
     validate_generate_content_request(&request.generate_content_request)?;
 
-    let uri = format!(
-        "{api_url}/v1beta/models/{model_id}:countTokens?key={api_key}",
-        model_id = &request.generate_content_request.model.model_id,
+    let uri = build_model_uri(
+        api_url,
+        options,
+        &request.generate_content_request.model.model_id,
+        "countTokens",
+        api_key,
+        None,
     );
 
     let request = serde_json::to_string(&request)?;
-    let request_builder = HttpRequest::builder()
+    let mut request_builder = HttpRequest::builder()
         .method(Method::POST)
         .uri(&uri)
         .header("Content-Type", "application/json");
+
+    request_builder = match options.auth_mode {
+        GoogleAuthMode::Auto => request_builder
+            .header("X-Goog-Api-Key", api_key.trim())
+            .header("Authorization", format!("Bearer {}", api_key.trim())),
+        GoogleAuthMode::Query => request_builder,
+        GoogleAuthMode::XGoogApiKey => request_builder.header("X-Goog-Api-Key", api_key.trim()),
+        GoogleAuthMode::Bearer => {
+            request_builder.header("Authorization", format!("Bearer {}", api_key.trim()))
+        }
+    };
+
     let http_request = request_builder.body(AsyncBody::from(request))?;
 
     let mut response = client.send(http_request).await?;
@@ -721,5 +908,43 @@ mod tests {
 
         // Empty string should still be serialized (normalization happens at a higher level)
         assert_eq!(serialized["thoughtSignature"], "");
+    }
+
+    #[test]
+    fn test_build_model_uri_accepts_base_or_endpoint_url() {
+        let options = GoogleTransportOptions::default();
+        assert_eq!(
+            build_model_uri(
+                "https://example.com",
+                &options,
+                "gemini-2.5-pro",
+                "generateContent",
+                "key",
+                None
+            ),
+            "https://example.com/v1beta/models/gemini-2.5-pro:generateContent?key=key"
+        );
+        assert_eq!(
+            build_model_uri(
+                "https://example.com/v1beta",
+                &options,
+                "gemini-2.5-pro",
+                "generateContent",
+                "key",
+                None
+            ),
+            "https://example.com/v1beta/models/gemini-2.5-pro:generateContent?key=key"
+        );
+        assert_eq!(
+            build_model_uri(
+                "https://example.com/v1beta/models/gemini-2.5-pro:generateContent",
+                &options,
+                "gemini-2.5-pro",
+                "generateContent",
+                "key",
+                None
+            ),
+            "https://example.com/v1beta/models/gemini-2.5-pro:generateContent?key=key"
+        );
     }
 }

@@ -585,7 +585,33 @@ pub async fn stream_completion(
     request: Request,
     beta_headers: Option<String>,
 ) -> Result<BoxStream<'static, Result<Event, AnthropicError>>, AnthropicError> {
-    stream_completion_with_rate_limit_info(client, api_url, api_key, request, beta_headers)
+    stream_completion_with_options(
+        client,
+        api_url,
+        api_key,
+        request,
+        beta_headers,
+        &AnthropicTransportOptions::default(),
+    )
+    .await
+}
+
+pub async fn stream_completion_with_options(
+    client: &dyn HttpClient,
+    api_url: &str,
+    api_key: &str,
+    request: Request,
+    beta_headers: Option<String>,
+    options: &AnthropicTransportOptions,
+) -> Result<BoxStream<'static, Result<Event, AnthropicError>>, AnthropicError> {
+    stream_completion_with_rate_limit_info_with_options(
+        client,
+        api_url,
+        api_key,
+        request,
+        beta_headers,
+        options,
+    )
         .await
         .map(|output| output.0)
 }
@@ -598,8 +624,28 @@ pub async fn non_streaming_completion(
     request: Request,
     beta_headers: Option<String>,
 ) -> Result<Response, AnthropicError> {
+    non_streaming_completion_with_options(
+        client,
+        api_url,
+        api_key,
+        request,
+        beta_headers,
+        &AnthropicTransportOptions::default(),
+    )
+    .await
+}
+
+pub async fn non_streaming_completion_with_options(
+    client: &dyn HttpClient,
+    api_url: &str,
+    api_key: &str,
+    request: Request,
+    beta_headers: Option<String>,
+    options: &AnthropicTransportOptions,
+) -> Result<Response, AnthropicError> {
     let (mut response, rate_limits) =
-        send_request(client, api_url, api_key, &request, beta_headers).await?;
+        send_request_with_options(client, api_url, api_key, &request, beta_headers, options)
+            .await?;
 
     if response.status().is_success() {
         let mut body = String::new();
@@ -615,21 +661,88 @@ pub async fn non_streaming_completion(
     }
 }
 
-async fn send_request(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnthropicAuthMode {
+    Auto,
+    XApiKey,
+    Bearer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnthropicTransportOptions {
+    pub auth_mode: AnthropicAuthMode,
+    pub anthropic_version: Option<String>,
+    pub allow_stream_fallback: bool,
+}
+
+impl Default for AnthropicTransportOptions {
+    fn default() -> Self {
+        Self {
+            auth_mode: AnthropicAuthMode::XApiKey,
+            anthropic_version: Some("2023-06-01".to_string()),
+            allow_stream_fallback: true,
+        }
+    }
+}
+
+fn build_messages_uri(api_url: &str) -> String {
+    let trimmed_url = api_url.trim_end_matches('/');
+    if trimmed_url.ends_with("/v1/messages") || trimmed_url.ends_with("/messages") {
+        trimmed_url.to_string()
+    } else if trimmed_url.ends_with("/v1/messages/count_tokens")
+        || trimmed_url.ends_with("/messages/count_tokens")
+    {
+        trimmed_url.trim_end_matches("/count_tokens").to_string()
+    } else if trimmed_url.ends_with("/v1") {
+        format!("{trimmed_url}/messages")
+    } else {
+        format!("{trimmed_url}/v1/messages")
+    }
+}
+
+fn build_count_tokens_uri(api_url: &str) -> String {
+    let trimmed_url = api_url.trim_end_matches('/');
+    if trimmed_url.ends_with("/v1/messages/count_tokens")
+        || trimmed_url.ends_with("/messages/count_tokens")
+    {
+        trimmed_url.to_string()
+    } else if trimmed_url.ends_with("/v1/messages") || trimmed_url.ends_with("/messages") {
+        format!("{trimmed_url}/count_tokens")
+    } else if trimmed_url.ends_with("/v1") {
+        format!("{trimmed_url}/messages/count_tokens")
+    } else {
+        format!("{trimmed_url}/v1/messages/count_tokens")
+    }
+}
+
+async fn send_request_with_options(
     client: &dyn HttpClient,
     api_url: &str,
     api_key: &str,
     request: impl Serialize,
     beta_headers: Option<String>,
+    options: &AnthropicTransportOptions,
 ) -> Result<(http::Response<AsyncBody>, RateLimitInfo), AnthropicError> {
-    let uri = format!("{api_url}/v1/messages");
+    let uri = build_messages_uri(api_url);
 
     let mut request_builder = HttpRequest::builder()
         .method(Method::POST)
         .uri(uri)
-        .header("Anthropic-Version", "2023-06-01")
-        .header("X-Api-Key", api_key.trim())
         .header("Content-Type", "application/json");
+
+    request_builder = match options.auth_mode {
+        AnthropicAuthMode::Auto => request_builder
+            .header("X-Api-Key", api_key.trim())
+            .header("Authorization", format!("Bearer {}", api_key.trim())),
+        AnthropicAuthMode::XApiKey => request_builder.header("X-Api-Key", api_key.trim()),
+        AnthropicAuthMode::Bearer => {
+            request_builder.header("Authorization", format!("Bearer {}", api_key.trim()))
+        }
+    };
+
+    if let Some(version) = &options.anthropic_version {
+        request_builder = request_builder.header("Anthropic-Version", version);
+    }
 
     if let Some(beta_headers) = beta_headers {
         request_builder = request_builder.header("Anthropic-Beta", beta_headers);
@@ -784,13 +897,39 @@ pub async fn stream_completion_with_rate_limit_info(
     ),
     AnthropicError,
 > {
+    stream_completion_with_rate_limit_info_with_options(
+        client,
+        api_url,
+        api_key,
+        request,
+        beta_headers,
+        &AnthropicTransportOptions::default(),
+    )
+    .await
+}
+
+pub async fn stream_completion_with_rate_limit_info_with_options(
+    client: &dyn HttpClient,
+    api_url: &str,
+    api_key: &str,
+    request: Request,
+    beta_headers: Option<String>,
+    options: &AnthropicTransportOptions,
+) -> Result<
+    (
+        BoxStream<'static, Result<Event, AnthropicError>>,
+        Option<RateLimitInfo>,
+    ),
+    AnthropicError,
+> {
     let request = StreamingRequest {
         base: request,
         stream: true,
     };
 
     let (response, rate_limits) =
-        send_request(client, api_url, api_key, &request, beta_headers).await?;
+        send_request_with_options(client, api_url, api_key, &request, beta_headers, options)
+            .await?;
 
     if response.status().is_success() {
         let reader = BufReader::new(response.into_body());
@@ -1195,14 +1334,43 @@ pub async fn count_tokens(
     api_key: &str,
     request: CountTokensRequest,
 ) -> Result<CountTokensResponse, AnthropicError> {
-    let uri = format!("{api_url}/v1/messages/count_tokens");
+    count_tokens_with_options(
+        client,
+        api_url,
+        api_key,
+        request,
+        &AnthropicTransportOptions::default(),
+    )
+    .await
+}
 
-    let request_builder = HttpRequest::builder()
+pub async fn count_tokens_with_options(
+    client: &dyn HttpClient,
+    api_url: &str,
+    api_key: &str,
+    request: CountTokensRequest,
+    options: &AnthropicTransportOptions,
+) -> Result<CountTokensResponse, AnthropicError> {
+    let uri = build_count_tokens_uri(api_url);
+
+    let mut request_builder = HttpRequest::builder()
         .method(Method::POST)
         .uri(uri)
-        .header("Anthropic-Version", "2023-06-01")
-        .header("X-Api-Key", api_key.trim())
         .header("Content-Type", "application/json");
+
+    request_builder = match options.auth_mode {
+        AnthropicAuthMode::Auto => request_builder
+            .header("X-Api-Key", api_key.trim())
+            .header("Authorization", format!("Bearer {}", api_key.trim())),
+        AnthropicAuthMode::XApiKey => request_builder.header("X-Api-Key", api_key.trim()),
+        AnthropicAuthMode::Bearer => {
+            request_builder.header("Authorization", format!("Bearer {}", api_key.trim()))
+        }
+    };
+
+    if let Some(version) = &options.anthropic_version {
+        request_builder = request_builder.header("Anthropic-Version", version);
+    }
 
     let serialized_request =
         serde_json::to_string(&request).map_err(AnthropicError::SerializeRequest)?;
@@ -1262,4 +1430,28 @@ fn test_match_window_exceeded() {
         message: "prompt is too long: invalid tokens".to_string(),
     };
     assert_eq!(error.match_window_exceeded(), None);
+}
+
+#[test]
+fn test_build_anthropic_uris_accept_base_or_endpoint_url() {
+    assert_eq!(
+        build_messages_uri("https://example.com"),
+        "https://example.com/v1/messages"
+    );
+    assert_eq!(
+        build_messages_uri("https://example.com/v1"),
+        "https://example.com/v1/messages"
+    );
+    assert_eq!(
+        build_messages_uri("https://example.com/v1/messages"),
+        "https://example.com/v1/messages"
+    );
+    assert_eq!(
+        build_count_tokens_uri("https://example.com/v1/messages"),
+        "https://example.com/v1/messages/count_tokens"
+    );
+    assert_eq!(
+        build_count_tokens_uri("https://example.com/v1/messages/count_tokens"),
+        "https://example.com/v1/messages/count_tokens"
+    );
 }

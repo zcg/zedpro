@@ -68,6 +68,8 @@ pub struct Picker<D: PickerDelegate> {
     max_height: Option<Length>,
     /// An external control to display a scrollbar in the `Picker`.
     show_scrollbar: bool,
+    /// Whether to use small-width scrollbars when rendering custom picker scrollbars.
+    use_small_scrollbar: bool,
     /// Whether the `Picker` is rendered as a self-contained modal.
     ///
     /// Set this to `false` when rendering the `Picker` as part of a larger modal.
@@ -339,6 +341,7 @@ impl<D: PickerDelegate> Picker<D> {
             widest_item: None,
             max_height: Some(rems(24.).into()),
             show_scrollbar: false,
+            use_small_scrollbar: true,
             is_modal: true,
             picker_bounds: Rc::new(Cell::new(None)),
             item_bounds: Rc::new(RefCell::new(HashMap::default())),
@@ -378,6 +381,11 @@ impl<D: PickerDelegate> Picker<D> {
 
     pub fn show_scrollbar(mut self, show_scrollbar: bool) -> Self {
         self.show_scrollbar = show_scrollbar;
+        self
+    }
+
+    pub fn scrollbar_width_sm(mut self, use_small_scrollbar: bool) -> Self {
+        self.use_small_scrollbar = use_small_scrollbar;
         self
     }
 
@@ -628,7 +636,8 @@ impl<D: PickerDelegate> Picker<D> {
             self.set_query(&update_query, window, cx);
             self.set_selected_index(0, Some(Direction::Down), false, window, cx);
         } else {
-            self.delegate.confirm(secondary, window, cx)
+            self.delegate.confirm(secondary, window, cx);
+            self.matches_updated(window, cx);
         }
     }
 
@@ -918,8 +927,11 @@ impl<D: PickerDelegate> Render for Picker<D> {
                         .children(self.delegate.render_header(window, cx))
                         .child(self.render_element_container(cx))
                         .when(self.show_scrollbar, |this| {
-                            let base_scrollbar_config =
-                                Scrollbars::new(ScrollAxes::Vertical).width_sm();
+                            let base_scrollbar_config = if self.use_small_scrollbar {
+                                Scrollbars::new(ScrollAxes::Vertical).width_sm()
+                            } else {
+                                Scrollbars::new(ScrollAxes::Vertical)
+                            };
 
                             this.map(|this| match &self.element_container {
                                 ElementContainer::List(state) => this.custom_scrollbars(

@@ -140,7 +140,7 @@ impl LanguageModelProvider for OpenAiCompatibleLanguageModelProvider {
     }
 
     fn icon(&self) -> IconOrSvg {
-        IconOrSvg::Icon(IconName::AiOpenAiCompat)
+        IconOrSvg::Icon(IconName::AiOpenAi)
     }
 
     fn default_model(&self, cx: &App) -> Option<Arc<dyn LanguageModel>> {

@@ -2,6 +2,7 @@ mod add_llm_provider_modal;
 pub mod configure_context_server_modal;
 mod configure_context_server_tools_modal;
 mod manage_profiles_modal;
+mod test_llm_model_modal;
 mod tool_picker;
 
 use std::{ops::Range, sync::Arc};
@@ -51,6 +52,7 @@ pub(crate) use manage_profiles_modal::ManageProfilesModal;
 use crate::agent_configuration::add_llm_provider_modal::{
     AddLlmProviderModal, LlmCompatibleProvider,
 };
+use crate::agent_configuration::test_llm_model_modal::ModelAvailabilityTestModal;
 
 pub struct AgentConfiguration {
     fs: Arc<dyn Fs>,
@@ -119,7 +121,17 @@ impl AgentConfiguration {
     }
 
     fn build_provider_configuration_views(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let providers = LanguageModelRegistry::read_global(cx).visible_providers();
+        let mut providers = LanguageModelRegistry::read_global(cx).visible_providers();
+        providers.sort_by_cached_key(|provider| {
+            (
+                if is_removable_provider(&provider.id(), cx) {
+                    0
+                } else {
+                    1
+                },
+                provider.name().0.to_string().to_lowercase(),
+            )
+        });
         for provider in providers {
             self.add_provider_configuration_view(&provider, window, cx);
         }
@@ -199,9 +211,13 @@ impl AgentConfiguration {
         provider: &Arc<dyn LanguageModelProvider>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let provider_id = provider.id().0;
+        let provider_key: Arc<str> = Arc::from(provider.id().0.as_ref());
+        let provider_id = provider_key.as_ref();
         let provider_name = provider.name().0;
         let provider_id_string = SharedString::from(format!("provider-disclosure-{provider_id}"));
+        let is_third_party = is_removable_provider(&provider.id(), cx);
+        let provider_protocol = compatible_provider_protocol(&provider_key, cx);
+        let provider_models = provider_models_summary(&provider_key, cx);
 
         let configuration_view = self
             .configuration_views_by_provider
@@ -275,6 +291,7 @@ impl AgentConfiguration {
                                             .w_full()
                                             .gap_1()
                                             .child(Label::new(provider_name.clone()))
+                                            .child(provider_origin_chip(is_third_party, cx))
                                             .map(|this| {
                                                 if is_zed_provider && is_signed_in {
                                                     this.child(
@@ -324,6 +341,56 @@ impl AgentConfiguration {
                             "No configuration view for {provider_name}",
                         ))),
                     })
+                    .when(
+                        is_expanded && is_removable_provider(&provider.id(), cx),
+                        |parent| {
+                            parent.child(self.render_provider_models_section(
+                                provider_id,
+                                provider_models.clone(),
+                                cx,
+                            ))
+                        },
+                    )
+                    .when(
+                        is_expanded
+                            && is_removable_provider(&provider.id(), cx)
+                            && provider_protocol.is_some(),
+                        |parent| {
+                            parent.child(
+                                Button::new(
+                                    SharedString::from(format!("edit-provider-{provider_id}")),
+                                    "Edit Models",
+                                )
+                                .full_width()
+                                .style(ButtonStyle::Outlined)
+                                .icon_position(IconPosition::Start)
+                                .icon(IconName::Pencil)
+                                .icon_size(IconSize::Small)
+                                .icon_color(Color::Muted)
+                                .label_size(LabelSize::Small)
+                                .on_click(cx.listener({
+                                    let workspace = self.workspace.clone();
+                                    let provider_id: Arc<str> = Arc::from(provider_id);
+                                    let protocol = provider_protocol;
+                                    move |_this, _event, window, cx| {
+                                        if let Some(protocol) = protocol {
+                                            workspace
+                                                .update(cx, |workspace, cx| {
+                                                    AddLlmProviderModal::toggle_edit(
+                                                        provider_id.clone(),
+                                                        protocol,
+                                                        workspace,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                })
+                                                .log_err();
+                                        }
+                                    }
+                                })),
+                            )
+                        },
+                    )
                     .when(is_expanded && provider.is_authenticated(cx), |parent| {
                         parent.child(
                             Button::new(
@@ -375,6 +442,144 @@ impl AgentConfiguration {
             )
     }
 
+    fn render_provider_models_section(
+        &self,
+        provider_id: &str,
+        model_summaries: Vec<ProviderModelSummary>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        v_flex()
+            .gap_1()
+            .child(Label::new("Configured Models").size(LabelSize::Small))
+            .children(if model_summaries.is_empty() {
+                vec![
+                    Label::new("No models configured.")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted)
+                        .into_any_element(),
+                ]
+            } else {
+                model_summaries
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, model)| {
+                        let protocol_icon = match model.protocol {
+                            LlmCompatibleProvider::OpenAi => IconName::AiOpenAi,
+                            LlmCompatibleProvider::Anthropic => IconName::AiAnthropic,
+                            LlmCompatibleProvider::Gemini => IconName::AiGoogle,
+                        };
+                        let workspace = self.workspace.clone();
+                        let provider_id: Arc<str> = Arc::from(provider_id);
+                        let model_name = model.model_name.clone();
+                        let protocol = model.protocol;
+
+                        div()
+                            .id(SharedString::from(format!(
+                                "provider-model-summary-{}-{}",
+                                provider_id, index
+                            )))
+                            .p_1()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(cx.theme().colors().border)
+                            .child(
+                                h_flex()
+                                    .gap_1p5()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        h_flex()
+                                            .gap_1p5()
+                                            .items_center()
+                                            .min_w_0()
+                                            .flex_1()
+                                            .child(Icon::new(protocol_icon).size(IconSize::Small))
+                                            .child(
+                                                IconButton::new(
+                                                    SharedString::from(format!(
+                                                        "provider-model-tooltip-{}-{}",
+                                                        provider_id, index
+                                                    )),
+                                                    IconName::Info,
+                                                )
+                                                    .icon_size(IconSize::XSmall)
+                                                    .icon_color(Color::Muted)
+                                                    .style(ButtonStyle::Transparent)
+                                                    .size(ButtonSize::None)
+                                                    .tooltip(Tooltip::text(
+                                                        model.details.clone(),
+                                                    )),
+                                            )
+                                            .child(
+                                                Label::new(model.summary)
+                                                    .size(LabelSize::Small)
+                                                    .truncate(),
+                                            ),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .child(
+                                                Button::new(
+                                                    SharedString::from(format!(
+                                                        "edit-provider-model-{}-{}",
+                                                        provider_id, index
+                                                    )),
+                                                    "Edit",
+                                                )
+                                                .style(ButtonStyle::Outlined)
+                                                .label_size(LabelSize::Small)
+                                                .on_click(cx.listener({
+                                                    let workspace = workspace.clone();
+                                                    let provider_id = provider_id.clone();
+                                                    move |_this, _event, window, cx| {
+                                                        workspace
+                                                            .update(cx, |workspace, cx| {
+                                                                AddLlmProviderModal::toggle_edit(
+                                                                    provider_id.clone(),
+                                                                    protocol,
+                                                                    workspace,
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            })
+                                                            .log_err();
+                                                    }
+                                                })),
+                                            )
+                                            .child(
+                                        Button::new(
+                                            SharedString::from(format!(
+                                                "test-provider-model-{}-{}",
+                                                provider_id, index
+                                            )),
+                                            "Test Availability",
+                                        )
+                                        .style(ButtonStyle::Outlined)
+                                        .label_size(LabelSize::Small)
+                                        .on_click(cx.listener(move |_this, _event, window, cx| {
+                                            workspace
+                                                .update(cx, |workspace, cx| {
+                                                    ModelAvailabilityTestModal::toggle(
+                                                        provider_id.clone(),
+                                                        model_name.clone(),
+                                                        protocol,
+                                                        workspace,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                })
+                                                .log_err();
+                                        })),
+                                            ),
+                                    ),
+                            )
+                            .into_any_element()
+                    })
+                    .collect()
+            })
+    }
+
     fn delete_provider(
         &mut self,
         provider: Arc<dyn LanguageModelProvider>,
@@ -389,13 +594,30 @@ impl AgentConfiguration {
                 update_settings_file(fs.clone(), cx, {
                     let provider_id = provider_id.clone();
                     move |settings, _| {
+                        let key_to_remove: Arc<str> = Arc::from(provider_id.0.as_ref());
+
                         if let Some(ref mut openai_compatible) = settings
                             .language_models
                             .as_mut()
                             .and_then(|lm| lm.openai_compatible.as_mut())
                         {
-                            let key_to_remove: Arc<str> = Arc::from(provider_id.0.as_ref());
                             openai_compatible.remove(&key_to_remove);
+                        }
+
+                        if let Some(ref mut anthropic_compatible) = settings
+                            .language_models
+                            .as_mut()
+                            .and_then(|lm| lm.anthropic_compatible.as_mut())
+                        {
+                            anthropic_compatible.remove(&key_to_remove);
+                        }
+
+                        if let Some(ref mut google_compatible) = settings
+                            .language_models
+                            .as_mut()
+                            .and_then(|lm| lm.google_compatible.as_mut())
+                        {
+                            google_compatible.remove(&key_to_remove);
                         }
                     }
                 });
@@ -421,52 +643,43 @@ impl AgentConfiguration {
         &mut self,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let providers = LanguageModelRegistry::read_global(cx).visible_providers();
-
-        let popover_menu = PopoverMenu::new("add-provider-popover")
-            .trigger(
-                Button::new("add-provider", "Add Provider")
-                    .style(ButtonStyle::Outlined)
-                    .icon_position(IconPosition::Start)
-                    .icon(IconName::Plus)
-                    .icon_size(IconSize::Small)
-                    .icon_color(Color::Muted)
-                    .label_size(LabelSize::Small),
+        let mut providers = LanguageModelRegistry::read_global(cx).visible_providers();
+        providers.sort_by_cached_key(|provider| {
+            (
+                if is_removable_provider(&provider.id(), cx) {
+                    0
+                } else {
+                    1
+                },
+                provider.name().0.to_string().to_lowercase(),
             )
-            .menu({
-                let workspace = self.workspace.clone();
-                move |window, cx| {
-                    Some(ContextMenu::build(window, cx, |menu, _window, _cx| {
-                        menu.header("Compatible APIs").entry("OpenAI", None, {
-                            let workspace = workspace.clone();
-                            move |window, cx| {
-                                workspace
-                                    .update(cx, |workspace, cx| {
-                                        AddLlmProviderModal::toggle(
-                                            LlmCompatibleProvider::OpenAi,
-                                            workspace,
-                                            window,
-                                            cx,
-                                        );
-                                    })
-                                    .log_err();
-                            }
+        });
+
+        let add_provider_button = {
+            let workspace = self.workspace.clone();
+            Button::new("add-provider", "Add Provider")
+                .style(ButtonStyle::Outlined)
+                .icon_position(IconPosition::Start)
+                .icon(IconName::Plus)
+                .icon_size(IconSize::Small)
+                .icon_color(Color::Muted)
+                .label_size(LabelSize::Small)
+                .on_click(move |_event, window, cx| {
+                    workspace
+                        .update(cx, |workspace, cx| {
+                            AddLlmProviderModal::toggle(workspace, window, cx);
                         })
-                    }))
-                }
-            })
-            .anchor(gpui::Corner::TopRight)
-            .offset(gpui::Point {
-                x: px(0.0),
-                y: px(2.0),
-            });
+                        .log_err();
+                })
+                .into_any_element()
+        };
 
         v_flex()
             .w_full()
             .child(self.render_section_title(
                 "LLM Providers",
                 "Add at least one provider to use AI-powered features with Zed's native agent.",
-                popover_menu.into_any_element(),
+                add_provider_button,
             ))
             .child(
                 div()
@@ -1486,13 +1699,125 @@ fn find_text_in_buffer(
     }
 }
 
-// OpenAI-compatible providers are user-configured and can be removed,
+// Third-party providers are user-configured and can be removed,
 // whereas built-in providers (like Anthropic, OpenAI, Google, etc.) can't.
 //
-// If in the future we have more "API-compatible-type" of providers,
+// If in the future we support more third-party provider types,
 // they should be included here as removable providers.
 fn is_removable_provider(provider_id: &LanguageModelProviderId, cx: &App) -> bool {
-    AllLanguageModelSettings::get_global(cx)
+    let settings = AllLanguageModelSettings::get_global(cx);
+    settings
         .openai_compatible
         .contains_key(provider_id.0.as_ref())
+        || settings
+            .anthropic_compatible
+            .contains_key(provider_id.0.as_ref())
+        || settings
+            .google_compatible
+            .contains_key(provider_id.0.as_ref())
+}
+
+fn provider_origin_chip(is_third_party: bool, cx: &App) -> impl IntoElement {
+    if is_third_party {
+        Chip::new("Third-party")
+            .label_color(Color::Accent)
+            .bg_color(cx.theme().colors().text_accent.opacity(0.15))
+            .into_any_element()
+    } else {
+        Chip::new("Built-in")
+            .label_color(Color::Muted)
+            .bg_color(cx.theme().colors().element_hover.opacity(0.55))
+            .into_any_element()
+    }
+}
+
+fn compatible_provider_protocol(
+    provider_id: &Arc<str>,
+    cx: &App,
+) -> Option<LlmCompatibleProvider> {
+    let settings = AllLanguageModelSettings::get_global(cx);
+    if settings.openai_compatible.contains_key(provider_id.as_ref()) {
+        Some(LlmCompatibleProvider::OpenAi)
+    } else if settings
+        .anthropic_compatible
+        .contains_key(provider_id.as_ref())
+    {
+        Some(LlmCompatibleProvider::Anthropic)
+    } else if settings
+        .google_compatible
+        .contains_key(provider_id.as_ref())
+    {
+        Some(LlmCompatibleProvider::Gemini)
+    } else {
+        None
+    }
+}
+
+#[derive(Clone)]
+struct ProviderModelSummary {
+    model_name: SharedString,
+    protocol: LlmCompatibleProvider,
+    summary: SharedString,
+    details: SharedString,
+}
+
+fn provider_models_summary(provider_id: &Arc<str>, cx: &App) -> Vec<ProviderModelSummary> {
+    let settings = AllLanguageModelSettings::get_global(cx);
+    if let Some(provider) = settings.openai_compatible.get(provider_id.as_ref()) {
+        provider
+            .available_models
+            .iter()
+            .map(|model| {
+                ProviderModelSummary {
+                    model_name: SharedString::from(model.name.clone()),
+                    protocol: LlmCompatibleProvider::OpenAi,
+                    summary: SharedString::from(model.name.clone()),
+                    details: SharedString::from(format!(
+                        "Protocol: OpenAI\nmax_tokens={}\nmax_output_tokens={}\nmax_completion_tokens={}\ntools={}\nimages={}\nchat_completions={}",
+                        model.max_tokens,
+                        model.max_output_tokens.unwrap_or(0),
+                        model.max_completion_tokens.unwrap_or(0),
+                        model.capabilities.tools,
+                        model.capabilities.images,
+                        model.capabilities.chat_completions
+                    )),
+                }
+            })
+            .collect()
+    } else if let Some(provider) = settings.anthropic_compatible.get(provider_id.as_ref()) {
+        provider
+            .available_models
+            .iter()
+            .map(|model| {
+                ProviderModelSummary {
+                    model_name: SharedString::from(model.name.clone()),
+                    protocol: LlmCompatibleProvider::Anthropic,
+                    summary: SharedString::from(model.name.clone()),
+                    details: SharedString::from(format!(
+                        "Protocol: Anthropic\nmax_tokens={}\nmax_output_tokens={}",
+                        model.max_tokens,
+                        model.max_output_tokens.unwrap_or(0)
+                    )),
+                }
+            })
+            .collect()
+    } else if let Some(provider) = settings.google_compatible.get(provider_id.as_ref()) {
+        provider
+            .available_models
+            .iter()
+            .map(|model| {
+                ProviderModelSummary {
+                    model_name: SharedString::from(model.name.clone()),
+                    protocol: LlmCompatibleProvider::Gemini,
+                    summary: SharedString::from(model.name.clone()),
+                    details: SharedString::from(format!(
+                        "Protocol: Gemini\nmax_tokens={}",
+                        model.max_tokens
+                    )),
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    }
 }

@@ -256,7 +256,7 @@ pub async fn stream_response(
     api_key: &str,
     request: Request,
 ) -> Result<BoxStream<'static, Result<StreamEvent>>, RequestError> {
-    let uri = format!("{api_url}/responses");
+    let uri = crate::build_api_uri(api_url, "responses");
     let request_builder = HttpRequest::builder()
         .method(Method::POST)
         .uri(uri)

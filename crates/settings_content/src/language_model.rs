@@ -10,9 +10,11 @@ use std::sync::Arc;
 #[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
 pub struct AllLanguageModelSettingsContent {
     pub anthropic: Option<AnthropicSettingsContent>,
+    pub anthropic_compatible: Option<HashMap<Arc<str>, AnthropicCompatibleSettingsContent>>,
     pub bedrock: Option<AmazonBedrockSettingsContent>,
     pub deepseek: Option<DeepseekSettingsContent>,
     pub google: Option<GoogleSettingsContent>,
+    pub google_compatible: Option<HashMap<Arc<str>, GoogleCompatibleSettingsContent>>,
     pub lmstudio: Option<LmStudioSettingsContent>,
     pub mistral: Option<MistralSettingsContent>,
     pub ollama: Option<OllamaSettingsContent>,
@@ -30,6 +32,31 @@ pub struct AllLanguageModelSettingsContent {
 pub struct AnthropicSettingsContent {
     pub api_url: Option<String>,
     pub available_models: Option<Vec<AnthropicAvailableModel>>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+pub struct AnthropicCompatibleSettingsContent {
+    pub api_url: String,
+    pub available_models: Vec<AnthropicAvailableModel>,
+    pub request_compat: Option<AnthropicRequestCompatContent>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+pub struct AnthropicRequestCompatContent {
+    pub auth_mode: Option<AnthropicAuthMode>,
+    pub anthropic_version: Option<String>,
+    pub allow_stream_fallback: Option<bool>,
+    pub allow_count_tokens_fallback: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+#[serde(rename_all = "snake_case")]
+pub enum AnthropicAuthMode {
+    Auto,
+    XApiKey,
+    Bearer,
 }
 
 #[with_fallible_options]
@@ -303,6 +330,32 @@ pub struct VercelAvailableModel {
 pub struct GoogleSettingsContent {
     pub api_url: Option<String>,
     pub available_models: Option<Vec<GoogleAvailableModel>>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+pub struct GoogleCompatibleSettingsContent {
+    pub api_url: String,
+    pub available_models: Vec<GoogleAvailableModel>,
+    pub request_compat: Option<GoogleRequestCompatContent>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+pub struct GoogleRequestCompatContent {
+    pub auth_mode: Option<GoogleAuthMode>,
+    pub api_version: Option<String>,
+    pub allow_stream_fallback: Option<bool>,
+    pub allow_count_tokens_fallback: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+#[serde(rename_all = "snake_case")]
+pub enum GoogleAuthMode {
+    Auto,
+    Query,
+    XGoogApiKey,
+    Bearer,
 }
 
 #[with_fallible_options]

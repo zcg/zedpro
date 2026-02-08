@@ -14,6 +14,7 @@ use gpui::{
     WeakEntity,
 };
 use itertools::Itertools;
+use language_models::AllLanguageModelSettings;
 use ordered_float::OrderedFloat;
 use picker::{Picker, PickerDelegate};
 use settings::{Settings, SettingsStore};
@@ -21,7 +22,10 @@ use ui::{DocumentationAside, DocumentationSide, IntoElement, prelude::*};
 use util::ResultExt;
 use zed_actions::agent::OpenSettings;
 
-use crate::ui::{HoldForDefault, ModelSelectorFooter, ModelSelectorHeader, ModelSelectorListItem};
+use crate::ui::{
+    HoldForDefault, ModelSelectorFooter, ModelSelectorHeader, ModelSelectorListItem,
+    ModelSelectorProviderItem,
+};
 
 pub type AcpModelSelector = Picker<AcpModelPickerDelegate>;
 
@@ -37,12 +41,19 @@ pub fn acp_model_selector(
         AcpModelPickerDelegate::new(selector, agent_server, fs, focus_handle, window, cx);
     Picker::list(delegate, window, cx)
         .show_scrollbar(true)
+        .scrollbar_width_sm(false)
         .width(rems(20.))
         .max_height(Some(rems(20.).into()))
 }
 
 enum AcpModelPickerEntry {
     Separator(SharedString),
+    Provider {
+        title: SharedString,
+        model_count: usize,
+        is_collapsible: bool,
+        is_collapsed: bool,
+    },
     Model(AgentModelInfo, bool),
 }
 
@@ -56,6 +67,8 @@ pub struct AcpModelPickerDelegate {
     selected_description: Option<(usize, SharedString, bool)>,
     selected_model: Option<AgentModelInfo>,
     favorites: HashSet<ModelId>,
+    collapsed_groups: HashSet<SharedString>,
+    current_query: String,
     _refresh_models_task: Task<()>,
     _settings_subscription: Subscription,
     focus_handle: FocusHandle,
@@ -90,7 +103,16 @@ impl AcpModelPickerDelegate {
 
                         this.update_in(cx, |this, window, cx| {
                             this.delegate.models = models.ok();
+                            if let Some(models) = this.delegate.models.as_mut() {
+                                sort_grouped_models_for_picker(models, cx);
+                            }
                             this.delegate.selected_model = selected_model.ok();
+                            this.delegate.collapsed_groups = this
+                                .delegate
+                                .models
+                                .as_ref()
+                                .map(default_collapsed_groups)
+                                .unwrap_or_default();
                             this.refresh(window, cx)
                         })
                     }
@@ -128,6 +150,8 @@ impl AcpModelPickerDelegate {
             selected_index: 0,
             selected_description: None,
             favorites,
+            collapsed_groups: HashSet::default(),
+            current_query: String::new(),
             _refresh_models_task: refresh_models_task,
             _settings_subscription: settings_subscription,
             focus_handle,
@@ -221,6 +245,7 @@ impl PickerDelegate for AcpModelPickerDelegate {
     ) -> bool {
         match self.filtered_entries.get(ix) {
             Some(AcpModelPickerEntry::Model(_, _)) => true,
+            Some(AcpModelPickerEntry::Provider { is_collapsible, .. }) => *is_collapsible,
             Some(AcpModelPickerEntry::Separator(_)) | None => false,
         }
     }
@@ -236,24 +261,43 @@ impl PickerDelegate for AcpModelPickerDelegate {
         cx: &mut Context<Picker<Self>>,
     ) -> Task<()> {
         let favorites = self.favorites.clone();
+        let query_for_state = query.clone();
 
         cx.spawn_in(window, async move |this, cx| {
+            let query_is_empty = query_for_state.trim().is_empty();
             let filtered_models = match this
-                .read_with(cx, |this, cx| {
-                    this.delegate.models.clone().map(move |models| {
-                        fuzzy_search(models, query, cx.background_executor().clone())
-                    })
-                })
+                .read_with(cx, |this, _| this.delegate.models.clone())
                 .ok()
                 .flatten()
             {
-                Some(task) => task.await,
+                Some(models) if query_is_empty => models,
+                Some(models) => {
+                    fuzzy_search(
+                        models,
+                        query_for_state.clone(),
+                        cx.background_executor().clone(),
+                    )
+                    .await
+                }
                 None => AgentModelList::Flat(vec![]),
             };
 
             this.update_in(cx, |this, window, cx| {
+                this.delegate.current_query = query_for_state.clone();
+                let mut filtered_models = filtered_models;
+                sort_grouped_models_for_picker(&mut filtered_models, cx);
+                let collapsed_groups_for_render = if query_is_empty {
+                    this.delegate.collapsed_groups.clone()
+                } else {
+                    HashSet::default()
+                };
                 this.delegate.filtered_entries =
-                    info_list_to_picker_entries(filtered_models, &favorites);
+                    info_list_to_picker_entries_with_collapse(
+                        filtered_models,
+                        &favorites,
+                        &collapsed_groups_for_render,
+                        query_is_empty,
+                    );
                 // Finds the currently selected model in the list
                 let new_index = this
                     .delegate
@@ -268,7 +312,7 @@ impl PickerDelegate for AcpModelPickerDelegate {
                             }
                         })
                     })
-                    .unwrap_or(0);
+                    .unwrap_or_else(|| first_selectable_index(&this.delegate.filtered_entries));
                 this.set_selected_index(new_index, Some(picker::Direction::Down), true, window, cx);
                 cx.notify();
             })
@@ -277,36 +321,43 @@ impl PickerDelegate for AcpModelPickerDelegate {
     }
 
     fn confirm(&mut self, _secondary: bool, window: &mut Window, cx: &mut Context<Picker<Self>>) {
-        if let Some(AcpModelPickerEntry::Model(model_info, _)) =
-            self.filtered_entries.get(self.selected_index)
-        {
-            if window.modifiers().secondary() {
-                let default_model = self.agent_server.default_model(cx);
-                let is_default = default_model.as_ref() == Some(&model_info.id);
-
-                self.agent_server.set_default_model(
-                    if is_default {
-                        None
-                    } else {
-                        Some(model_info.id.clone())
-                    },
-                    self.fs.clone(),
-                    cx,
-                );
+        match self.filtered_entries.get(self.selected_index) {
+            Some(AcpModelPickerEntry::Provider { title, .. }) => {
+                let title = title.clone();
+                self.toggle_group_collapse(&title, window, cx);
             }
+            Some(AcpModelPickerEntry::Model(model_info, _)) => {
+                let model_info = model_info.clone();
+                if window.modifiers().secondary() {
+                    let default_model = self.agent_server.default_model(cx);
+                    let is_default = default_model.as_ref() == Some(&model_info.id);
 
-            self.selector
-                .select_model(model_info.id.clone(), cx)
-                .detach_and_log_err(cx);
-            self.selected_model = Some(model_info.clone());
-            let current_index = self.selected_index;
-            self.set_selected_index(current_index, window, cx);
+                    self.agent_server.set_default_model(
+                        if is_default {
+                            None
+                        } else {
+                            Some(model_info.id.clone())
+                        },
+                        self.fs.clone(),
+                        cx,
+                    );
+                }
 
-            cx.emit(DismissEvent);
+                self.selector
+                    .select_model(model_info.id.clone(), cx)
+                    .detach_and_log_err(cx);
+                self.selected_model = Some(model_info.clone());
+                let current_index = self.selected_index;
+                self.set_selected_index(current_index, window, cx);
+
+                cx.emit(DismissEvent);
+            }
+            Some(AcpModelPickerEntry::Separator(_)) | None => {}
         }
     }
 
     fn dismissed(&mut self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
+        self.current_query.clear();
         cx.defer_in(window, |picker, window, cx| {
             picker.set_query("", window, cx);
         });
@@ -323,6 +374,19 @@ impl PickerDelegate for AcpModelPickerDelegate {
             AcpModelPickerEntry::Separator(title) => {
                 Some(ModelSelectorHeader::new(title, ix > 1).into_any_element())
             }
+            AcpModelPickerEntry::Provider {
+                title,
+                model_count,
+                is_collapsible,
+                is_collapsed,
+            } => Some(
+                ModelSelectorProviderItem::new(ix, title.clone())
+                    .model_count(*model_count)
+                    .is_collapsible(*is_collapsible)
+                    .is_collapsed(*is_collapsed)
+                    .is_focused(selected)
+                    .into_any_element(),
+            ),
             AcpModelPickerEntry::Model(model_info, is_favorite) => {
                 let is_selected = Some(model_info) == self.selected_model.as_ref();
                 let default_model = self.agent_server.default_model(cx);
@@ -477,6 +541,202 @@ fn info_list_to_picker_entries(
     entries
 }
 
+fn info_list_to_picker_entries_with_collapse(
+    model_list: AgentModelList,
+    favorites: &HashSet<ModelId>,
+    collapsed_groups: &HashSet<SharedString>,
+    enable_group_collapse: bool,
+) -> Vec<AcpModelPickerEntry> {
+    if !enable_group_collapse {
+        return info_list_to_picker_entries(model_list, favorites);
+    }
+
+    let all_models: Vec<_> = match &model_list {
+        AgentModelList::Flat(list) => list.iter().collect(),
+        AgentModelList::Grouped(index_map) => index_map.values().flatten().collect(),
+    };
+
+    let favorite_models: Vec<_> = all_models
+        .iter()
+        .filter(|m| favorites.contains(&m.id))
+        .unique_by(|m| &m.id)
+        .collect();
+
+    let mut entries = Vec::new();
+    if !favorite_models.is_empty() {
+        entries.push(AcpModelPickerEntry::Separator("Favorite".into()));
+        for model in favorite_models {
+            entries.push(AcpModelPickerEntry::Model((*model).clone(), true));
+        }
+    }
+
+    match model_list {
+        AgentModelList::Flat(list) => {
+            if !entries.is_empty() {
+                entries.push(AcpModelPickerEntry::Separator("All".into()));
+            }
+            for model in list {
+                let is_favorite = favorites.contains(&model.id);
+                entries.push(AcpModelPickerEntry::Model(model, is_favorite));
+            }
+            entries
+        }
+        AgentModelList::Grouped(index_map) => {
+            for (group_name, models) in index_map {
+                let title = group_name.0;
+                let model_count = models.len();
+                let is_collapsible = true;
+                let is_collapsed = is_collapsible && collapsed_groups.contains(&title);
+
+                entries.push(AcpModelPickerEntry::Provider {
+                    title: title.clone(),
+                    model_count,
+                    is_collapsible,
+                    is_collapsed,
+                });
+
+                if is_collapsed {
+                    continue;
+                }
+
+                for model in models {
+                    let is_favorite = favorites.contains(&model.id);
+                    entries.push(AcpModelPickerEntry::Model(model, is_favorite));
+                }
+            }
+
+            entries
+        }
+    }
+}
+
+fn default_collapsed_groups(model_list: &AgentModelList) -> HashSet<SharedString> {
+    match model_list {
+        AgentModelList::Flat(_) => HashSet::default(),
+        AgentModelList::Grouped(index_map) => index_map
+            .iter()
+            .map(|(group_name, _)| group_name.0.clone())
+            .collect(),
+    }
+}
+
+fn first_selectable_index(entries: &[AcpModelPickerEntry]) -> usize {
+    entries
+        .iter()
+        .position(|entry| {
+            matches!(entry, AcpModelPickerEntry::Model(_, _) | AcpModelPickerEntry::Provider { .. })
+        })
+        .unwrap_or(0)
+}
+
+impl AcpModelPickerDelegate {
+    fn toggle_group_collapse(
+        &mut self,
+        group_name: &SharedString,
+        window: &mut Window,
+        cx: &mut Context<Picker<Self>>,
+    ) {
+        if !self
+            .models
+            .as_ref()
+            .is_some_and(|models| match models {
+                AgentModelList::Flat(_) => false,
+                AgentModelList::Grouped(groups) => groups
+                    .iter()
+                    .any(|(group, _)| group.0 == *group_name),
+            })
+        {
+            return;
+        }
+
+        if !self.collapsed_groups.insert(group_name.clone()) {
+            self.collapsed_groups.remove(group_name);
+        }
+
+        let query_is_empty = self.current_query.trim().is_empty();
+        let collapsed_groups_for_render = if query_is_empty {
+            self.collapsed_groups.clone()
+        } else {
+            HashSet::default()
+        };
+
+        if let Some(models) = self.models.clone() {
+            self.filtered_entries = info_list_to_picker_entries_with_collapse(
+                models,
+                &self.favorites,
+                &collapsed_groups_for_render,
+                query_is_empty,
+            );
+
+            let is_collapsed = self.collapsed_groups.contains(group_name);
+            let provider_index = self.filtered_entries.iter().position(
+                |entry| matches!(entry, AcpModelPickerEntry::Provider { title, .. } if title == group_name),
+            );
+
+            let selected_index = if is_collapsed {
+                provider_index.unwrap_or_else(|| first_selectable_index(&self.filtered_entries))
+            } else {
+                provider_index
+                    .and_then(|ix| {
+                        self.filtered_entries
+                            .iter()
+                            .enumerate()
+                            .skip(ix + 1)
+                            .find_map(|(entry_ix, entry)| {
+                                matches!(entry, AcpModelPickerEntry::Model(_, _)).then_some(entry_ix)
+                            })
+                    })
+                    .unwrap_or_else(|| first_selectable_index(&self.filtered_entries))
+            };
+
+            self.set_selected_index(selected_index, window, cx);
+        }
+    }
+}
+
+fn sort_grouped_models_for_picker(model_list: &mut AgentModelList, cx: &App) {
+    let AgentModelList::Grouped(groups) = model_list else {
+        return;
+    };
+
+    let mut grouped = std::mem::take(groups).into_iter().collect::<Vec<_>>();
+    grouped.sort_by_cached_key(|(group_name, models)| {
+        let provider_id = infer_provider_id(group_name, models);
+        (
+            if is_third_party_provider_id(&provider_id, cx) {
+                0
+            } else {
+                1
+            },
+            group_name.0.to_string().to_lowercase(),
+        )
+    });
+    *groups = IndexMap::from_iter(grouped);
+}
+
+fn infer_provider_id(group_name: &acp_thread::AgentModelGroupName, models: &[AgentModelInfo]) -> String {
+    if let Some(first_model) = models.first() {
+        let model_id = first_model.id.0.as_ref();
+        if let Some((provider_prefix, _)) = model_id.split_once('/') {
+            return provider_prefix.to_string();
+        }
+    }
+
+    group_name
+        .0
+        .to_string()
+        .trim()
+        .to_lowercase()
+        .replace(' ', "")
+}
+
+fn is_third_party_provider_id(provider_id: &str, cx: &App) -> bool {
+    let settings = AllLanguageModelSettings::get_global(cx);
+    settings.openai_compatible.contains_key(provider_id)
+        || settings.anthropic_compatible.contains_key(provider_id)
+        || settings.google_compatible.contains_key(provider_id)
+}
+
 async fn fuzzy_search(
     model_list: AgentModelList,
     query: String,
@@ -619,6 +879,7 @@ mod tests {
             .iter()
             .map(|entry| match entry {
                 AcpModelPickerEntry::Model(info, _) => info.id.0.as_ref(),
+                AcpModelPickerEntry::Provider { title, .. } => title.as_ref(),
                 AcpModelPickerEntry::Separator(s) => &s,
             })
             .collect()
