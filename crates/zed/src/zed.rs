@@ -34,10 +34,10 @@ use git_ui::commit_view::CommitViewToolbar;
 use git_ui::git_panel::GitPanel;
 use git_ui::project_diff::{BranchDiffToolbar, ProjectDiffToolbar};
 use gpui::{
-    Action, App, AppContext as _, AsyncWindowContext, Context, DismissEvent, Element, Entity,
-    Focusable, KeyBinding, ParentElement, PathPromptOptions, PromptLevel, ReadGlobal, SharedString,
-    Task, TitlebarOptions, UpdateGlobal, WeakEntity, Window, WindowHandle, WindowKind,
-    WindowOptions, actions, image_cache, point, px, retain_all,
+    Action, AnyWindowHandle, App, AppContext as _, AsyncWindowContext, Context, DismissEvent,
+    Element, Entity, Focusable, KeyBinding, ParentElement, PathPromptOptions, PromptLevel,
+    ReadGlobal, SharedString, Task, TitlebarOptions, UpdateGlobal, WeakEntity, Window,
+    WindowHandle, WindowKind, WindowOptions, actions, image_cache, point, px, retain_all,
 };
 use image_viewer::ImageInfo;
 use language::Capability;
@@ -502,23 +502,18 @@ pub fn initialize_workspace(
 
                     if tabs.len() > 1 {
                         let prompt_window = window.window_handle();
-                        let current_workspace_window = prompt_window.downcast::<Workspace>();
-
-                        let mut group_workspace_windows = Vec::new();
+                        let mut group_window_handles: Vec<AnyWindowHandle> = Vec::new();
                         for tab in tabs {
-                            if let Some(workspace_window) = tab.handle.downcast::<Workspace>() {
-                                if !group_workspace_windows.iter().any(
-                                    |existing: &gpui::WindowHandle<Workspace>| {
-                                        existing.window_id() == workspace_window.window_id()
-                                    },
-                                ) {
-                                    group_workspace_windows.push(workspace_window);
-                                }
+                            if group_window_handles
+                                .iter()
+                                .any(|existing| existing.window_id() == tab.handle.window_id())
+                            {
+                                continue;
                             }
+                            group_window_handles.push(tab.handle);
                         }
 
-                        if group_workspace_windows.len() <= 1 || current_workspace_window.is_none()
-                        {
+                        if group_window_handles.len() <= 1 {
                             return handle
                                 .update(cx, |workspace, cx| {
                                     workspace.close_window(&CloseWindow, window, cx);
@@ -530,7 +525,7 @@ pub fn initialize_workspace(
                         cx.spawn(async move |cx| {
                             let detail = format!(
                                 "This window is part of a merged group ({} windows).",
-                                group_workspace_windows.len()
+                                group_window_handles.len()
                             );
                             let prompt = prompt_window.update(cx, |_, window, cx| {
                                 window.prompt(
@@ -552,22 +547,11 @@ pub fn initialize_workspace(
 
                             match choice {
                                 0 => {
-                                    if let Some(current_workspace_window) = current_workspace_window
-                                    {
-                                        current_workspace_window
-                                            .update(cx, |workspace, window, cx| {
-                                                workspace.close_window(&CloseWindow, window, cx);
-                                            })
-                                            .ok();
-                                    };
+                                    close_window_handle(prompt_window, cx);
                                 }
                                 1 => {
-                                    for workspace_window in group_workspace_windows {
-                                        workspace_window
-                                            .update(cx, |workspace, window, cx| {
-                                                workspace.close_window(&CloseWindow, window, cx);
-                                            })
-                                            .ok();
+                                    for window_handle in group_window_handles {
+                                        close_window_handle(window_handle, cx);
                                     }
                                 }
                                 _ => {}
@@ -594,6 +578,31 @@ pub fn initialize_workspace(
         workspace.focus_handle(cx).focus(window, cx);
     })
     .detach();
+}
+
+#[cfg(target_os = "windows")]
+fn close_window_handle(window_handle: AnyWindowHandle, cx: &mut gpui::AsyncApp) {
+    if let Some(multi_workspace_window) = window_handle.downcast::<MultiWorkspace>() {
+        multi_workspace_window
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    workspace.close_window(&CloseWindow, window, cx);
+                });
+            })
+            .ok();
+    } else if let Some(workspace_window) = window_handle.downcast::<Workspace>() {
+        workspace_window
+            .update(cx, |workspace, window, cx| {
+                workspace.close_window(&CloseWindow, window, cx);
+            })
+            .ok();
+    } else {
+        window_handle
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(CloseWindow), cx);
+            })
+            .ok();
+    }
 }
 
 #[cfg(target_os = "windows")]

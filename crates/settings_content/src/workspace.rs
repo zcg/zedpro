@@ -103,7 +103,7 @@ pub struct WorkspaceSettingsContent {
     ///
     /// Default: false
     pub close_on_file_delete: Option<bool>,
-    /// Whether to allow windows to tab together based on the user’s tabbing preference (macOS only).
+    /// Whether to allow windows to tab together based on the user’s tabbing preference (macOS and Windows).
     ///
     /// Default: false
     pub use_system_window_tabs: Option<bool>,

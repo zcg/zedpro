@@ -4075,8 +4075,8 @@ fn window_and_layout_page() -> SettingsPage {
             SettingsPageItem::SectionHeader("Window"),
             // todo(settings_ui): Should we filter by platform.as_ref()?
             SettingsPageItem::SettingItem(SettingItem {
-                title: "Use System Window Tabs",
-                description: "(macOS and Windows) whether to allow windows to tab together.",
+                title: "Window Group Tabs",
+                description: "(macOS and Windows) group native windows into a shared tab strip.",
                 field: Box::new(SettingField {
                     json_path: Some("use_system_window_tabs"),
                     pick: |settings_content| {

@@ -6,15 +6,15 @@ use gpui::{
     Window, WindowId, actions, canvas, div, hsla, point, size,
 };
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash as _, Hasher as _};
 use theme::ThemeSettings;
 use ui::{
     Color, ContextMenu, DynamicSpacing, IconButton, IconButtonShape, IconName, IconSize, Label,
     LabelSize, Tab, h_flex, prelude::*, right_click_menu,
 };
-use std::hash::{Hash as _, Hasher as _};
-use std::collections::hash_map::DefaultHasher;
 use workspace::{
-    CloseWindow, ItemSettings, Workspace, WorkspaceSettings,
+    CloseWindow, ItemSettings, MultiWorkspace, Workspace, WorkspaceSettings,
     item::{ClosePosition, ShowCloseButton},
 };
 
@@ -59,7 +59,11 @@ impl SystemWindowTabs {
 
         let hue = (hash % 360) as f32 / 360.;
         let saturation = 0.75;
-        let lightness = if cx.theme().appearance.is_light() { 0.42 } else { 0.68 };
+        let lightness = if cx.theme().appearance.is_light() {
+            0.42
+        } else {
+            0.68
+        };
         hsla(hue, saturation, lightness, 0.95)
     }
 
@@ -95,13 +99,13 @@ impl SystemWindowTabs {
                 None
             };
 
-            if use_system_window_tabs {
-                SystemWindowTabController::init(cx);
-                // On Windows, we need to explicitly set visibility since
-                // there's no native tab bar to query
-                #[cfg(target_os = "windows")]
-                SystemWindowTabController::set_visible(cx, true);
-            }
+            // Reset controller snapshots whenever the setting toggles to avoid
+            // stale tab-group UI leaking across modes.
+            SystemWindowTabController::init(cx);
+
+            // On Windows, visibility is managed by our custom controller.
+            #[cfg(target_os = "windows")]
+            SystemWindowTabController::set_visible(cx, use_system_window_tabs);
 
             cx.windows().iter().for_each(|handle| {
                 handle
@@ -167,10 +171,7 @@ impl SystemWindowTabs {
                     div.on_action(move |_: &MergeAllWindows, window, cx| {
                         #[cfg(target_os = "windows")]
                         {
-                            Self::defer_merge_all_windows(
-                                cx,
-                                window.window_handle().window_id(),
-                            );
+                            Self::defer_merge_all_windows(cx, window.window_handle().window_id());
                             return;
                         }
 
@@ -201,6 +202,7 @@ impl SystemWindowTabs {
         let rem_size = window.rem_size();
         let width = self.measured_tab_width.max(rem_size * 10);
         let is_active = window.window_handle().window_id() == item.id;
+        let show_active_border = tabs.len() >= 2;
         let title = item.title.to_string();
 
         let label = Label::new(&title)
@@ -409,7 +411,7 @@ impl SystemWindowTabs {
                         .collect::<Vec<_>>()
                 };
 
-                ContextMenu::build(window, cx, move |mut menu, _window_, cx| {
+                ContextMenu::build(window, cx, move |mut menu, _window_, _cx| {
                     menu = menu.entry("Close Tab", None, move |_window, cx| {
                         #[cfg(target_os = "windows")]
                         {
@@ -451,79 +453,118 @@ impl SystemWindowTabs {
                         );
                     });
 
-                    menu = menu.entry("Move Tab to New Window", None, move |window, cx| {
-                        Self::handle_right_click_action(
-                            cx,
-                            window,
-                            &move_tabs,
-                            |tab| tab.id == item.id,
-                            |window, cx| {
-                                #[cfg(target_os = "windows")]
-                                {
-                                    Self::defer_move_tab_to_new_window(
-                                        cx,
-                                        window.window_handle().window_id(),
-                                    );
-                                    return;
-                                }
-
-                                #[cfg(not(target_os = "windows"))]
-                                window.move_tab_to_new_window();
-                            },
-                        );
-                    });
-
-                    #[cfg(target_os = "windows")]
-                    if detach_tabs.len() >= 2 {
-                        let detach_window_ids = detach_tabs
-                            .iter()
-                            .map(|tab| tab.id)
-                            .collect::<Vec<_>>();
-                        menu = menu.entry("Detach All Windows", None, move |_window, cx| {
-                            Self::defer_detach_all_windows(cx, detach_window_ids.clone());
-                        });
-                    }
-
-                    // Add "Merge All Windows" when there are multiple tab groups
-                    let controller = cx.global::<SystemWindowTabController>();
-                    if controller.tab_groups_count() > 1 {
-                        menu = menu.entry("Merge All Windows", None, move |window, cx| {
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        let cx = _cx;
+                        menu = menu.entry("Move Tab to New Window", None, move |window, cx| {
                             Self::handle_right_click_action(
                                 cx,
                                 window,
-                                &merge_all_tabs,
+                                &move_tabs,
                                 |tab| tab.id == item.id,
                                 |window, cx| {
-                                    #[cfg(target_os = "windows")]
-                                    {
-                                        Self::defer_merge_all_windows(
-                                            cx,
-                                            window.window_handle().window_id(),
-                                        );
-                                        return;
-                                    }
-
-                                    #[cfg(not(target_os = "windows"))]
-                                    window.merge_all_windows();
+                                    window.move_tab_to_new_window();
                                 },
                             );
                         });
+
+                        // Add "Merge All Windows" when there are multiple tab groups
+                        let controller = cx.global::<SystemWindowTabController>();
+                        if controller.tab_groups_count() > 1 {
+                            menu = menu.entry("Merge All Windows", None, move |window, cx| {
+                                Self::handle_right_click_action(
+                                    cx,
+                                    window,
+                                    &merge_all_tabs,
+                                    |tab| tab.id == item.id,
+                                    |window, cx| {
+                                        window.merge_all_windows();
+                                    },
+                                );
+                            });
+                        }
                     }
 
                     #[cfg(target_os = "windows")]
-                    for (target_window_id, target_title) in merge_target_windows.clone() {
+                    {
+                        let move_tabs = move_tabs.clone();
+                        let detach_tabs = detach_tabs.clone();
+                        let merge_all_tabs = merge_all_tabs.clone();
+                        let merge_target_windows = merge_target_windows.clone();
                         let source_window_id = item.id;
                         let source_handle = item.handle.clone();
-                        let label = format!("Merge Into \"{}\" Window", target_title);
-                        menu = menu.entry(label, None, move |_window, cx| {
-                            Self::defer_merge_window_into_target_group(
-                                cx,
-                                source_window_id,
-                                source_handle.clone(),
-                                target_window_id,
-                                usize::MAX,
-                            );
-                        });
+
+                        menu = menu
+                            .separator()
+                            .submenu("Window Group", move |mut menu, _, cx| {
+                                let ungroup_tabs = move_tabs.clone();
+                                menu = menu.entry("Ungroup Window", None, move |window, cx| {
+                                    Self::handle_right_click_action(
+                                        cx,
+                                        window,
+                                        &ungroup_tabs,
+                                        |tab| tab.id == source_window_id,
+                                        |window, cx| {
+                                            Self::defer_move_tab_to_new_window(
+                                                cx,
+                                                window.window_handle().window_id(),
+                                            );
+                                        },
+                                    );
+                                });
+
+                                if detach_tabs.len() >= 2 {
+                                    let detach_window_ids =
+                                        detach_tabs.iter().map(|tab| tab.id).collect::<Vec<_>>();
+                                    menu = menu.entry(
+                                        "Ungroup All Windows",
+                                        None,
+                                        move |_window, cx| {
+                                            Self::defer_detach_all_windows(
+                                                cx,
+                                                detach_window_ids.clone(),
+                                            );
+                                        },
+                                    );
+                                }
+
+                                let controller = cx.global::<SystemWindowTabController>();
+                                if controller.tab_groups_count() > 1 {
+                                    let group_all_tabs = merge_all_tabs.clone();
+                                    menu =
+                                        menu.entry("Group All Windows", None, move |window, cx| {
+                                            Self::handle_right_click_action(
+                                                cx,
+                                                window,
+                                                &group_all_tabs,
+                                                |tab| tab.id == source_window_id,
+                                                |window, cx| {
+                                                    Self::defer_merge_all_windows(
+                                                        cx,
+                                                        window.window_handle().window_id(),
+                                                    );
+                                                },
+                                            );
+                                        });
+                                }
+
+                                for (target_window_id, target_title) in merge_target_windows.clone()
+                                {
+                                    let source_handle = source_handle.clone();
+                                    let label = format!("Group Into \"{}\"", target_title);
+                                    menu = menu.entry(label, None, move |_window, cx| {
+                                        Self::defer_merge_window_into_target_group(
+                                            cx,
+                                            source_window_id,
+                                            source_handle.clone(),
+                                            target_window_id,
+                                            usize::MAX,
+                                        );
+                                    });
+                                }
+
+                                menu
+                            });
                     }
 
                     // `Show All Tabs` is a macOS-style window tab overview concept. Windows does not
@@ -547,7 +588,7 @@ impl SystemWindowTabs {
                 })
             });
 
-        let active_border_color = if is_active {
+        let active_border_color = if is_active && show_active_border {
             Self::pseudo_random_active_border_color(item.id, cx)
         } else {
             cx.theme().colors().border_transparent
@@ -647,7 +688,10 @@ impl SystemWindowTabs {
         }
 
         let mut to_refresh = SystemWindowTabController::tab_group_window_ids(cx, source_window_id);
-        to_refresh.extend(SystemWindowTabController::tab_group_window_ids(cx, target_window_id));
+        to_refresh.extend(SystemWindowTabController::tab_group_window_ids(
+            cx,
+            target_window_id,
+        ));
 
         // Update controller state synchronously; perform the platform operation separately.
         SystemWindowTabController::merge_window_into_group(
@@ -727,7 +771,10 @@ impl SystemWindowTabs {
             SystemWindowTabController::refresh_window_ids(cx, to_refresh);
 
             for window_id in &window_ids {
-                if let Some(handle) = cx.windows().into_iter().find(|h| h.window_id() == *window_id)
+                if let Some(handle) = cx
+                    .windows()
+                    .into_iter()
+                    .find(|h| h.window_id() == *window_id)
                 {
                     handle
                         .update(cx, |_, window, _cx| window.move_tab_to_new_window())
@@ -746,16 +793,29 @@ impl SystemWindowTabs {
 
             let mut to_refresh = Vec::new();
             for window_id in &window_ids {
-                to_refresh.extend(SystemWindowTabController::tab_group_window_ids(cx, *window_id));
+                to_refresh.extend(SystemWindowTabController::tab_group_window_ids(
+                    cx, *window_id,
+                ));
             }
 
             for window_id in window_ids {
-                let Some(handle) = cx.windows().into_iter().find(|h| h.window_id() == window_id)
+                let Some(handle) = cx
+                    .windows()
+                    .into_iter()
+                    .find(|h| h.window_id() == window_id)
                 else {
                     continue;
                 };
 
-                if let Some(workspace_window) = handle.downcast::<Workspace>() {
+                if let Some(multi_workspace_window) = handle.downcast::<MultiWorkspace>() {
+                    multi_workspace_window
+                        .update(cx, |multi_workspace, window, cx| {
+                            multi_workspace.workspace().update(cx, |workspace, cx| {
+                                workspace.close_window(&CloseWindow, window, cx);
+                            });
+                        })
+                        .ok();
+                } else if let Some(workspace_window) = handle.downcast::<Workspace>() {
                     workspace_window
                         .update(cx, |workspace, window, cx| {
                             workspace.close_window(&CloseWindow, window, cx);

@@ -19,7 +19,6 @@ use ordered_float::OrderedFloat;
 use picker::{Picker, PickerDelegate};
 use settings::{Settings, SettingsStore};
 use ui::{DocumentationAside, DocumentationSide, IntoElement, prelude::*};
-use util::ResultExt;
 use zed_actions::agent::OpenSettings;
 
 use crate::ui::{
@@ -87,6 +86,13 @@ impl AcpModelPickerDelegate {
         let refresh_models_task = {
             cx.spawn_in(window, {
                 async move |this, cx| {
+                    fn is_window_or_entity_gone(err: &anyhow::Error) -> bool {
+                        err.chain().any(|cause| {
+                            let text = cause.to_string();
+                            text.contains("window not found") || text.contains("entity not found")
+                        })
+                    }
+
                     async fn refresh(
                         this: &WeakEntity<Picker<AcpModelPickerDelegate>>,
                         cx: &mut AsyncWindowContext,
@@ -117,10 +123,20 @@ impl AcpModelPickerDelegate {
                         })
                     }
 
-                    refresh(&this, cx).await.log_err();
+                    if let Err(err) = refresh(&this, cx).await {
+                        if is_window_or_entity_gone(&err) {
+                            return;
+                        }
+                        util::log_err(&err);
+                    }
                     if let Some(mut rx) = rx {
                         while let Ok(()) = rx.recv().await {
-                            refresh(&this, cx).await.log_err();
+                            if let Err(err) = refresh(&this, cx).await {
+                                if is_window_or_entity_gone(&err) {
+                                    break;
+                                }
+                                util::log_err(&err);
+                            }
                         }
                     }
                 }
@@ -291,13 +307,12 @@ impl PickerDelegate for AcpModelPickerDelegate {
                 } else {
                     HashSet::default()
                 };
-                this.delegate.filtered_entries =
-                    info_list_to_picker_entries_with_collapse(
-                        filtered_models,
-                        &favorites,
-                        &collapsed_groups_for_render,
-                        query_is_empty,
-                    );
+                this.delegate.filtered_entries = info_list_to_picker_entries_with_collapse(
+                    filtered_models,
+                    &favorites,
+                    &collapsed_groups_for_render,
+                    query_is_empty,
+                );
                 // Finds the currently selected model in the list
                 let new_index = this
                     .delegate
@@ -624,7 +639,10 @@ fn first_selectable_index(entries: &[AcpModelPickerEntry]) -> usize {
     entries
         .iter()
         .position(|entry| {
-            matches!(entry, AcpModelPickerEntry::Model(_, _) | AcpModelPickerEntry::Provider { .. })
+            matches!(
+                entry,
+                AcpModelPickerEntry::Model(_, _) | AcpModelPickerEntry::Provider { .. }
+            )
         })
         .unwrap_or(0)
 }
@@ -636,16 +654,12 @@ impl AcpModelPickerDelegate {
         window: &mut Window,
         cx: &mut Context<Picker<Self>>,
     ) {
-        if !self
-            .models
-            .as_ref()
-            .is_some_and(|models| match models {
-                AgentModelList::Flat(_) => false,
-                AgentModelList::Grouped(groups) => groups
-                    .iter()
-                    .any(|(group, _)| group.0 == *group_name),
-            })
-        {
+        if !self.models.as_ref().is_some_and(|models| match models {
+            AgentModelList::Flat(_) => false,
+            AgentModelList::Grouped(groups) => {
+                groups.iter().any(|(group, _)| group.0 == *group_name)
+            }
+        }) {
             return;
         }
 
@@ -683,7 +697,8 @@ impl AcpModelPickerDelegate {
                             .enumerate()
                             .skip(ix + 1)
                             .find_map(|(entry_ix, entry)| {
-                                matches!(entry, AcpModelPickerEntry::Model(_, _)).then_some(entry_ix)
+                                matches!(entry, AcpModelPickerEntry::Model(_, _))
+                                    .then_some(entry_ix)
                             })
                     })
                     .unwrap_or_else(|| first_selectable_index(&self.filtered_entries))
@@ -714,7 +729,10 @@ fn sort_grouped_models_for_picker(model_list: &mut AgentModelList, cx: &App) {
     *groups = IndexMap::from_iter(grouped);
 }
 
-fn infer_provider_id(group_name: &acp_thread::AgentModelGroupName, models: &[AgentModelInfo]) -> String {
+fn infer_provider_id(
+    group_name: &acp_thread::AgentModelGroupName,
+    models: &[AgentModelInfo],
+) -> String {
     if let Some(first_model) = models.first() {
         let model_id = first_model.id.0.as_ref();
         if let Some((provider_prefix, _)) = model_id.split_once('/') {
