@@ -171,10 +171,8 @@ impl Render for TitleBar {
                             if !show_menus {
                                 render_project_items &=
                                     !menu.update(cx, |menu, cx| menu.all_menus_shown(cx));
-                                title_bar.child(menu)
-                            } else {
-                                title_bar.child(menu)
                             }
+                            title_bar.child(menu)
                         })
                         .children(self.render_workspace_sidebar_toggle(window, cx))
                         .children(self.render_restricted_mode(cx))

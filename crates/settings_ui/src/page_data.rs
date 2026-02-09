@@ -3623,8 +3623,8 @@ fn window_and_layout_page() -> SettingsPage {
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
-                title: "Show Menus",
-                description: "Show the menus in the titlebar.",
+                title: "Expand Title Bar Menus",
+                description: "(Windows and Linux) keep all top menus visible in the title bar.",
                 field: Box::new(SettingField {
                     json_path: Some("title_bar.show_menus"),
                     pick: |settings_content| {
