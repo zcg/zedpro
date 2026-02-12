@@ -637,7 +637,7 @@ mod test_support {
             _method_id: acp::AuthMethodId,
             _cx: &mut App,
         ) -> Task<gpui::Result<()>> {
-            unimplemented!()
+            Task::ready(Ok(()))
         }
 
         fn prompt(

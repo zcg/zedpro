@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use collections::FxHashMap;
 use itertools::Itertools;
 use windows::Win32::{
@@ -229,7 +229,9 @@ fn write_image_to_clipboard(item: &Image) -> Result<()> {
 }
 
 fn convert_image_to_png_format(bytes: &[u8], image_format: ImageFormat) -> Result<Vec<u8>> {
-    let image = image::load_from_memory_with_format(bytes, image_format.into())?;
+    let format = to_image_crate_format(image_format)
+        .ok_or_else(|| anyhow!("Unsupported raster conversion format: {image_format:?}"))?;
+    let image = image::load_from_memory_with_format(bytes, format)?;
     let mut output_buf = Vec::new();
     image.write_to(
         &mut std::io::Cursor::new(&mut output_buf),
@@ -440,17 +442,15 @@ where
     Some(result)
 }
 
-impl From<ImageFormat> for image::ImageFormat {
-    fn from(value: ImageFormat) -> Self {
-        match value {
-            ImageFormat::Png => image::ImageFormat::Png,
-            ImageFormat::Jpeg => image::ImageFormat::Jpeg,
-            ImageFormat::Webp => image::ImageFormat::WebP,
-            ImageFormat::Gif => image::ImageFormat::Gif,
-            // TODO: ImageFormat::Svg
-            ImageFormat::Bmp => image::ImageFormat::Bmp,
-            ImageFormat::Tiff => image::ImageFormat::Tiff,
-            _ => unreachable!(),
-        }
+fn to_image_crate_format(value: ImageFormat) -> Option<image::ImageFormat> {
+    match value {
+        ImageFormat::Png => Some(image::ImageFormat::Png),
+        ImageFormat::Jpeg => Some(image::ImageFormat::Jpeg),
+        ImageFormat::Webp => Some(image::ImageFormat::WebP),
+        ImageFormat::Gif => Some(image::ImageFormat::Gif),
+        ImageFormat::Bmp => Some(image::ImageFormat::Bmp),
+        ImageFormat::Tiff => Some(image::ImageFormat::Tiff),
+        ImageFormat::Ico => Some(image::ImageFormat::Ico),
+        ImageFormat::Svg => None,
     }
 }

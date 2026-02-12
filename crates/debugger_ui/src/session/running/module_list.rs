@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 use dap::Module;
 use gpui::{
-    AnyElement, Entity, FocusHandle, Focusable, ScrollStrategy, Subscription, Task,
+    AnyElement, Empty, Entity, FocusHandle, Focusable, ScrollStrategy, Subscription, Task,
     UniformListScrollHandle, WeakEntity, uniform_list,
 };
 use project::{
@@ -18,7 +18,7 @@ pub struct ModuleList {
     session: Entity<Session>,
     workspace: WeakEntity<Workspace>,
     focus_handle: FocusHandle,
-    entries: Vec<Module>,
+    entries: Arc<[Module]>,
     _rebuild_task: Option<Task<()>>,
     _subscription: Subscription,
 }
@@ -49,7 +49,7 @@ impl ModuleList {
             session,
             workspace,
             focus_handle,
-            entries: Vec::new(),
+            entries: Arc::default(),
             selected_ix: None,
             _subscription,
             _rebuild_task: None,
@@ -59,9 +59,7 @@ impl ModuleList {
     fn schedule_rebuild(&mut self, cx: &mut Context<Self>) {
         self._rebuild_task = Some(cx.spawn(async move |this, cx| {
             this.update(cx, |this, cx| {
-                let modules = this
-                    .session
-                    .update(cx, |session, cx| session.modules(cx).to_owned());
+                let modules = this.session.update(cx, |session, cx| session.modules(cx));
                 this.entries = modules;
                 cx.notify();
             })
@@ -122,7 +120,11 @@ impl ModuleList {
     }
 
     fn render_entry(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
-        let module = self.entries[ix].clone();
+        let Some(module) = self.entries.get(ix) else {
+            return Empty.into_any();
+        };
+        let module_name = module.name.clone();
+        let module_path = module.path.clone();
 
         v_flex()
             .rounded_md()
@@ -134,8 +136,7 @@ impl ModuleList {
             })
             .when(module.path.is_some(), |this| {
                 this.on_click({
-                    let path = module
-                        .path
+                    let path = module_path
                         .as_deref()
                         .map(|path| Arc::<Path>::from(Path::new(path)));
                     cx.listener(move |this, _, window, cx| {
@@ -152,12 +153,12 @@ impl ModuleList {
             .when(Some(ix) == self.selected_ix, |s| {
                 s.bg(cx.theme().colors().element_hover)
             })
-            .child(h_flex().gap_0p5().text_ui_sm(cx).child(module.name.clone()))
+            .child(h_flex().gap_0p5().text_ui_sm(cx).child(module_name))
             .child(
                 h_flex()
                     .text_ui_xs(cx)
                     .text_color(cx.theme().colors().text_muted)
-                    .when_some(module.path, |this, path| this.child(path)),
+                    .when_some(module_path, |this, path| this.child(path)),
             )
             .into_any()
     }

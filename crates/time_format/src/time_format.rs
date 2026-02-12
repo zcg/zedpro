@@ -88,15 +88,31 @@ fn format_absolute_date(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // todo(linux) respect user's date/time preferences
-        // todo(windows) respect user's date/time preferences
-        let current_locale = CURRENT_LOCALE
-            .get_or_init(|| sys_locale::get_locale().unwrap_or_else(|| String::from("en-US")));
-        format_timestamp_naive_date(
-            timestamp,
-            reference,
-            is_12_hour_time_by_locale(current_locale.as_str()),
-        )
+        #[cfg(target_os = "windows")]
+        {
+            if !enhanced_date_formatting {
+                return windows::format_date_short(&timestamp).unwrap_or_else(|| {
+                    format_timestamp_naive_date(timestamp, reference, locale_prefers_12_hour_time())
+                });
+            }
+
+            let timestamp_date = timestamp.date();
+            let reference_date = reference.date();
+            if timestamp_date == reference_date {
+                "Today".to_string()
+            } else if reference_date.previous_day() == Some(timestamp_date) {
+                "Yesterday".to_string()
+            } else {
+                windows::format_date_short(&timestamp).unwrap_or_else(|| {
+                    format_timestamp_naive_date(timestamp, reference, locale_prefers_12_hour_time())
+                })
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            // todo(linux) respect user's date/time preferences
+            format_timestamp_naive_date(timestamp, reference, locale_prefers_12_hour_time())
+        }
     }
 }
 
@@ -107,14 +123,17 @@ fn format_absolute_time(timestamp: OffsetDateTime) -> String {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // todo(linux) respect user's date/time preferences
-        // todo(windows) respect user's date/time preferences
-        let current_locale = CURRENT_LOCALE
-            .get_or_init(|| sys_locale::get_locale().unwrap_or_else(|| String::from("en-US")));
-        format_timestamp_naive_time(
-            timestamp,
-            is_12_hour_time_by_locale(current_locale.as_str()),
-        )
+        #[cfg(target_os = "windows")]
+        {
+            windows::format_time(&timestamp).unwrap_or_else(|| {
+                format_timestamp_naive_time(timestamp, locale_prefers_12_hour_time())
+            })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            // todo(linux) respect user's date/time preferences
+            format_timestamp_naive_time(timestamp, locale_prefers_12_hour_time())
+        }
     }
 }
 
@@ -149,9 +168,29 @@ fn format_absolute_timestamp(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // todo(linux) respect user's date/time preferences
-        // todo(windows) respect user's date/time preferences
-        format_timestamp_fallback(timestamp, reference)
+        #[cfg(target_os = "windows")]
+        {
+            let formatted_time = format_absolute_time(timestamp);
+            if enhanced_date_formatting {
+                let timestamp_date = timestamp.date();
+                let reference_date = reference.date();
+                if timestamp_date == reference_date {
+                    return format!("Today at {}", formatted_time);
+                } else if reference_date.previous_day() == Some(timestamp_date) {
+                    return format!("Yesterday at {}", formatted_time);
+                }
+            }
+            format!(
+                "{} {}",
+                format_absolute_date(timestamp, reference, false),
+                formatted_time
+            )
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            // todo(linux) respect user's date/time preferences
+            format_timestamp_fallback(timestamp, reference)
+        }
     }
 }
 
@@ -178,28 +217,45 @@ fn format_absolute_date_medium(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // todo(linux) respect user's date/time preferences
-        // todo(windows) respect user's date/time preferences
-        let current_locale = CURRENT_LOCALE
-            .get_or_init(|| sys_locale::get_locale().unwrap_or_else(|| String::from("en-US")));
-        if !enhanced_formatting {
-            return format_timestamp_naive_date_medium(
-                timestamp,
-                is_12_hour_time_by_locale(current_locale.as_str()),
-            );
-        }
+        #[cfg(target_os = "windows")]
+        {
+            if !enhanced_formatting {
+                return windows::format_date_medium(&timestamp).unwrap_or_else(|| {
+                    format_timestamp_naive_date_medium(timestamp, locale_prefers_12_hour_time())
+                });
+            }
 
-        let timestamp_date = timestamp.date();
-        let reference_date = reference.date();
-        if timestamp_date == reference_date {
-            "Today".to_string()
-        } else if reference_date.previous_day() == Some(timestamp_date) {
-            "Yesterday".to_string()
-        } else {
-            format_timestamp_naive_date_medium(
-                timestamp,
-                is_12_hour_time_by_locale(current_locale.as_str()),
-            )
+            let timestamp_date = timestamp.date();
+            let reference_date = reference.date();
+            if timestamp_date == reference_date {
+                "Today".to_string()
+            } else if reference_date.previous_day() == Some(timestamp_date) {
+                "Yesterday".to_string()
+            } else {
+                windows::format_date_medium(&timestamp).unwrap_or_else(|| {
+                    format_timestamp_naive_date_medium(timestamp, locale_prefers_12_hour_time())
+                })
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            // todo(linux) respect user's date/time preferences
+            if !enhanced_formatting {
+                return format_timestamp_naive_date_medium(
+                    timestamp,
+                    locale_prefers_12_hour_time(),
+                );
+            }
+
+            let timestamp_date = timestamp.date();
+            let reference_date = reference.date();
+            if timestamp_date == reference_date {
+                "Today".to_string()
+            } else if reference_date.previous_day() == Some(timestamp_date) {
+                "Yesterday".to_string()
+            } else {
+                format_timestamp_naive_date_medium(timestamp, locale_prefers_12_hour_time())
+            }
         }
     }
 }
@@ -214,9 +270,15 @@ fn format_absolute_timestamp_medium(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // todo(linux) respect user's date/time preferences
-        // todo(windows) respect user's date/time preferences
-        format_timestamp_fallback(timestamp, reference)
+        #[cfg(target_os = "windows")]
+        {
+            format_absolute_date_medium(timestamp, reference, false)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            // todo(linux) respect user's date/time preferences
+            format_timestamp_fallback(timestamp, reference)
+        }
     }
 }
 
@@ -419,11 +481,20 @@ pub fn format_timestamp_naive(
 static CURRENT_LOCALE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 #[cfg(not(target_os = "macos"))]
-fn format_timestamp_fallback(timestamp: OffsetDateTime, reference: OffsetDateTime) -> String {
-    let current_locale = CURRENT_LOCALE
-        .get_or_init(|| sys_locale::get_locale().unwrap_or_else(|| String::from("en-US")));
+fn current_locale() -> &'static str {
+    CURRENT_LOCALE
+        .get_or_init(|| sys_locale::get_locale().unwrap_or_else(|| String::from("en-US")))
+        .as_str()
+}
 
-    let is_12_hour_time = is_12_hour_time_by_locale(current_locale.as_str());
+#[cfg(not(target_os = "macos"))]
+fn locale_prefers_12_hour_time() -> bool {
+    is_12_hour_time_by_locale(current_locale())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn format_timestamp_fallback(timestamp: OffsetDateTime, reference: OffsetDateTime) -> String {
+    let is_12_hour_time = locale_prefers_12_hour_time();
     format_timestamp_naive(timestamp, reference, is_12_hour_time)
 }
 
@@ -443,6 +514,96 @@ fn is_12_hour_time_by_locale(locale: &str) -> bool {
         "en-MY", "ms-MY", // Malaysia, Malay
     ]
     .contains(&locale)
+}
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use time::OffsetDateTime;
+    use windows::{
+        Win32::{
+            Foundation::SYSTEMTIME,
+            Globalization::{
+                DATE_LONGDATE, DATE_SHORTDATE, ENUM_DATE_FORMATS_FLAGS, GetDateFormatEx,
+                GetTimeFormatEx, TIME_FORMAT_FLAGS, TIME_NOSECONDS,
+            },
+        },
+        core::PCWSTR,
+    };
+
+    pub fn format_time(timestamp: &OffsetDateTime) -> Option<String> {
+        format_time_with_flags(timestamp, TIME_NOSECONDS)
+    }
+
+    pub fn format_date_short(timestamp: &OffsetDateTime) -> Option<String> {
+        format_date_with_flags(timestamp, DATE_SHORTDATE)
+    }
+
+    pub fn format_date_medium(timestamp: &OffsetDateTime) -> Option<String> {
+        format_date_with_flags(timestamp, DATE_LONGDATE)
+    }
+
+    fn format_date_with_flags(
+        timestamp: &OffsetDateTime,
+        flags: ENUM_DATE_FORMATS_FLAGS,
+    ) -> Option<String> {
+        let system_time = to_system_time(timestamp);
+        let mut buffer = [0u16; 128];
+
+        let output_len = unsafe {
+            GetDateFormatEx(
+                PCWSTR::null(),
+                flags,
+                Some(&system_time as *const SYSTEMTIME),
+                PCWSTR::null(),
+                Some(&mut buffer),
+                PCWSTR::null(),
+            )
+        };
+
+        utf16_output_to_string(&buffer, output_len)
+    }
+
+    fn format_time_with_flags(
+        timestamp: &OffsetDateTime,
+        flags: TIME_FORMAT_FLAGS,
+    ) -> Option<String> {
+        let system_time = to_system_time(timestamp);
+        let mut buffer = [0u16; 128];
+
+        let output_len = unsafe {
+            GetTimeFormatEx(
+                PCWSTR::null(),
+                flags,
+                Some(&system_time as *const SYSTEMTIME),
+                PCWSTR::null(),
+                Some(&mut buffer),
+            )
+        };
+
+        utf16_output_to_string(&buffer, output_len)
+    }
+
+    fn utf16_output_to_string(buffer: &[u16], output_len: i32) -> Option<String> {
+        if output_len <= 1 {
+            return None;
+        }
+
+        let len_without_nul = output_len.saturating_sub(1) as usize;
+        Some(String::from_utf16_lossy(&buffer[..len_without_nul]))
+    }
+
+    fn to_system_time(timestamp: &OffsetDateTime) -> SYSTEMTIME {
+        SYSTEMTIME {
+            wYear: timestamp.year() as u16,
+            wMonth: u8::from(timestamp.month()) as u16,
+            wDayOfWeek: timestamp.weekday().number_days_from_sunday() as u16,
+            wDay: timestamp.day() as u16,
+            wHour: timestamp.hour() as u16,
+            wMinute: timestamp.minute() as u16,
+            wSecond: timestamp.second() as u16,
+            wMilliseconds: timestamp.millisecond(),
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]

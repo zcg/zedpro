@@ -34,6 +34,7 @@ use ui::{
     StyledTypography, Window, h_flex, rems,
 };
 use util::ResultExt;
+use util::paths::SanitizedPath;
 use util::rel_path::RelPath;
 use workspace::searchable::Direction;
 use workspace::{Workspace, WorkspaceDb, WorkspaceId};
@@ -349,7 +350,9 @@ impl MarksState {
                 .read(cx)
                 .worktrees(cx)
                 .filter_map(|worktree| {
-                    let relative = path.strip_prefix(worktree.read(cx).abs_path()).ok()?;
+                    let relative = SanitizedPath::new(&path)
+                        .strip_prefix(SanitizedPath::new(worktree.read(cx).abs_path().as_ref()))
+                        .ok()?;
                     let path = RelPath::new(relative, worktree.read(cx).path_style()).log_err()?;
                     Some(ProjectPath {
                         worktree_id: worktree.read(cx).id(),

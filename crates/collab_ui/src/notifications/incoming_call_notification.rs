@@ -103,7 +103,8 @@ impl IncomingCallNotification {
 
 impl Render for IncomingCallNotification {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ui_font = theme::setup_ui_font(window, cx);
+        window.set_rem_size(theme::get_ui_font_size(cx));
+        let ui_font = theme::get_ui_font(cx);
 
         div().size_full().font(ui_font).child(
             CollabNotification::new(

@@ -2504,17 +2504,17 @@ impl TextThread {
             };
             let role = message.role;
             let mut edited_buffer = false;
+            let range_end = range.end.min(self.buffer.read(cx).len());
 
             let mut suffix_start = None;
 
-            // TODO: why did this start panicking?
             if range.start > message.offset_range.start
-                && range.end < message.offset_range.end.saturating_sub(1)
+                && range_end < message.offset_range.end.saturating_sub(1)
             {
-                if self.buffer.read(cx).chars_at(range.end).next() == Some('\n') {
-                    suffix_start = Some(range.end + 1);
-                } else if self.buffer.read(cx).reversed_chars_at(range.end).next() == Some('\n') {
-                    suffix_start = Some(range.end);
+                if self.buffer.read(cx).chars_at(range_end).next() == Some('\n') {
+                    suffix_start = Some(range_end.saturating_add(1));
+                } else if self.buffer.read(cx).reversed_chars_at(range_end).next() == Some('\n') {
+                    suffix_start = Some(range_end);
                 }
             }
 
@@ -2526,12 +2526,14 @@ impl TextThread {
                 }
             } else {
                 self.buffer.update(cx, |buffer, cx| {
-                    buffer.edit([(range.end..range.end, "\n")], None, cx);
+                    buffer.edit([(range_end..range_end, "\n")], None, cx);
                 });
                 edited_buffer = true;
+                let suffix_anchor_offset =
+                    range_end.saturating_add(1).min(self.buffer.read(cx).len());
                 MessageAnchor {
                     id: MessageId(self.next_timestamp()),
-                    start: self.buffer.read(cx).anchor_before(range.end + 1),
+                    start: self.buffer.read(cx).anchor_before(suffix_anchor_offset),
                 }
             };
 

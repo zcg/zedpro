@@ -1482,15 +1482,22 @@ impl InlineAssistant {
 
             let mut new_blocks = Vec::new();
             for (new_row, old_row_range) in deleted_row_ranges {
-                let (_, buffer_start) = old_snapshot
+                let (start_buffer_id, buffer_start) = old_snapshot
                     .point_to_buffer_offset(Point::new(*old_row_range.start(), 0))
                     .unwrap();
-                let (_, buffer_end) = old_snapshot
+                let (end_buffer_id, buffer_end) = old_snapshot
                     .point_to_buffer_offset(Point::new(
                         *old_row_range.end(),
                         old_snapshot.line_len(MultiBufferRow(*old_row_range.end())),
                     ))
                     .unwrap();
+
+                if start_buffer_id.remote_id() != end_buffer_id.remote_id() {
+                    log::warn!(
+                        "Skipping deleted-line excerpt spanning multiple snapshots/buffers"
+                    );
+                    continue;
+                }
 
                 let deleted_lines_editor = cx.new(|cx| {
                     let multi_buffer =
@@ -1498,7 +1505,6 @@ impl InlineAssistant {
                     multi_buffer.update(cx, |multi_buffer, cx| {
                         multi_buffer.push_excerpts(
                             old_buffer.clone(),
-                            // todo(lw): buffer_start and buffer_end might come from different snapshots!
                             Some(ExcerptRange::new(buffer_start..buffer_end)),
                             cx,
                         );

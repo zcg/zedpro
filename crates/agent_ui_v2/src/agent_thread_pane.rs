@@ -240,6 +240,10 @@ impl UtilityPane for AgentThreadPane {
         IconName::Thread
     }
 
+    fn toggle_tooltip(&self, _cx: &App) -> SharedString {
+        "Toggle Agent Pane".into()
+    }
+
     fn expanded(&self, _cx: &App) -> bool {
         self.expanded
     }

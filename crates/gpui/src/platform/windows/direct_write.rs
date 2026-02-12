@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     ffi::{c_uint, c_void},
     mem::ManuallyDrop,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use ::util::{ResultExt, maybe};
@@ -76,6 +77,18 @@ struct DirectWriteState {
     font_to_font_id: HashMap<Font, FontId>,
     font_info_cache: HashMap<usize, FontId>,
     layout_line_scratch: Vec<u16>,
+}
+
+static WARNED_DRAW_UNDERLINE_UNSUPPORTED: AtomicBool = AtomicBool::new(false);
+static WARNED_DRAW_STRIKETHROUGH_UNSUPPORTED: AtomicBool = AtomicBool::new(false);
+static WARNED_DRAW_INLINE_OBJECT_UNSUPPORTED: AtomicBool = AtomicBool::new(false);
+
+fn warn_unsupported_text_renderer_feature_once(feature: &'static str, warned: &AtomicBool) {
+    if !warned.swap(true, Ordering::Relaxed) {
+        log::warn!(
+            "DirectWrite text renderer does not handle {feature}; continuing without drawing it"
+        );
+    }
 }
 
 impl GPUState {
@@ -1566,10 +1579,11 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
         _underline: *const DWRITE_UNDERLINE,
         _clientdrawingeffect: windows::core::Ref<windows::core::IUnknown>,
     ) -> windows::core::Result<()> {
-        Err(windows::core::Error::new(
-            E_NOTIMPL,
-            "DrawUnderline unimplemented",
-        ))
+        warn_unsupported_text_renderer_feature_once(
+            "underlines",
+            &WARNED_DRAW_UNDERLINE_UNSUPPORTED,
+        );
+        Ok(())
     }
 
     fn DrawStrikethrough(
@@ -1580,10 +1594,11 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
         _strikethrough: *const DWRITE_STRIKETHROUGH,
         _clientdrawingeffect: windows::core::Ref<windows::core::IUnknown>,
     ) -> windows::core::Result<()> {
-        Err(windows::core::Error::new(
-            E_NOTIMPL,
-            "DrawStrikethrough unimplemented",
-        ))
+        warn_unsupported_text_renderer_feature_once(
+            "strikethroughs",
+            &WARNED_DRAW_STRIKETHROUGH_UNSUPPORTED,
+        );
+        Ok(())
     }
 
     fn DrawInlineObject(
@@ -1596,10 +1611,11 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
         _isrighttoleft: BOOL,
         _clientdrawingeffect: windows::core::Ref<windows::core::IUnknown>,
     ) -> windows::core::Result<()> {
-        Err(windows::core::Error::new(
-            E_NOTIMPL,
-            "DrawInlineObject unimplemented",
-        ))
+        warn_unsupported_text_renderer_feature_once(
+            "inline objects",
+            &WARNED_DRAW_INLINE_OBJECT_UNSUPPORTED,
+        );
+        Ok(())
     }
 }
 

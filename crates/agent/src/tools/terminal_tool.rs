@@ -13,6 +13,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use util::paths::SanitizedPath;
 
 use crate::{
     AgentTool, ThreadEnvironment, ToolCallEventStream, ToolPermissionDecision,
@@ -291,10 +292,10 @@ fn working_dir(
 
         if input_path.is_absolute() {
             // Absolute paths are allowed, but only if they're in one of the project's worktrees.
-            if project
-                .worktrees(cx)
-                .any(|worktree| input_path.starts_with(&worktree.read(cx).abs_path()))
-            {
+            if project.worktrees(cx).any(|worktree| {
+                SanitizedPath::new(input_path)
+                    .starts_with(SanitizedPath::new(worktree.read(cx).abs_path().as_ref()))
+            }) {
                 return Ok(Some(input_path.into()));
             }
         } else if let Some(worktree) = project.worktree_for_root_name(cd, cx) {

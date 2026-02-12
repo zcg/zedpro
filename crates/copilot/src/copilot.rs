@@ -1658,15 +1658,26 @@ mod tests {
         }
 
         fn full_path(&self, _: &App) -> PathBuf {
-            unimplemented!()
+            self.abs_path.clone()
         }
 
         fn file_name<'a>(&'a self, _: &'a App) -> &'a str {
-            unimplemented!()
+            self.path
+                .file_name()
+                .or_else(|| self.abs_path.file_name().and_then(|name| name.to_str()))
+                .unwrap_or("")
         }
 
         fn to_proto(&self, _: &App) -> rpc::proto::File {
-            unimplemented!()
+            let disk_state = self.disk_state();
+            rpc::proto::File {
+                worktree_id: settings::WorktreeId::from_usize(0).to_proto(),
+                entry_id: None,
+                path: self.path.as_ref().to_proto(),
+                mtime: disk_state.mtime().map(|time| time.into()),
+                is_deleted: disk_state.is_deleted(),
+                is_historic: matches!(disk_state, language::DiskState::Historic { .. }),
+            }
         }
 
         fn worktree_id(&self, _: &App) -> settings::WorktreeId {
@@ -1683,12 +1694,14 @@ mod tests {
             self.abs_path.clone()
         }
 
-        fn load(&self, _: &App) -> Task<Result<String>> {
-            unimplemented!()
+        fn load(&self, cx: &App) -> Task<Result<String>> {
+            let abs_path = self.abs_path.clone();
+            cx.background_spawn(async move { Ok(std::fs::read_to_string(abs_path)?) })
         }
 
-        fn load_bytes(&self, _cx: &App) -> Task<Result<Vec<u8>>> {
-            unimplemented!()
+        fn load_bytes(&self, cx: &App) -> Task<Result<Vec<u8>>> {
+            let abs_path = self.abs_path.clone();
+            cx.background_spawn(async move { Ok(std::fs::read(abs_path)?) })
         }
     }
 

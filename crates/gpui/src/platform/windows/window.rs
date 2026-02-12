@@ -573,10 +573,10 @@ impl rwh::HasWindowHandle for WindowsWindow {
     }
 }
 
-// todo(windows)
 impl rwh::HasDisplayHandle for WindowsWindow {
     fn display_handle(&self) -> std::result::Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
-        unimplemented!()
+        let raw = rwh::WindowsDisplayHandle::new().into();
+        Ok(unsafe { rwh::DisplayHandle::borrow_raw(raw) })
     }
 }
 
@@ -826,9 +826,9 @@ impl PlatformWindow for WindowsWindow {
                 ];
                 unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
 
-                // todo(windows)
-                // crate `windows 0.56` reports true as Err
-                unsafe { SetForegroundWindow(hwnd).as_bool() };
+                if !unsafe { SetForegroundWindow(hwnd).as_bool() } {
+                    log::debug!("SetForegroundWindow returned false for hwnd {:?}", hwnd);
+                }
             })
             .detach();
     }
@@ -1098,7 +1098,9 @@ impl PlatformWindow for WindowsWindow {
                     }
                 }
 
-                inner.tab_coordinator.merge_all(&target_identifier, inner.hwnd);
+                inner
+                    .tab_coordinator
+                    .merge_all(&target_identifier, inner.hwnd);
             })
             .detach();
     }

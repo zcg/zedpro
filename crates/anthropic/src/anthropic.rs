@@ -612,8 +612,8 @@ pub async fn stream_completion_with_options(
         beta_headers,
         options,
     )
-        .await
-        .map(|output| output.0)
+    .await
+    .map(|output| output.0)
 }
 
 /// Generate completion without streaming.

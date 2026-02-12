@@ -98,7 +98,14 @@ pub async fn generate_content_with_options(
     validate_generate_content_request(&request)?;
 
     let model_id = mem::take(&mut request.model.model_id);
-    let uri = build_model_uri(api_url, options, &model_id, "generateContent", api_key, None);
+    let uri = build_model_uri(
+        api_url,
+        options,
+        &model_id,
+        "generateContent",
+        api_key,
+        None,
+    );
 
     let mut request_builder = HttpRequest::builder()
         .method(Method::POST)

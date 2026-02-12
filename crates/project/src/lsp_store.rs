@@ -2232,13 +2232,11 @@ impl LocalLspStore {
         let lsp_edits = {
             let mut lsp_ranges = Vec::new();
             this.update(cx, |_this, cx| {
-                // TODO(#22930): In the case of formatting multibuffer selections, this buffer may
-                // not have been sent to the language server. This seems like a fairly systemic
-                // issue, though, the resolution probably is not specific to formatting.
-                //
-                // TODO: Instead of using current snapshot, should use the latest snapshot sent to
-                // LSP.
-                let snapshot = buffer_handle.read(cx).snapshot();
+                let local = _this
+                    .as_local_mut()
+                    .context("Range formatting via LSP requires a local LSP store")?;
+                let snapshot =
+                    local.snapshot_for_range_formatting(buffer_handle, abs_path, language_server, cx)?;
                 for range in ranges {
                     lsp_ranges.push(range_to_lsp(range.to_point_utf16(&snapshot))?);
                 }
@@ -2280,6 +2278,71 @@ impl LocalLspStore {
         } else {
             Ok(Vec::with_capacity(0))
         }
+    }
+
+    fn snapshot_for_range_formatting(
+        &mut self,
+        buffer_handle: &Entity<Buffer>,
+        abs_path: &Path,
+        language_server: &Arc<LanguageServer>,
+        cx: &mut App,
+    ) -> Result<TextBufferSnapshot> {
+        let server_id = language_server.server_id();
+        let buffer_id = buffer_handle.read(cx).remote_id();
+
+        if let Some(snapshot) = self
+            .buffer_snapshots
+            .get(&buffer_id)
+            .and_then(|snapshots| snapshots.get(&server_id))
+            .and_then(|snapshots| snapshots.last())
+            .map(|snapshot| snapshot.snapshot.clone())
+        {
+            return Ok(snapshot);
+        }
+
+        let (snapshot, language_name) = {
+            let buffer = buffer_handle.read(cx);
+            let language = buffer
+                .language()
+                .context("Cannot format ranges for a buffer without a language")?;
+            (buffer.text_snapshot(), language.name().clone())
+        };
+
+        let adapter_language_id = {
+            let Some(LanguageServerState::Running { adapter, .. }) =
+                self.language_servers.get(&server_id)
+            else {
+                anyhow::bail!(
+                    "Cannot format ranges: language server {server_id} is not running"
+                );
+            };
+            let adapter_language_id = adapter.language_id(&language_name);
+
+            let server_snapshots = self
+                .buffer_snapshots
+                .entry(buffer_id)
+                .or_default()
+                .entry(server_id)
+                .or_default();
+            if server_snapshots.is_empty() {
+                server_snapshots.push(LspBufferSnapshot {
+                    version: 0,
+                    snapshot: snapshot.clone(),
+                });
+            }
+            self
+                .buffers_opened_in_servers
+                .entry(buffer_id)
+                .or_default()
+                .insert(server_id);
+
+            adapter_language_id
+        };
+
+        let uri = file_path_to_lsp_url(abs_path)?;
+        language_server.register_buffer(uri, adapter_language_id, 0, snapshot.text());
+
+        Ok(snapshot)
     }
 
     async fn format_via_lsp(
@@ -7934,6 +7997,7 @@ impl LspStore {
     async fn refresh_workspace_configurations(lsp_store: &WeakEntity<Self>, cx: &mut AsyncApp) {
         maybe!(async move {
             let mut refreshed_servers = HashSet::default();
+            let lsp_store_weak = lsp_store.clone();
             let servers = lsp_store
                 .update(cx, |lsp_store, cx| {
                     let local = lsp_store.as_local()?;
@@ -7964,13 +8028,11 @@ impl LspStore {
 
                             match states {
                                 LanguageServerState::Starting { .. } => None,
-                                LanguageServerState::Running {
-                                    adapter, server, ..
-                                } => {
+                                LanguageServerState::Running { adapter, server, .. } => {
                                     let adapter = adapter.clone();
-                                    let server = server.clone();
                                     refreshed_servers.insert(server.name());
                                     let toolchain = seed.toolchain.clone();
+                                    let lsp_store_weak = lsp_store_weak.clone();
                                     Some(cx.spawn(async move |_, cx| {
                                         let settings =
                                             LocalLspStore::workspace_configuration_for_adapter(
@@ -7982,7 +8044,23 @@ impl LspStore {
                                             )
                                             .await
                                             .ok()?;
-                                        server
+                                        let live_server = lsp_store_weak
+                                            .update(cx, |this, _| {
+                                                let local = this.as_local()?;
+                                                let state = local.language_servers.get(&server_id)?;
+                                                match state {
+                                                    LanguageServerState::Running {
+                                                        server, ..
+                                                    } => Some(server.clone()),
+                                                    LanguageServerState::Starting { .. } => None,
+                                                }
+                                            })
+                                            .ok()
+                                            .flatten()?;
+                                        if live_server.server_id() != server_id {
+                                            return None;
+                                        }
+                                        live_server
                                             .notify::<lsp::notification::DidChangeConfiguration>(
                                                 lsp::DidChangeConfigurationParams { settings },
                                             )
@@ -8000,10 +8078,8 @@ impl LspStore {
                 .flatten()?;
 
             log::debug!("Refreshing workspace configurations for servers {refreshed_servers:?}");
-            // TODO this asynchronous job runs concurrently with extension (de)registration and may take enough time for a certain extension
-            // to stop and unregister its language server wrapper.
-            // This is racy : an extension might have already removed all `local.language_servers` state, but here we `.clone()` and hold onto it anyway.
-            // This now causes errors in the logs, we should find a way to remove such servers from the processing everywhere.
+            // This asynchronous job can outlive extension (de)registration; each task re-checks
+            // whether the language server is still running before notifying it.
             let _: Vec<Option<()>> = join_all(servers).await;
 
             Some(())

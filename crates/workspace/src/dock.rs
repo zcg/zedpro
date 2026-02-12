@@ -34,6 +34,10 @@ pub trait UtilityPane: EventEmitter<MinimizePane> + EventEmitter<ClosePane> + Re
     fn position(&self, window: &Window, cx: &App) -> UtilityPanePosition;
     /// The icon to render in the adjacent pane's tab bar for toggling this utility pane
     fn toggle_icon(&self, cx: &App) -> IconName;
+    /// The tooltip text for the adjacent pane's toggle icon.
+    fn toggle_tooltip(&self, _cx: &App) -> SharedString {
+        "Toggle Utility Pane".into()
+    }
     fn expanded(&self, cx: &App) -> bool;
     fn set_expanded(&mut self, expanded: bool, cx: &mut Context<Self>);
     fn width(&self, cx: &App) -> Pixels;
@@ -43,6 +47,7 @@ pub trait UtilityPane: EventEmitter<MinimizePane> + EventEmitter<ClosePane> + Re
 pub trait UtilityPaneHandle: 'static + Send + Sync {
     fn position(&self, window: &Window, cx: &App) -> UtilityPanePosition;
     fn toggle_icon(&self, cx: &App) -> IconName;
+    fn toggle_tooltip(&self, cx: &App) -> SharedString;
     fn expanded(&self, cx: &App) -> bool;
     fn set_expanded(&self, expanded: bool, cx: &mut App);
     fn width(&self, cx: &App) -> Pixels;
@@ -61,6 +66,10 @@ where
 
     fn toggle_icon(&self, cx: &App) -> IconName {
         self.read(cx).toggle_icon(cx)
+    }
+
+    fn toggle_tooltip(&self, cx: &App) -> SharedString {
+        self.read(cx).toggle_tooltip(cx)
     }
 
     fn expanded(&self, cx: &App) -> bool {

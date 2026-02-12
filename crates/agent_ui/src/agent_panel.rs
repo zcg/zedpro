@@ -54,7 +54,7 @@ use gpui::{
 };
 use language::LanguageRegistry;
 use language_model::{ConfigurationError, LanguageModelRegistry};
-use project::{Project, ProjectPath, Worktree};
+use project::{Project, ProjectPath, Worktree, WorktreeId};
 use prompt_store::{PromptBuilder, PromptStore, UserPromptId};
 use rules_library::{RulesLibrary, open_rules_library};
 use search::{BufferSearchBar, buffer_search};
@@ -264,7 +264,6 @@ enum WhichFontSize {
     None,
 }
 
-// TODO unify this with ExternalAgent
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AgentType {
     #[default]
@@ -279,24 +278,24 @@ pub enum AgentType {
 }
 
 impl AgentType {
-    fn label(&self) -> SharedString {
+    fn as_external_agent(&self) -> Option<ExternalAgent> {
         match self {
-            Self::NativeAgent | Self::TextThread => "Zed Agent".into(),
-            Self::Gemini => "Gemini CLI".into(),
-            Self::ClaudeCode => "Claude Code".into(),
-            Self::Codex => "Codex".into(),
-            Self::Custom { name, .. } => name.into(),
+            Self::NativeAgent => Some(ExternalAgent::NativeAgent),
+            Self::Gemini => Some(ExternalAgent::Gemini),
+            Self::ClaudeCode => Some(ExternalAgent::ClaudeCode),
+            Self::Codex => Some(ExternalAgent::Codex),
+            Self::Custom { name } => Some(ExternalAgent::Custom { name: name.clone() }),
+            Self::TextThread => None,
         }
     }
 
+    fn label(&self) -> SharedString {
+        self.as_external_agent()
+            .map_or_else(|| "Zed Agent".into(), |agent| agent.label())
+    }
+
     fn icon(&self) -> Option<IconName> {
-        match self {
-            Self::NativeAgent | Self::TextThread => None,
-            Self::Gemini => Some(IconName::AiGemini),
-            Self::ClaudeCode => Some(IconName::AiClaude),
-            Self::Codex => Some(IconName::AiOpenAi),
-            Self::Custom { .. } => Some(IconName::Sparkle),
-        }
+        self.as_external_agent().and_then(|agent| agent.icon())
     }
 }
 
@@ -746,6 +745,18 @@ impl AgentPanel {
         }
     }
 
+    fn active_worktree_id(&self, cx: &mut App) -> Option<WorktreeId> {
+        self.workspace
+            .update(cx, |workspace, cx| {
+                workspace
+                    .active_item(cx)
+                    .and_then(|item| item.project_path(cx))
+                    .map(|project_path| project_path.worktree_id)
+            })
+            .ok()
+            .flatten()
+    }
+
     fn new_thread(&mut self, _action: &NewThread, window: &mut Window, cx: &mut Context<Self>) {
         self.new_agent_thread(AgentType::NativeAgent, window, cx);
     }
@@ -779,9 +790,10 @@ impl AgentPanel {
         let context = self
             .text_thread_store
             .update(cx, |context_store, cx| context_store.create(cx));
-        let lsp_adapter_delegate = make_lsp_adapter_delegate(&self.project, cx)
-            .log_err()
-            .flatten();
+        let lsp_adapter_delegate =
+            make_lsp_adapter_delegate(&self.project, self.active_worktree_id(cx), cx)
+                .log_err()
+                .flatten();
 
         let text_thread_editor = cx.new(|cx| {
             let mut editor = TextThreadEditor::for_text_thread(
@@ -936,18 +948,14 @@ impl AgentPanel {
     }
 
     fn history_kind_for_selected_agent(&self, cx: &App) -> Option<HistoryKind> {
-        match self.selected_agent {
-            AgentType::NativeAgent => Some(HistoryKind::AgentThreads),
-            AgentType::TextThread => Some(HistoryKind::TextThreads),
-            AgentType::Gemini
-            | AgentType::ClaudeCode
-            | AgentType::Codex
-            | AgentType::Custom { .. } => {
-                if self.acp_history.read(cx).has_session_list() {
-                    Some(HistoryKind::AgentThreads)
-                } else {
-                    None
-                }
+        match self.selected_agent.as_external_agent() {
+            None => Some(HistoryKind::TextThreads),
+            Some(ExternalAgent::NativeAgent) => Some(HistoryKind::AgentThreads),
+            Some(_) => {
+                self.acp_history
+                    .read(cx)
+                    .has_session_list()
+                    .then_some(HistoryKind::AgentThreads)
             }
         }
     }
@@ -993,9 +1001,10 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let lsp_adapter_delegate = make_lsp_adapter_delegate(&self.project.clone(), cx)
-            .log_err()
-            .flatten();
+        let lsp_adapter_delegate =
+            make_lsp_adapter_delegate(&self.project.clone(), self.active_worktree_id(cx), cx)
+                .log_err()
+                .flatten();
         let editor = cx.new(|cx| {
             TextThreadEditor::for_text_thread(
                 text_thread,
@@ -1577,14 +1586,7 @@ impl AgentPanel {
     }
 
     fn selected_external_agent(&self) -> Option<ExternalAgent> {
-        match &self.selected_agent {
-            AgentType::NativeAgent => Some(ExternalAgent::NativeAgent),
-            AgentType::Gemini => Some(ExternalAgent::Gemini),
-            AgentType::ClaudeCode => Some(ExternalAgent::ClaudeCode),
-            AgentType::Codex => Some(ExternalAgent::Codex),
-            AgentType::Custom { name } => Some(ExternalAgent::Custom { name: name.clone() }),
-            AgentType::TextThread => None,
-        }
+        self.selected_agent.as_external_agent()
     }
 
     fn sync_agent_servers_from_extensions(&mut self, cx: &mut Context<Self>) {
@@ -1633,44 +1635,17 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match agent {
-            AgentType::TextThread => {
-                window.dispatch_action(NewTextThread.boxed_clone(), cx);
-            }
-            AgentType::NativeAgent => self.external_thread(
-                Some(crate::ExternalAgent::NativeAgent),
-                None,
-                None,
-                window,
-                cx,
-            ),
-            AgentType::Gemini => {
-                self.external_thread(Some(crate::ExternalAgent::Gemini), None, None, window, cx)
-            }
-            AgentType::ClaudeCode => {
-                self.selected_agent = AgentType::ClaudeCode;
-                self.serialize(cx);
-                self.external_thread(
-                    Some(crate::ExternalAgent::ClaudeCode),
-                    None,
-                    None,
-                    window,
-                    cx,
-                )
-            }
-            AgentType::Codex => {
-                self.selected_agent = AgentType::Codex;
-                self.serialize(cx);
-                self.external_thread(Some(crate::ExternalAgent::Codex), None, None, window, cx)
-            }
-            AgentType::Custom { name } => self.external_thread(
-                Some(crate::ExternalAgent::Custom { name }),
-                None,
-                None,
-                window,
-                cx,
-            ),
+        if agent == AgentType::TextThread {
+            window.dispatch_action(NewTextThread.boxed_clone(), cx);
+            return;
         }
+
+        if matches!(agent, AgentType::ClaudeCode | AgentType::Codex) {
+            self.selected_agent = agent.clone();
+            self.serialize(cx);
+        }
+
+        self.external_thread(agent.as_external_agent(), None, None, window, cx)
     }
 
     pub fn load_agent_thread(

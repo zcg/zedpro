@@ -4,17 +4,12 @@ use collections::HashMap;
 use settings::RegisterSetting;
 
 use crate::provider::{
-    anthropic::AnthropicSettings,
-    anthropic_compatible::AnthropicCompatibleSettings,
-    bedrock::AmazonBedrockSettings,
-    cloud::ZedDotDevSettings,
-    deepseek::DeepSeekSettings,
-    google::GoogleSettings,
-    google_compatible::GoogleCompatibleSettings,
-    lmstudio::LmStudioSettings,
-    mistral::MistralSettings, ollama::OllamaSettings, open_ai::OpenAiSettings,
-    open_ai_compatible::OpenAiCompatibleSettings, open_router::OpenRouterSettings,
-    vercel::VercelSettings, x_ai::XAiSettings,
+    anthropic::AnthropicSettings, anthropic_compatible::AnthropicCompatibleSettings,
+    bedrock::AmazonBedrockSettings, cloud::ZedDotDevSettings, deepseek::DeepSeekSettings,
+    google::GoogleSettings, google_compatible::GoogleCompatibleSettings,
+    lmstudio::LmStudioSettings, mistral::MistralSettings, ollama::OllamaSettings,
+    open_ai::OpenAiSettings, open_ai_compatible::OpenAiCompatibleSettings,
+    open_router::OpenRouterSettings, vercel::VercelSettings, x_ai::XAiSettings,
 };
 
 #[derive(Debug, RegisterSetting)]
@@ -69,7 +64,10 @@ impl settings::Settings for AllLanguageModelSettings {
                         AnthropicCompatibleSettings {
                             api_url: value.api_url,
                             available_models: value.available_models,
-                            request_compat: value.request_compat.map(Into::into).unwrap_or_default(),
+                            request_compat: value
+                                .request_compat
+                                .map(Into::into)
+                                .unwrap_or_default(),
                         },
                     )
                 })
@@ -77,9 +75,8 @@ impl settings::Settings for AllLanguageModelSettings {
             bedrock: AmazonBedrockSettings {
                 available_models: bedrock.available_models.unwrap_or_default(),
                 region: bedrock.region,
-                endpoint: bedrock.endpoint_url, // todo(should be api_url)
+                endpoint: bedrock.api_url,
                 profile_name: bedrock.profile,
-                role_arn: None, // todo(was never a setting for this...)
                 authentication_method: bedrock.authentication_method.map(Into::into),
                 allow_global: bedrock.allow_global,
             },
@@ -99,7 +96,10 @@ impl settings::Settings for AllLanguageModelSettings {
                         GoogleCompatibleSettings {
                             api_url: value.api_url,
                             available_models: value.available_models,
-                            request_compat: value.request_compat.map(Into::into).unwrap_or_default(),
+                            request_compat: value
+                                .request_compat
+                                .map(Into::into)
+                                .unwrap_or_default(),
                         },
                     )
                 })

@@ -3750,17 +3750,30 @@ impl LspCommand for SemanticTokensDelta {
         }
     }
 
-    fn to_proto(&self, _: u64, _: &Buffer) -> proto::SemanticTokens {
-        unimplemented!("Delta requests are never initialted on the remote client side")
+    fn to_proto(&self, project_id: u64, buffer: &Buffer) -> proto::SemanticTokens {
+        proto::SemanticTokens {
+            project_id,
+            buffer_id: buffer.remote_id().into(),
+            version: serialize_version(&buffer.version()),
+            for_server: None,
+        }
     }
 
     async fn from_proto(
-        _: proto::SemanticTokens,
+        message: proto::SemanticTokens,
         _: Entity<LspStore>,
-        _: Entity<Buffer>,
-        _: AsyncApp,
+        buffer: Entity<Buffer>,
+        mut cx: AsyncApp,
     ) -> Result<Self> {
-        unimplemented!("Delta requests are never initialted on the remote client side")
+        buffer
+            .update(&mut cx, |buffer, _| {
+                buffer.wait_for_version(deserialize_version(&message.version))
+            })
+            .await?;
+
+        anyhow::bail!(
+            "SemanticTokensDelta cannot be reconstructed from proto because previous_result_id is not serialized"
+        )
     }
 
     fn response_to_proto(

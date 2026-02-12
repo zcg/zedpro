@@ -9,6 +9,7 @@ use gpui::{
 };
 use gpui::{ListState, ScrollHandle, ScrollStrategy, UniformListScrollHandle};
 use language::LanguageRegistry;
+use markdown::{Markdown, MarkdownElement, MarkdownFont, MarkdownStyle};
 use notifications::status_toast::{StatusToast, ToastIcon};
 use persistence::COMPONENT_PREVIEW_DB;
 use project::Project;
@@ -103,6 +104,7 @@ struct ComponentPreview {
     filter_text: String,
     focus_handle: FocusHandle,
     language_registry: Arc<LanguageRegistry>,
+    cached_description_markdown: Option<(ComponentId, Entity<Markdown>)>,
     nav_scroll_handle: UniformListScrollHandle,
     project: Entity<Project>,
     user_store: Entity<UserStore>,
@@ -146,6 +148,7 @@ impl ComponentPreview {
             filter_text: String::new(),
             focus_handle: cx.focus_handle(),
             language_registry,
+            cached_description_markdown: None,
             nav_scroll_handle: UniformListScrollHandle::new(),
             project,
             user_store,
@@ -540,17 +543,45 @@ impl ComponentPreview {
         &mut self,
         component_id: &ComponentId,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let component = self.component_map.get(component_id);
+        let component = self.component_map.get(component_id).cloned();
 
         if let Some(component) = component {
+            let description_markdown = component.description().map(|description| {
+                if let Some((cached_component_id, cached_markdown)) =
+                    self.cached_description_markdown.as_ref()
+                    && cached_component_id == component_id
+                {
+                    return cached_markdown.clone();
+                }
+
+                let markdown = cx.new(|cx| {
+                    Markdown::new(
+                        description.into(),
+                        Some(self.language_registry.clone()),
+                        None,
+                        cx,
+                    )
+                });
+                self.cached_description_markdown = Some((component_id.clone(), markdown.clone()));
+                markdown
+            });
+            if description_markdown.is_none() {
+                self.cached_description_markdown = None;
+            }
+
             v_flex()
                 .id("render-component-page")
                 .flex_1()
-                .child(ComponentPreviewPage::new(component.clone(), self.reset_key))
+                .child(ComponentPreviewPage::new(
+                    component,
+                    self.reset_key,
+                    description_markdown,
+                ))
                 .into_any_element()
         } else {
+            self.cached_description_markdown = None;
             v_flex()
                 .size_full()
                 .items_center()
@@ -574,11 +605,8 @@ impl ComponentPreview {
             });
         }
     }
-}
 
-impl Render for ComponentPreview {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // TODO: move this into the struct
+    fn sync_filter_text(&mut self, cx: &mut Context<Self>) {
         let current_filter = self.filter_editor.update(cx, |input, cx| {
             if input.is_empty(cx) {
                 String::new()
@@ -591,6 +619,12 @@ impl Render for ComponentPreview {
             self.filter_text = current_filter;
             self.update_component_list(cx);
         }
+    }
+}
+
+impl Render for ComponentPreview {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_filter_text(cx);
         let sidebar_entries = self.scope_ordered_entries();
         let active_page = self.active_page.clone();
 
@@ -876,24 +910,23 @@ impl SerializableItem for ComponentPreview {
     }
 }
 
-// TODO: use language registry to allow rendering markdown
 #[derive(IntoElement)]
 pub struct ComponentPreviewPage {
-    // languages: Arc<LanguageRegistry>,
     component: ComponentMetadata,
     reset_key: usize,
+    description_markdown: Option<Entity<Markdown>>,
 }
 
 impl ComponentPreviewPage {
     pub fn new(
         component: ComponentMetadata,
         reset_key: usize,
-        // languages: Arc<LanguageRegistry>
+        description_markdown: Option<Entity<Markdown>>,
     ) -> Self {
         Self {
-            // languages,
             component,
             reset_key,
+            description_markdown,
         }
     }
 
@@ -934,7 +967,7 @@ impl ComponentPreviewPage {
         }
     }
 
-    fn render_header(&self, _: &Window, cx: &App) -> impl IntoElement {
+    fn render_header(&self, window: &Window, cx: &App) -> impl IntoElement {
         v_flex()
             .min_w_0()
             .w_full()
@@ -961,9 +994,18 @@ impl ComponentPreviewPage {
                             .children(self.render_component_status(cx)),
                     ),
             )
-            .when_some(self.component.description(), |this, description| {
-                this.child(Label::new(description).size(LabelSize::Small))
-            })
+            .when_some(
+                self.description_markdown.as_ref(),
+                |this, description_markdown| {
+                    this.child(
+                        MarkdownElement::new(
+                            description_markdown.clone(),
+                            MarkdownStyle::themed(MarkdownFont::Editor, window, cx),
+                        )
+                        .on_url_click(|url, _window, cx| cx.open_url(&url)),
+                    )
+                },
+            )
     }
 
     fn render_preview(&self, window: &mut Window, cx: &mut App) -> impl IntoElement {

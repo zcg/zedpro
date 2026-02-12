@@ -280,8 +280,10 @@ impl Telemetry {
     #[cfg(not(any(test, feature = "test-support")))]
     fn shutdown_telemetry(self: &Arc<Self>) -> impl Future<Output = ()> + use<> {
         telemetry::event!("App Closed");
-        // TODO: close final edit period and make sure it's sent
-        Task::ready(())
+        let this = self.clone();
+        async move {
+            this.flush_events_inner().await.log_err();
+        }
     }
 
     pub fn log_file_path() -> PathBuf {
@@ -700,6 +702,7 @@ mod tests {
         init_test(cx);
         let clock = Arc::new(FakeSystemClock::new());
         let http = FakeHttpClient::with_200_response();
+        let http_for_assert = http.clone();
         let system_id = Some("system_id".to_string());
         let installation_id = Some("installation_id".to_string());
         let session_id = "session_id".to_string();
@@ -766,6 +769,7 @@ mod tests {
 
         cx.update(|_cx| {
             assert!(is_empty_state(&telemetry));
+            assert_eq!(http_for_assert.as_fake().request_count(), 1);
         });
     }
 
@@ -777,6 +781,7 @@ mod tests {
         init_test(cx);
         let clock = Arc::new(FakeSystemClock::new());
         let http = FakeHttpClient::with_200_response();
+        let http_for_assert = http.clone();
         let system_id = Some("system_id".to_string());
         let installation_id = Some("installation_id".to_string());
         let session_id = "session_id".to_string();
@@ -818,6 +823,7 @@ mod tests {
             executor.advance_clock(duration);
 
             assert!(is_empty_state(&telemetry));
+            assert_eq!(http_for_assert.as_fake().request_count(), 1);
         });
     }
 
@@ -929,10 +935,6 @@ mod tests {
             7,
         );
     }
-
-    // TODO:
-    // Test settings
-    // Update FakeHTTPClient to keep track of the number of requests and assert on it
 
     fn init_test(cx: &mut TestAppContext) {
         cx.update(|cx| {

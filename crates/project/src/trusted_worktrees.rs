@@ -52,6 +52,7 @@ use std::{
     sync::Arc,
 };
 use util::debug_panic;
+use util::paths::SanitizedPath;
 
 use crate::{project_settings::ProjectSettings, worktree_store::WorktreeStore};
 
@@ -498,11 +499,14 @@ impl TrustedWorktreesStore {
                         .worktree_for_id(*worktree_id, cx)
                         .is_some_and(|worktree| {
                             let worktree = worktree.read(cx);
-                            worktree_path.starts_with(&worktree.abs_path())
+                            SanitizedPath::new(&worktree_path)
+                                .starts_with(SanitizedPath::new(worktree.abs_path().as_ref()))
                                 || (is_file && !worktree.is_single_file())
                         }),
                     PathTrust::AbsPath(trusted_path) => {
-                        is_file || worktree_path.starts_with(trusted_path)
+                        is_file
+                            || SanitizedPath::new(&worktree_path)
+                                .starts_with(SanitizedPath::new(trusted_path))
                     }
                 })
             });

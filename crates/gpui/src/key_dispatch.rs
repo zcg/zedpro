@@ -843,10 +843,13 @@ mod tests {
                 _: &mut Window,
                 _: &mut App,
             ) {
-                if replacement_range.is_some() {
-                    unimplemented!()
+                if let Some(replacement_range) = replacement_range {
+                    self.text
+                        .borrow_mut()
+                        .replace_range(replacement_range, text);
+                } else {
+                    self.text.borrow_mut().push_str(text)
                 }
-                self.text.borrow_mut().push_str(text)
             }
 
             fn replace_and_mark_text_in_range(
@@ -857,10 +860,13 @@ mod tests {
                 _: &mut Window,
                 _: &mut App,
             ) {
-                if replacement_range.is_some() {
-                    unimplemented!()
+                if let Some(replacement_range) = replacement_range {
+                    self.text
+                        .borrow_mut()
+                        .replace_range(replacement_range, new_text);
+                } else {
+                    self.text.borrow_mut().push_str(new_text)
                 }
-                self.text.borrow_mut().push_str(new_text)
             }
 
             fn unmark_text(&mut self, _: &mut Window, _: &mut App) {}
@@ -1043,10 +1049,13 @@ mod tests {
                 _: &mut Window,
                 _: &mut App,
             ) {
-                if replacement_range.is_some() {
-                    unimplemented!()
+                if let Some(replacement_range) = replacement_range {
+                    self.text
+                        .borrow_mut()
+                        .replace_range(replacement_range, text);
+                } else {
+                    self.text.borrow_mut().push_str(text)
                 }
-                self.text.borrow_mut().push_str(text)
             }
 
             fn replace_and_mark_text_in_range(
@@ -1057,10 +1066,13 @@ mod tests {
                 _: &mut Window,
                 _: &mut App,
             ) {
-                if replacement_range.is_some() {
-                    unimplemented!()
+                if let Some(replacement_range) = replacement_range {
+                    self.text
+                        .borrow_mut()
+                        .replace_range(replacement_range, new_text);
+                } else {
+                    self.text.borrow_mut().push_str(new_text)
                 }
-                self.text.borrow_mut().push_str(new_text)
             }
 
             fn unmark_text(&mut self, _: &mut Window, _: &mut App) {}

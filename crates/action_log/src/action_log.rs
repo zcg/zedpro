@@ -626,9 +626,9 @@ impl ActionLog {
                         // Not sure how to disentangle edits made by the user
                         // from edits made by the AI at this point.
                         // For now, preserve both to avoid data loss.
-                        //
-                        // TODO: Better solution (disable "Reject" after user makes some
-                        // edit or find a way to differentiate between AI and user edits)
+                        log::info!(
+                            "Skipping reject on AI-created file with additional user edits to avoid data loss"
+                        );
                         Task::ready(Ok(()))
                     }
                 };

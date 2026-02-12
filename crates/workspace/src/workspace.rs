@@ -3093,9 +3093,28 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<Box<dyn ItemHandle>>> {
+        self.open_resolved_path_with_preview(path, true, true, window, cx)
+    }
+
+    pub fn open_resolved_path_with_preview(
+        &mut self,
+        path: ResolvedPath,
+        allow_preview: bool,
+        keep_old_preview: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<Box<dyn ItemHandle>>> {
         match path {
             ResolvedPath::ProjectPath { project_path, .. } => {
-                self.open_path(project_path, None, true, window, cx)
+                if !keep_old_preview
+                    && let Some(old_item_id) =
+                        self.active_pane.read(cx).active_item().map(|item| item.item_id())
+                {
+                    self.active_pane
+                        .update(cx, |pane, _| pane.unpreview_item_if_preview(old_item_id));
+                }
+
+                self.open_path_preview(project_path, None, true, allow_preview, true, window, cx)
             }
             ResolvedPath::AbsPath { path, .. } => self.open_abs_path(
                 PathBuf::from(path),
@@ -3117,8 +3136,8 @@ impl Workspace {
         self.project
             .read(cx)
             .worktree_for_id(worktree_id, cx)
-            // TODO: use `abs_path` or `root_dir`
-            .map(|wt| wt.read(cx).abs_path().as_ref().to_path_buf())
+            .and_then(|wt| wt.read(cx).root_dir())
+            .map(|path| path.as_ref().to_path_buf())
     }
 
     fn add_folder_to_project(
@@ -7205,7 +7224,8 @@ impl Render for Workspace {
         } else {
             (None, None)
         };
-        let ui_font = theme::setup_ui_font(window, cx);
+        window.set_rem_size(theme::get_ui_font_size(cx));
+        let ui_font = theme::get_ui_font(cx);
 
         let theme = cx.theme().clone();
         let colors = theme.colors();

@@ -58,6 +58,11 @@ mach2.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 tendril = "0.4.3"
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 git2.workspace = true

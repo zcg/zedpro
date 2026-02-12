@@ -902,6 +902,19 @@ impl HighlightStyle {
     /// Non-continuous properties, like font_weight and font_style, are overwritten.
     #[must_use]
     pub fn highlight(self, other: HighlightStyle) -> Self {
+        fn combine_fade_out(dest: Option<f32>, source: Option<f32>) -> Option<f32> {
+            match (dest, source) {
+                (Some(dest), Some(source)) => {
+                    let keep_dest = (1.0 - dest).clamp(0.0, 1.0);
+                    let keep_source = (1.0 - source).clamp(0.0, 1.0);
+                    Some(1.0 - keep_dest * keep_source)
+                }
+                (Some(dest), None) => Some(dest),
+                (None, Some(source)) => Some(source),
+                (None, None) => None,
+            }
+        }
+
         Self {
             color: other
                 .color
@@ -918,14 +931,7 @@ impl HighlightStyle {
             background_color: other.background_color.or(self.background_color),
             underline: other.underline.or(self.underline),
             strikethrough: other.strikethrough.or(self.strikethrough),
-            fade_out: other
-                .fade_out
-                .map(|source_fade| {
-                    self.fade_out
-                        .map(|dest_fade| (dest_fade * (1. + source_fade)).clamp(0., 1.))
-                        .unwrap_or(source_fade)
-                })
-                .or(self.fade_out),
+            fade_out: combine_fade_out(self.fade_out, other.fade_out),
         }
     }
 }
@@ -1382,7 +1388,6 @@ mod tests {
                 thickness: px(4.),
                 color: Some(red()),
             }),
-            // TODO this does not seem right
             fade_out: Some(0.),
             font_style: Some(FontStyle::Oblique),
             font_weight: Some(FontWeight(800.)),
@@ -1399,6 +1404,17 @@ mod tests {
             style_c, expected_style,
             "Blending styles should blend properties where possible and override all others"
         );
+
+        let style_e = HighlightStyle {
+            fade_out: Some(0.5),
+            ..Default::default()
+        };
+        let style_f = HighlightStyle {
+            fade_out: Some(0.5),
+            ..Default::default()
+        };
+        let merged = style_e.highlight(style_f);
+        assert_eq!(merged.fade_out, Some(0.75));
     }
 
     #[perf]

@@ -424,7 +424,12 @@ impl RemoteConnection for SshRemoteConnection {
         delegate: Arc<dyn RemoteClientDelegate>,
         cx: &mut AsyncApp,
     ) -> Task<Result<i32>> {
-        const VARS: [&str; 4] = ["RUST_LOG", "RUST_BACKTRACE", "ZED_GENERATE_MINIDUMPS", "GITHUB_TOKEN"];
+        const VARS: [&str; 4] = [
+            "RUST_LOG",
+            "RUST_BACKTRACE",
+            "ZED_GENERATE_MINIDUMPS",
+            "GITHUB_TOKEN",
+        ];
         delegate.set_status(Some("Starting proxy"), cx);
 
         let Some(remote_binary_path) = self.remote_binary_path.clone() else {
@@ -432,8 +437,6 @@ impl RemoteConnection for SshRemoteConnection {
         };
 
         let mut ssh_command = if self.ssh_platform.os.is_windows() {
-            // TODO: Set the `VARS` environment variables, we do not have `env` on windows
-            // so this needs a different approach
             let mut proxy_args = vec![];
             proxy_args.push("proxy".to_owned());
             proxy_args.push("--identifier".to_owned());
@@ -442,12 +445,53 @@ impl RemoteConnection for SshRemoteConnection {
             if reconnect {
                 proxy_args.push("--reconnect".to_owned());
             }
-            self.socket.ssh_command(
-                self.ssh_shell_kind,
-                &remote_binary_path.display(self.path_style()),
-                &proxy_args,
-                false,
-            )
+
+            let remote_binary = remote_binary_path.display(self.path_style()).into_owned();
+            let mut env_pairs = Vec::new();
+            for env_var in VARS {
+                if let Ok(value) = std::env::var(env_var) {
+                    env_pairs.push((env_var.to_owned(), value));
+                }
+            }
+
+            if env_pairs.is_empty() {
+                self.socket
+                    .ssh_command(self.ssh_shell_kind, &remote_binary, &proxy_args, false)
+            } else {
+                let powershell = ShellKind::PowerShell;
+                let mut script = String::new();
+                for (key, value) in &env_pairs {
+                    let Some(quoted_value) = powershell.try_quote(value) else {
+                        return Task::ready(Err(anyhow!(
+                            "failed to quote environment value for {key}"
+                        )));
+                    };
+                    script.push_str("$env:");
+                    script.push_str(key);
+                    script.push('=');
+                    script.push_str(&quoted_value);
+                    script.push_str("; ");
+                }
+                let Some(quoted_program) = powershell.try_quote_prefix_aware(&remote_binary) else {
+                    return Task::ready(Err(anyhow!(
+                        "failed to quote remote binary path for proxy startup"
+                    )));
+                };
+                script.push_str(&quoted_program);
+                for arg in &proxy_args {
+                    let Some(quoted_arg) = powershell.try_quote(arg) else {
+                        return Task::ready(Err(anyhow!(
+                            "failed to quote proxy argument for remote startup"
+                        )));
+                    };
+                    script.push(' ');
+                    script.push_str(&quoted_arg);
+                }
+
+                let args = ["-NoProfile", "-Command", script.as_str()];
+                self.socket
+                    .ssh_command(self.ssh_shell_kind, "powershell", &args, false)
+            }
         } else {
             let mut proxy_args = vec![];
             for env_var in VARS {

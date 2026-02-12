@@ -798,8 +798,21 @@ impl RulesLibrary {
                         this.count_tokens(prompt_id, window, cx);
                     }
                     Err(error) => {
-                        // TODO: we should show the error in the UI.
                         log::error!("error while loading rule: {:?}", error);
+                        let rule_name = rule_metadata
+                            .title
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "Untitled rule".to_string());
+                        let message = format!("Failed to load \"{rule_name}\"");
+                        let detail = format!("{error:#}");
+                        drop(window.prompt(
+                            PromptLevel::Critical,
+                            &message,
+                            Some(&detail),
+                            &["Ok"],
+                            cx,
+                        ));
                     }
                 })
                 .ok();
@@ -1389,7 +1402,8 @@ impl RulesLibrary {
 
 impl Render for RulesLibrary {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ui_font = theme::setup_ui_font(window, cx);
+        window.set_rem_size(theme::get_ui_font_size(cx));
+        let ui_font = theme::get_ui_font(cx);
         let theme = cx.theme().clone();
 
         client_side_decorations(

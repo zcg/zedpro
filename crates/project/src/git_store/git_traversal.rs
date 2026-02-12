@@ -102,8 +102,11 @@ impl<'a> GitTraversal<'a> {
         } else if entry.is_file() {
             // For a file entry, park the cursor on the corresponding status
             if statuses.seek_forward(&PathTarget::Path(&repo_path), Bias::Left) {
-                // TODO: Investigate statuses.item() being None here.
-                self.current_entry_summary = statuses.item().map(|item| item.status.into());
+                self.current_entry_summary = statuses
+                    .item()
+                    .filter(|item| item.repo_path == repo_path)
+                    .map(|item| item.status.into())
+                    .or(Some(GitSummary::UNCHANGED));
             } else {
                 self.current_entry_summary = Some(GitSummary::UNCHANGED);
             }

@@ -1,8 +1,8 @@
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
 
 use collections::HashMap;
 use gpui::{Corner, Entity, WeakEntity};
-use project::debugger::session::{ThreadId, ThreadStatus};
+use project::debugger::session::{ThreadId, ThreadSnapshotEntry, ThreadStatus};
 use ui::{CommonAnimationExt, ContextMenu, DropdownMenu, DropdownStyle, Indicator, prelude::*};
 use util::{maybe, truncate_and_trailoff};
 
@@ -274,7 +274,7 @@ impl DebugPanel {
     pub(crate) fn render_thread_dropdown(
         &self,
         running_state: &Entity<RunningState>,
-        threads: Vec<(dap::Thread, ThreadStatus)>,
+        threads: Arc<[ThreadSnapshotEntry]>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<DropdownMenu> {
@@ -304,7 +304,7 @@ impl DebugPanel {
                     ("thread-list", session_id.0),
                     trigger,
                     ContextMenu::build(window, cx, move |mut this, _, _| {
-                        for (thread, _) in threads {
+                        for (thread, _) in threads.iter().cloned() {
                             let running_state = running_state.clone();
                             let thread_id = thread.id;
                             let entry_name = thread

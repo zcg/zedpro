@@ -14,15 +14,17 @@ use std::{
     env::{self, consts},
     ffi::OsString,
     io,
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, ToSocketAddrs},
     path::{Path, PathBuf},
     process::Output,
     sync::Arc,
+    time::{Duration, Instant},
 };
 use util::ResultExt;
 use util::archive::extract_zip;
 
 const NODE_CA_CERTS_ENV_VAR: &str = "NODE_EXTRA_CA_CERTS";
+const MANAGED_NODE_INSTALL_RETRY_COOLDOWN: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct NodeBinaryOptions {
@@ -54,6 +56,7 @@ struct NodeRuntimeState {
     http: Arc<dyn HttpClient>,
     instance: Option<Box<dyn NodeRuntimeTrait>>,
     last_options: Option<NodeBinaryOptions>,
+    managed_install_retry_after: Option<Instant>,
     options: watch::Receiver<Option<NodeBinaryOptions>>,
     shell_env_loaded: Shared<oneshot::Receiver<()>>,
 }
@@ -68,6 +71,7 @@ impl NodeRuntime {
             http,
             instance: None,
             last_options: None,
+            managed_install_retry_after: None,
             options,
             shell_env_loaded: shell_env_loaded.unwrap_or(oneshot::channel().1).shared(),
         })))
@@ -78,6 +82,7 @@ impl NodeRuntime {
             http: Arc::new(http_client::BlockedHttpClient),
             instance: None,
             last_options: None,
+            managed_install_retry_after: None,
             options: watch::channel(Some(NodeBinaryOptions::default())).1,
             shell_env_loaded: oneshot::channel().1.shared(),
         })))
@@ -103,6 +108,7 @@ impl NodeRuntime {
 
         if state.last_options.as_ref() != Some(&options) {
             state.instance.take();
+            state.managed_install_retry_after = None;
         }
         if let Some(instance) = state.instance.as_ref() {
             return instance.boxed_clone();
@@ -147,6 +153,21 @@ impl NodeRuntime {
         };
 
         let instance = if options.allow_binary_download {
+            if let Some(retry_after) = state.managed_install_retry_after
+                && retry_after > Instant::now()
+            {
+                let retry_in_seconds = retry_after
+                    .saturating_duration_since(Instant::now())
+                    .as_secs()
+                    .max(1);
+                return Box::new(UnavailableNodeRuntime {
+                    error_message: format!(
+                        "retrying Zed managed Node.js install in about {retry_in_seconds}s after a previous failure"
+                    )
+                    .into(),
+                });
+            }
+
             let (log_level, why_using_managed) = match system_node_error {
                 Some(err @ DetectError::Other(_)) => (Level::Warn, err.to_string()),
                 Some(err @ DetectError::NotInPath(_)) => (Level::Info, err.to_string()),
@@ -166,42 +187,35 @@ impl NodeRuntime {
                     Box::new(instance) as Box<dyn NodeRuntimeTrait>
                 }
                 Err(err) => {
-                    // failure case is cached, since downloading + installing may be expensive. The
-                    // downside of this is that it may fail due to an intermittent network issue.
-                    //
-                    // TODO: Have `install_if_needed` indicate which failure cases are retryable
-                    // and/or have shared tracking of when internet is available.
-                    Box::new(UnavailableNodeRuntime {
+                    state.managed_install_retry_after =
+                        Some(Instant::now() + MANAGED_NODE_INSTALL_RETRY_COOLDOWN);
+                    return Box::new(UnavailableNodeRuntime {
                         error_message: format!(
-                            "failure while downloading and/or installing Zed managed Node.js, \
-                            restart Zed to retry: {}",
-                            err
+                            "failure while downloading and/or installing Zed managed Node.js; \
+                             will retry automatically in {}s: {}",
+                            MANAGED_NODE_INSTALL_RETRY_COOLDOWN.as_secs(),
+                            err,
                         )
                         .into(),
-                    }) as Box<dyn NodeRuntimeTrait>
+                    }) as Box<dyn NodeRuntimeTrait>;
                 }
             }
         } else if let Some(system_node_error) = system_node_error {
             // failure case not cached, since it's cheap to check again
-            //
-            // TODO: When support is added for setting `options.allow_binary_download`, update this
-            // error message.
             return Box::new(UnavailableNodeRuntime {
                 error_message: format!(
-                    "failure while checking system Node.js from PATH: {}",
-                    system_node_error
+                    "failure while checking system Node.js from PATH (managed Node.js downloads are disabled): {}",
+                    system_node_error,
                 )
                 .into(),
             });
         } else {
             // failure case is cached because it will always happen with these options
-            //
-            // TODO: When support is added for setting `options.allow_binary_download`, update this
-            // error message.
             Box::new(UnavailableNodeRuntime {
-                error_message: "`node` settings do not allow any way to use Node.js"
-                    .to_string()
-                    .into(),
+                error_message:
+                    "`node` settings do not allow any way to use Node.js (set `node.path` or enable `node.allow_binary_download`)"
+                        .to_string()
+                        .into(),
             })
         };
 
@@ -897,14 +911,15 @@ fn configure_npm_command(command: &mut smol::process::Command, directory: Option
 
 fn proxy_argument(proxy: Option<&Url>) -> Option<String> {
     let mut proxy = proxy.cloned()?;
-    // Map proxy settings from `http://localhost:10809` to `http://127.0.0.1:10809`
-    // NodeRuntime without environment information can not parse `localhost`
-    // correctly.
-    // TODO: map to `[::1]` if we are using ipv6
     if matches!(proxy.host(), Some(Host::Domain(domain)) if domain.eq_ignore_ascii_case("localhost"))
     {
-        // When localhost is a valid Host, so is `127.0.0.1`
-        let _ = proxy.set_ip_host(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        let replacement_ip = proxy
+            .port_or_known_default()
+            .and_then(|port| ("localhost", port).to_socket_addrs().ok())
+            .and_then(|mut addresses| addresses.next().map(|address| address.ip()))
+            .filter(|ip| ip.is_loopback())
+            .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        let _ = proxy.set_ip_host(replacement_ip);
     }
 
     Some(proxy.as_str().to_string())
@@ -975,36 +990,40 @@ fn npm_command_env(node_binary: Option<&Path>) -> HashMap<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use http_client::Url;
+    use http_client::{Host, Url};
 
     use super::proxy_argument;
 
-    // Map localhost to 127.0.0.1
-    // NodeRuntime without environment information can not parse `localhost` correctly.
     #[test]
     fn test_proxy_argument_map_localhost_proxy() {
-        const CASES: [(&str, &str); 4] = [
-            // Map localhost to 127.0.0.1
-            ("http://localhost:9090/", "http://127.0.0.1:9090/"),
-            ("https://google.com/", "https://google.com/"),
-            (
-                "http://username:password@proxy.thing.com:8080/",
-                "http://username:password@proxy.thing.com:8080/",
-            ),
-            // Test when localhost is contained within a different part of the URL
-            (
-                "http://username:localhost@localhost:8080/",
-                "http://username:localhost@127.0.0.1:8080/",
-            ),
+        let localhost_cases = [
+            "http://localhost:9090/",
+            "http://username:localhost@localhost:8080/",
         ];
 
-        for (proxy, mapped_proxy) in CASES {
-            let proxy = Url::parse(proxy).unwrap();
-            let proxy = proxy_argument(Some(&proxy)).expect("Proxy was not passed correctly");
-            assert_eq!(
-                proxy, mapped_proxy,
-                "Incorrectly mapped localhost to 127.0.0.1"
+        for case in localhost_cases {
+            let proxy = Url::parse(case).unwrap();
+            let mapped = proxy_argument(Some(&proxy)).expect("Proxy was not passed correctly");
+            let parsed = Url::parse(&mapped).unwrap();
+            assert!(
+                !matches!(parsed.host(), Some(Host::Domain(domain)) if domain.eq_ignore_ascii_case("localhost")),
+                "localhost host should be normalized to loopback ip: {mapped}"
             );
+            assert!(
+                matches!(parsed.host(), Some(Host::Ipv4(ip)) if ip.is_loopback())
+                    || matches!(parsed.host(), Some(Host::Ipv6(ip)) if ip.is_loopback()),
+                "localhost host should map to loopback ip: {mapped}"
+            );
+        }
+
+        let passthrough_cases = [
+            "https://google.com/",
+            "http://username:password@proxy.thing.com:8080/",
+        ];
+        for case in passthrough_cases {
+            let proxy = Url::parse(case).unwrap();
+            let mapped = proxy_argument(Some(&proxy)).expect("Proxy was not passed correctly");
+            assert_eq!(mapped, case);
         }
     }
 }

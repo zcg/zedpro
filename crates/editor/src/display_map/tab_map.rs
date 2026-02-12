@@ -326,7 +326,10 @@ impl TabSnapshot {
 
     #[ztracing::instrument(skip_all)]
     pub fn tab_point_cursor(&self) -> TabPointCursor<'_> {
-        TabPointCursor { this: self }
+        TabPointCursor {
+            this: self,
+            last_mapping: None,
+        }
     }
 
     #[ztracing::instrument(skip_all)]
@@ -457,15 +460,57 @@ impl TabSnapshot {
     }
 }
 
-// todo(lw): Implement TabPointCursor properly
 pub struct TabPointCursor<'this> {
     this: &'this TabSnapshot,
+    last_mapping: Option<(FoldPoint, TabPoint)>,
 }
 
-impl TabPointCursor<'_> {
+impl<'this> TabPointCursor<'this> {
+    fn map_from_previous(&self, previous_input: FoldPoint, previous_output: TabPoint, input: FoldPoint) -> TabPoint {
+        let mut expanded_column = previous_output.column();
+        let mut input_column = previous_input.column();
+
+        let input_start = previous_input.to_offset(&self.this.fold_snapshot);
+        let input_end = input.to_offset(&self.this.fold_snapshot);
+
+        for chunk in self
+            .this
+            .fold_snapshot
+            .chunks(input_start..input_end, false, Highlights::default())
+        {
+            for character in chunk.text.chars() {
+                if character == '\t' {
+                    let tab_size = if input_column < self.this.max_expansion_column {
+                        self.this.tab_size.get()
+                    } else {
+                        1
+                    };
+                    expanded_column += tab_size - expanded_column % tab_size;
+                    input_column += 1;
+                } else {
+                    let byte_len = character.len_utf8() as u32;
+                    expanded_column += byte_len;
+                    input_column += byte_len;
+                }
+            }
+        }
+
+        TabPoint::new(input.row(), expanded_column)
+    }
+
     #[ztracing::instrument(skip_all)]
     pub fn map(&mut self, point: FoldPoint) -> TabPoint {
-        self.this.fold_point_to_tab_point(point)
+        let mapped = if let Some((last_input, last_output)) = self.last_mapping
+            && last_input.row() == point.row()
+            && point.column() >= last_input.column()
+        {
+            self.map_from_previous(last_input, last_output, point)
+        } else {
+            self.this.fold_point_to_tab_point(point)
+        };
+
+        self.last_mapping = Some((point, mapped));
+        mapped
     }
 }
 
@@ -596,6 +641,23 @@ impl TabChunks<'_> {
         };
         self.inside_leading_tab = to_next_stop > 0;
     }
+
+    fn advance_state_for_text(&mut self, text: &str) {
+        for character in text.chars() {
+            if character == '\n' {
+                self.column = 0;
+                self.input_column = 0;
+                self.output_position += Point::new(1, 0);
+            } else {
+                let byte_len = character.len_utf8() as u32;
+                self.column += 1;
+                if !self.inside_leading_tab {
+                    self.input_column += byte_len;
+                }
+                self.output_position.column += byte_len;
+            }
+        }
+    }
 }
 
 impl<'a> Iterator for TabChunks<'a> {
@@ -616,66 +678,53 @@ impl<'a> Iterator for TabChunks<'a> {
             }
         }
 
-        //todo(improve performance by using tab cursor)
-        for (ix, c) in self.chunk.text.char_indices() {
-            match c {
-                '\t' if ix > 0 => {
-                    let (prefix, suffix) = self.chunk.text.split_at(ix);
+        if self.chunk.tabs != 0 {
+            let tab_ix = self.chunk.tabs.trailing_zeros() as usize;
+            if tab_ix > 0 {
+                let (prefix, suffix) = self.chunk.text.split_at(tab_ix);
+                self.advance_state_for_text(prefix);
 
-                    let mask = 1u128.unbounded_shl(ix as u32).wrapping_sub(1);
-                    let chars = self.chunk.chars & mask;
-                    let tabs = self.chunk.tabs & mask;
-                    self.chunk.tabs = self.chunk.tabs.unbounded_shr(ix as u32);
-                    self.chunk.chars = self.chunk.chars.unbounded_shr(ix as u32);
-                    self.chunk.text = suffix;
-                    return Some(Chunk {
-                        text: prefix,
-                        chars,
-                        tabs,
-                        ..self.chunk.clone()
-                    });
-                }
-                '\t' => {
-                    self.chunk.text = &self.chunk.text[1..];
-                    self.chunk.tabs >>= 1;
-                    self.chunk.chars >>= 1;
-                    let tab_size = if self.input_column < self.max_expansion_column {
-                        self.tab_size.get()
-                    } else {
-                        1
-                    };
-                    let mut len = tab_size - self.column % tab_size;
-                    let next_output_position = cmp::min(
-                        self.output_position + Point::new(0, len),
-                        self.max_output_position,
-                    );
-                    len = next_output_position.column - self.output_position.column;
-                    self.column += len;
-                    self.input_column += 1;
-                    self.output_position = next_output_position;
-                    return Some(Chunk {
-                        text: unsafe { std::str::from_utf8_unchecked(&SPACES[..len as usize]) },
-                        is_tab: true,
-                        chars: 1u128.unbounded_shl(len) - 1,
-                        tabs: 0,
-                        ..self.chunk.clone()
-                    });
-                }
-                '\n' => {
-                    self.column = 0;
-                    self.input_column = 0;
-                    self.output_position += Point::new(1, 0);
-                }
-                _ => {
-                    self.column += 1;
-                    if !self.inside_leading_tab {
-                        self.input_column += c.len_utf8() as u32;
-                    }
-                    self.output_position.column += c.len_utf8() as u32;
-                }
+                let mask = 1u128.unbounded_shl(tab_ix as u32).wrapping_sub(1);
+                let chars = self.chunk.chars & mask;
+                let tabs = self.chunk.tabs & mask;
+                self.chunk.tabs = self.chunk.tabs.unbounded_shr(tab_ix as u32);
+                self.chunk.chars = self.chunk.chars.unbounded_shr(tab_ix as u32);
+                self.chunk.text = suffix;
+                return Some(Chunk {
+                    text: prefix,
+                    chars,
+                    tabs,
+                    ..self.chunk.clone()
+                });
             }
+
+            self.chunk.text = &self.chunk.text[1..];
+            self.chunk.tabs >>= 1;
+            self.chunk.chars >>= 1;
+            let tab_size = if self.input_column < self.max_expansion_column {
+                self.tab_size.get()
+            } else {
+                1
+            };
+            let mut len = tab_size - self.column % tab_size;
+            let next_output_position = cmp::min(
+                self.output_position + Point::new(0, len),
+                self.max_output_position,
+            );
+            len = next_output_position.column - self.output_position.column;
+            self.column += len;
+            self.input_column += 1;
+            self.output_position = next_output_position;
+            return Some(Chunk {
+                text: unsafe { std::str::from_utf8_unchecked(&SPACES[..len as usize]) },
+                is_tab: true,
+                chars: 1u128.unbounded_shl(len) - 1,
+                tabs: 0,
+                ..self.chunk.clone()
+            });
         }
 
+        self.advance_state_for_text(self.chunk.text);
         Some(mem::take(&mut self.chunk))
     }
 }

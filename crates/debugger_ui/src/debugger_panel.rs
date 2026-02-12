@@ -1220,7 +1220,7 @@ impl DebugPanel {
         static LAST_ITEM_QUERY: LazyLock<Query> = LazyLock::new(|| {
             Query::new(
                 &tree_sitter_json::LANGUAGE.into(),
-                "(document (array (object) @object))", // TODO: use "." anchor to only match last object
+                "(document (array (object) @object .))",
             )
             .expect("Failed to create LAST_ITEM_QUERY")
         });

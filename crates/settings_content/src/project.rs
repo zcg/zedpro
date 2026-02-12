@@ -675,6 +675,10 @@ pub struct NodeBinarySettings {
     pub path: Option<String>,
     /// The path to the npm binary Zed should use (defaults to `.path/../npm`).
     pub npm_path: Option<String>,
+    /// Whether Zed may download and use the managed Node.js runtime.
+    ///
+    /// Default: true
+    pub allow_binary_download: Option<bool>,
     /// If enabled, Zed will download its own copy of Node.
     pub ignore_system_version: Option<bool>,
 }

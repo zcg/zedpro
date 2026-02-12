@@ -26,6 +26,7 @@ use windows::{
     },
     core::*,
 };
+use windows_registry as registry;
 
 use crate::*;
 
@@ -63,6 +64,7 @@ pub(crate) struct WindowsPlatformState {
     callbacks: PlatformCallbacks,
     menus: RefCell<Vec<OwnedMenu>>,
     jump_list: RefCell<JumpList>,
+    hidden_other_app_windows: RefCell<Vec<SafeHwnd>>,
     // NOTE: standard cursor handles don't need to close.
     pub(crate) current_cursor: Cell<Option<HCURSOR>>,
     directx_devices: RefCell<Option<DirectXDevices>>,
@@ -79,6 +81,81 @@ struct PlatformCallbacks {
     keyboard_layout_change: Cell<Option<Box<dyn FnMut()>>>,
 }
 
+struct HideOtherAppsContext {
+    current_process_id: u32,
+    hidden_windows: Vec<SafeHwnd>,
+}
+
+fn register_url_scheme_in_registry(scheme: &str, command: &str) -> Result<()> {
+    let scheme_key_path = format!("Software\\Classes\\{scheme}");
+    let command_key_path = format!("{scheme_key_path}\\shell\\open\\command");
+
+    let scheme_key = registry::CURRENT_USER.create(&scheme_key_path)?;
+    scheme_key.set_string("", format!("URL:{scheme} Protocol"))?;
+    scheme_key.set_string("URL Protocol", "")?;
+
+    let command_key = registry::CURRENT_USER.create(&command_key_path)?;
+    command_key.set_string("", command)?;
+
+    unsafe {
+        SHChangeNotify(
+            SHCNE_ASSOCCHANGED,
+            SHCNF_IDLIST,
+            Some(std::ptr::null()),
+            Some(std::ptr::null()),
+        );
+    }
+    Ok(())
+}
+
+unsafe extern "system" fn hide_other_apps_window_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let context_ptr = lparam.0 as *mut HideOtherAppsContext;
+    if context_ptr.is_null() {
+        return BOOL(0);
+    }
+    let context = unsafe { &mut *context_ptr };
+
+    if hwnd.is_invalid()
+        || unsafe { !IsWindowVisible(hwnd).as_bool() }
+        || unsafe { IsIconic(hwnd).as_bool() }
+    {
+        return BOOL(1);
+    }
+
+    if !unsafe { GetWindow(hwnd, GW_OWNER) }
+        .unwrap_or_default()
+        .0
+        .is_null()
+    {
+        return BOOL(1);
+    }
+
+    let ex_style = WINDOW_EX_STYLE(unsafe { get_window_long(hwnd, GWL_EXSTYLE) } as u32);
+    if ex_style & WS_EX_TOOLWINDOW != WINDOW_EX_STYLE(0) {
+        return BOOL(1);
+    }
+
+    let mut process_id = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
+    if process_id == 0 || process_id == context.current_process_id {
+        return BOOL(1);
+    }
+
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_FORCEMINIMIZE);
+    }
+    if unsafe { IsIconic(hwnd).as_bool() }
+        && !context
+            .hidden_windows
+            .iter()
+            .any(|window| window.as_raw() == hwnd)
+    {
+        context.hidden_windows.push(hwnd.into());
+    }
+
+    BOOL(1)
+}
+
 impl WindowsPlatformState {
     fn new(directx_devices: Option<DirectXDevices>) -> Self {
         let callbacks = PlatformCallbacks::default();
@@ -91,6 +168,7 @@ impl WindowsPlatformState {
             current_cursor: Cell::new(current_cursor),
             directx_devices: RefCell::new(directx_devices),
             menus: RefCell::new(Vec::new()),
+            hidden_other_app_windows: RefCell::new(Vec::new()),
         }
     }
 }
@@ -482,14 +560,47 @@ impl Platform for WindowsPlatform {
 
     fn hide(&self) {}
 
-    // todo(windows)
     fn hide_other_apps(&self) {
-        unimplemented!()
+        let mut hidden_windows = {
+            let mut windows = self.inner.state.hidden_other_app_windows.borrow_mut();
+            std::mem::take(&mut *windows)
+        };
+        hidden_windows.retain(|window| unsafe {
+            IsWindow(Some(window.as_raw())).as_bool() && IsIconic(window.as_raw()).as_bool()
+        });
+
+        let mut context = HideOtherAppsContext {
+            current_process_id: std::process::id(),
+            hidden_windows,
+        };
+        let context_ptr = &mut context as *mut HideOtherAppsContext;
+
+        if let Err(error) = unsafe {
+            EnumWindows(
+                Some(hide_other_apps_window_proc),
+                LPARAM(context_ptr as isize),
+            )
+        } {
+            log::error!("Failed to enumerate windows while hiding other apps: {error:#}");
+        }
+
+        *self.inner.state.hidden_other_app_windows.borrow_mut() = context.hidden_windows;
     }
 
-    // todo(windows)
     fn unhide_other_apps(&self) {
-        unimplemented!()
+        let windows = {
+            let mut hidden_windows = self.inner.state.hidden_other_app_windows.borrow_mut();
+            std::mem::take(&mut *hidden_windows)
+        };
+
+        for window in windows {
+            let hwnd = window.as_raw();
+            if unsafe { IsWindow(Some(hwnd)).as_bool() && IsIconic(hwnd).as_bool() } {
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                }
+            }
+        }
     }
 
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>> {
@@ -666,9 +777,43 @@ impl Platform for WindowsPlatform {
         Ok(std::env::current_exe()?)
     }
 
-    // todo(windows)
-    fn path_for_auxiliary_executable(&self, _name: &str) -> Result<PathBuf> {
-        anyhow::bail!("not yet implemented");
+    fn path_for_auxiliary_executable(&self, name: &str) -> Result<PathBuf> {
+        if name == "cli" {
+            return ::util::get_zed_cli_path();
+        }
+
+        let app_path = self.app_path()?;
+        let app_dir = app_path
+            .parent()
+            .context("Failed to determine parent directory of app executable path")?;
+
+        let executable_name = if Path::new(name).extension().is_some() {
+            name.to_owned()
+        } else {
+            format!("{name}.exe")
+        };
+
+        let possible_locations = [
+            app_dir.join(&executable_name),
+            app_dir.join("bin").join(&executable_name),
+            app_dir.join("tools").join(&executable_name),
+        ];
+
+        if let Some(path) = possible_locations
+            .iter()
+            .find_map(|path| path.canonicalize().ok())
+            .filter(|path| path != &app_path)
+        {
+            return Ok(path);
+        }
+
+        anyhow::bail!(
+            "could not find auxiliary executable `{name}` from any of: {}",
+            possible_locations
+                .iter()
+                .map(|path| path.to_string_lossy())
+                .join(", ")
+        )
     }
 
     fn set_cursor_style(&self, style: CursorStyle) {
@@ -785,8 +930,15 @@ impl Platform for WindowsPlatform {
         })
     }
 
-    fn register_url_scheme(&self, _: &str) -> Task<anyhow::Result<()>> {
-        Task::ready(Err(anyhow!("register_url_scheme unimplemented")))
+    fn register_url_scheme(&self, scheme: &str) -> Task<anyhow::Result<()>> {
+        let app_path = self.app_path();
+        let scheme = scheme.to_string();
+
+        self.background_executor().spawn(async move {
+            let app_path = app_path?;
+            let command = format!("\"{}\" \"%1\"", app_path.display());
+            register_url_scheme_in_registry(&scheme, &command)
+        })
     }
 
     fn perform_dock_menu_action(&self, action: usize) {

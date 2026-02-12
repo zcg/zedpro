@@ -142,7 +142,9 @@ impl AgentSessionList for AcpSessionList {
         let conn = self.connection.clone();
         let tombstone_key = self.tombstone_key.clone();
         let deleted_ids_task =
-            cx.background_spawn(async move { KEY_VALUE_STORE.read_kvp(&tombstone_key).ok().flatten() });
+            cx.background_spawn(
+                async move { KEY_VALUE_STORE.read_kvp(&tombstone_key).ok().flatten() },
+            );
 
         cx.foreground_executor().spawn(async move {
             let deleted_ids = deleted_ids_task.await;
@@ -205,8 +207,12 @@ impl AgentSessionList for AcpSessionList {
         let tombstone_key_for_read = tombstone_key.clone();
         let updates_tx = self.updates_tx.clone();
 
-        let existing_task = cx
-            .background_spawn(async move { KEY_VALUE_STORE.read_kvp(&tombstone_key_for_read).ok().flatten() });
+        let existing_task = cx.background_spawn(async move {
+            KEY_VALUE_STORE
+                .read_kvp(&tombstone_key_for_read)
+                .ok()
+                .flatten()
+        });
 
         cx.foreground_executor().spawn(async move {
             let existing = existing_task.await;

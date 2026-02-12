@@ -540,22 +540,25 @@ impl SelectionsCollection {
             "There must be at least one selection"
         );
         if cfg!(debug_assertions) {
+            let can_resolve_anchors = !snapshot.buffer_snapshot().is_empty();
             mutable_collection.disjoint.iter().for_each(|selection| {
                 assert!(
                      selection.start.cmp(&selection.end, &snapshot).is_le(),
                     "disjoint selection has start > end: {:?}",
                     mutable_collection.disjoint
                 );
-                assert!(
-                    snapshot.can_resolve(&selection.start),
-                    "disjoint selection start is not resolvable for the given snapshot:\n{selection:?}, {excerpt:?}",
-                    excerpt = snapshot.buffer_for_excerpt(selection.start.excerpt_id).map(|snapshot| snapshot.remote_id()),
-                );
-                assert!(
-                    snapshot.can_resolve(&selection.end),
-                    "disjoint selection end is not resolvable for the given snapshot: {selection:?}, {excerpt:?}",
-                    excerpt = snapshot.buffer_for_excerpt(selection.end.excerpt_id).map(|snapshot| snapshot.remote_id()),
-                );
+                if can_resolve_anchors {
+                    assert!(
+                        snapshot.can_resolve(&selection.start),
+                        "disjoint selection start is not resolvable for the given snapshot:\n{selection:?}, {excerpt:?}",
+                        excerpt = snapshot.buffer_for_excerpt(selection.start.excerpt_id).map(|snapshot| snapshot.remote_id()),
+                    );
+                    assert!(
+                        snapshot.can_resolve(&selection.end),
+                        "disjoint selection end is not resolvable for the given snapshot: {selection:?}, {excerpt:?}",
+                        excerpt = snapshot.buffer_for_excerpt(selection.end.excerpt_id).map(|snapshot| snapshot.remote_id()),
+                    );
+                }
             });
             assert!(
                 mutable_collection
@@ -571,20 +574,22 @@ impl SelectionsCollection {
                     "pending selection has start > end: {:?}",
                     selection
                 );
-                assert!(
-                    snapshot.can_resolve(&selection.start),
-                    "pending selection start is not resolvable for the given snapshot: {pending:?}, {excerpt:?}",
-                    excerpt = snapshot
-                        .buffer_for_excerpt(selection.start.excerpt_id)
-                        .map(|snapshot| snapshot.remote_id()),
-                );
-                assert!(
-                    snapshot.can_resolve(&selection.end),
-                    "pending selection end is not resolvable for the given snapshot: {pending:?}, {excerpt:?}",
-                    excerpt = snapshot
-                        .buffer_for_excerpt(selection.end.excerpt_id)
-                        .map(|snapshot| snapshot.remote_id()),
-                );
+                if can_resolve_anchors {
+                    assert!(
+                        snapshot.can_resolve(&selection.start),
+                        "pending selection start is not resolvable for the given snapshot: {pending:?}, {excerpt:?}",
+                        excerpt = snapshot
+                            .buffer_for_excerpt(selection.start.excerpt_id)
+                            .map(|snapshot| snapshot.remote_id()),
+                    );
+                    assert!(
+                        snapshot.can_resolve(&selection.end),
+                        "pending selection end is not resolvable for the given snapshot: {pending:?}, {excerpt:?}",
+                        excerpt = snapshot
+                            .buffer_for_excerpt(selection.end.excerpt_id)
+                            .map(|snapshot| snapshot.remote_id()),
+                    );
+                }
             }
         }
         (mutable_collection.selections_changed, result)
@@ -1255,16 +1260,36 @@ where
     D: MultiBufferDimension + Sub + AddAssign<<D as Sub>::Output> + Ord,
     I: 'a + IntoIterator<Item = &'a Selection<Anchor>>,
 {
-    // Transforms `Anchor -> DisplayPoint -> Point -> DisplayPoint -> D`
-    // todo(lw): We should be able to short circuit the `Anchor -> DisplayPoint -> Point` to `Anchor -> Point`
-    let (to_convert, selections) = resolve_selections_display(selections, map).tee();
+    // Transforms `Anchor -> Point -> DisplayPoint -> Point -> D`.
+    let wrapped_points = resolve_selections_point(selections, map).map(move |selection| {
+        let start = map.display_point_to_point(
+            map.point_to_display_point(selection.start, Bias::Left),
+            Bias::Left,
+        );
+        let end_bias = if selection.start == selection.end {
+            Bias::Right
+        } else {
+            Bias::Left
+        };
+        let end = map.display_point_to_point(
+            map.point_to_display_point(selection.end, end_bias),
+            end_bias,
+        );
+
+        assert!(start <= end, "start: {:?}, end: {:?}", start, end);
+        Selection {
+            id: selection.id,
+            start,
+            end,
+            reversed: selection.reversed,
+            goal: selection.goal,
+        }
+    });
+    let (to_convert, selections) = coalesce_selections(wrapped_points).tee();
     let mut converted_endpoints =
         map.buffer_snapshot()
             .dimensions_from_points::<D>(to_convert.flat_map(|s| {
-                let start = map.display_point_to_point(s.start, Bias::Left);
-                let end = map.display_point_to_point(s.end, Bias::Right);
-                assert!(start <= end, "start: {:?}, end: {:?}", start, end);
-                [start, end]
+                [s.start, s.end]
             }));
     selections.map(move |s| {
         let start = converted_endpoints.next().unwrap();

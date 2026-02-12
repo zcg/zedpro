@@ -190,6 +190,43 @@ pub struct PasswordProxy {
     askpass_helper: String,
 }
 
+#[cfg(target_os = "windows")]
+fn windows_powershell_command() -> Option<&'static str> {
+    use std::os::windows::process::CommandExt as _;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    ["powershell.exe", "pwsh.exe"]
+        .into_iter()
+        .find(|candidate| {
+            std::process::Command::new(candidate)
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "$PSVersionTable.PSVersion.Major",
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_askpass_helper(askpass_script_path: &std::path::Path) -> Result<String> {
+    let Some(shell) = windows_powershell_command() else {
+        anyhow::bail!("failed to find a PowerShell executable (tried powershell.exe and pwsh.exe)")
+    };
+    Ok(format!(
+        "{shell} -ExecutionPolicy Bypass -File \"{}\"",
+        askpass_script_path.display()
+    ))
+}
+
 impl PasswordProxy {
     pub async fn new(
         mut get_password: impl FnMut(String) -> Task<ControlFlow<(), Result<EncryptedPassword>>>
@@ -204,12 +241,10 @@ impl PasswordProxy {
         let current_exec =
             std::env::current_exe().context("Failed to determine current zed executable path.")?;
 
-        // TODO: inferred from the use of powershell.exe in askpass_helper_script
-        let shell_kind = if cfg!(windows) {
-            ShellKind::PowerShell
-        } else {
-            ShellKind::Posix
-        };
+        #[cfg(target_os = "windows")]
+        let shell_kind = ShellKind::PowerShell;
+        #[cfg(not(target_os = "windows"))]
+        let shell_kind = ShellKind::Posix;
         let askpass_program = ASKPASS_PROGRAM.get_or_init(|| current_exec);
         // Create an askpass script that communicates back to this process.
         let askpass_script = generate_askpass_script(shell_kind, askpass_program, &askpass_socket)?;
@@ -259,12 +294,8 @@ impl PasswordProxy {
             .with_context(|| {
                 format!("marking askpass script executable at {askpass_script_path:?}")
             })?;
-        // todo(shell): There might be no powershell on the system
         #[cfg(target_os = "windows")]
-        let askpass_helper = format!(
-            "powershell.exe -ExecutionPolicy Bypass -File \"{}\"",
-            askpass_script_path.display()
-        );
+        let askpass_helper = windows_askpass_helper(&askpass_script_path)?;
 
         Ok(Self {
             _task,

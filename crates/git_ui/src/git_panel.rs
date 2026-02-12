@@ -209,8 +209,7 @@ fn git_panel_context_menu(
 const GIT_PANEL_KEY: &str = "GitPanel";
 
 const UPDATE_DEBOUNCE: Duration = Duration::from_millis(50);
-// TODO: We should revise this part. It seems the indentation width is not aligned with the one in project panel
-const TREE_INDENT: f32 = 16.0;
+const TREE_INDENT_LEFT_OFFSET: f32 = 3.0;
 
 pub fn register(workspace: &mut Workspace) {
     workspace.register_action(|workspace, _: &ToggleFocus, window, cx| {
@@ -4629,6 +4628,11 @@ impl GitPanel {
             GitPanelViewMode::Tree(state) => (true, state.logical_indices.len()),
             GitPanelViewMode::Flat => (false, self.entries.len()),
         };
+        let tree_indent = GitPanelSettings::get_global(cx).indent_size;
+        let tree_indent_px = px(tree_indent);
+        let tree_left_offset = px(tree_indent + TREE_INDENT_LEFT_OFFSET);
+        let indent_guide_colors = IndentGuideColors::panel(cx);
+        let entity = cx.entity();
         let repo = repo.downgrade();
 
         v_flex()
@@ -4706,21 +4710,21 @@ impl GitPanel {
                                 items
                             }),
                         )
-                        .when(is_tree_view, |list| {
-                            let indent_size = px(TREE_INDENT);
+                        .when(is_tree_view, move |list| {
+                            let indent_size = tree_indent_px;
                             list.with_decoration(
-                                ui::indent_guides(indent_size, IndentGuideColors::panel(cx))
+                                ui::indent_guides(indent_size, indent_guide_colors)
                                     .with_compute_indents_fn(
-                                        cx.entity(),
+                                        entity.clone(),
                                         |this, range, _window, _cx| {
                                             this.compute_visible_depths(range)
                                         },
                                     )
-                                    .with_render_fn(cx.entity(), |_, params, _, _| {
+                                    .with_render_fn(entity, move |_, params, _, _| {
                                         // Magic number to align the tree item is 3 here
                                         // because we're using 12px as the left-side padding
                                         // and 3 makes the alignment work with the bounding box of the icon
-                                        let left_offset = px(TREE_INDENT + 3_f32);
+                                        let left_offset = tree_left_offset;
                                         let indent_size = params.indent_size;
                                         let item_height = params.item_height;
 
@@ -4917,7 +4921,9 @@ impl GitPanel {
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let tree_view = GitPanelSettings::get_global(cx).tree_view;
+        let settings = GitPanelSettings::get_global(cx);
+        let tree_view = settings.tree_view;
+        let tree_indent = settings.indent_size;
         let path_style = self.project.read(cx).path_style(cx);
         let git_path_style = ProjectSettings::get_global(cx).git.path_style;
         let display_name = entry.display_name(path_style);
@@ -5005,7 +5011,7 @@ impl GitPanel {
             .child(git_status_icon(status))
             .map(|this| {
                 if tree_view {
-                    this.pl(px(depth as f32 * TREE_INDENT)).child(
+                    this.pl(px(depth as f32 * tree_indent)).child(
                         self.entry_label(display_name, label_color)
                             .when(status.is_deleted(), Label::strikethrough)
                             .truncate(),
@@ -5128,8 +5134,9 @@ impl GitPanel {
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
-        // TODO: Have not yet plugin the self.marked_entries. Not sure when and why we need that
+        let tree_indent = GitPanelSettings::get_global(cx).indent_size;
         let selected = self.selected_entry == Some(ix);
+        let marked = self.marked_entries.contains(&ix);
         let label_color = Color::Muted;
 
         let id: ElementId = ElementId::Name(format!("dir_{}_{}", entry.name, ix).into());
@@ -5139,23 +5146,25 @@ impl GitPanel {
             ElementId::Name(format!("dir_checkbox_wrapper_{}_{}", entry.name, ix).into());
 
         let selected_bg_alpha = 0.08;
+        let marked_bg_alpha = 0.12;
         let state_opacity_step = 0.04;
 
         let info_color = cx.theme().status().info;
         let colors = cx.theme().colors();
 
-        let (base_bg, hover_bg, active_bg) = if selected {
+        let base_bg = match (selected, marked) {
+            (true, true) => info_color.alpha(selected_bg_alpha + marked_bg_alpha),
+            (true, false) => info_color.alpha(selected_bg_alpha),
+            (false, true) => info_color.alpha(marked_bg_alpha),
+            _ => colors.ghost_element_background,
+        };
+        let (hover_bg, active_bg) = if selected {
             (
-                info_color.alpha(selected_bg_alpha),
                 info_color.alpha(selected_bg_alpha + state_opacity_step),
                 info_color.alpha(selected_bg_alpha + state_opacity_step * 2.0),
             )
         } else {
-            (
-                colors.ghost_element_background,
-                colors.ghost_element_hover,
-                colors.ghost_element_active,
-            )
+            (colors.ghost_element_hover, colors.ghost_element_active)
         };
 
         let folder_icon = if entry.expanded {
@@ -5182,7 +5191,7 @@ impl GitPanel {
         let name_row = h_flex()
             .min_w_0()
             .gap_1()
-            .pl(px(entry.depth as f32 * TREE_INDENT))
+            .pl(px(entry.depth as f32 * tree_indent))
             .child(
                 Icon::new(folder_icon)
                     .size(IconSize::Small)

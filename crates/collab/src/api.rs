@@ -43,7 +43,9 @@ impl Header for CloudflareIpCountryHeader {
     }
 
     fn encode<E: Extend<axum::http::HeaderValue>>(&self, _values: &mut E) {
-        unimplemented!()
+        if let Ok(value) = axum::http::HeaderValue::from_str(&self.0) {
+            _values.extend(std::iter::once(value));
+        }
     }
 }
 
@@ -76,7 +78,9 @@ impl Header for SystemIdHeader {
     }
 
     fn encode<E: Extend<axum::http::HeaderValue>>(&self, _values: &mut E) {
-        unimplemented!()
+        if let Ok(value) = axum::http::HeaderValue::from_str(&self.0) {
+            _values.extend(std::iter::once(value));
+        }
     }
 }
 

@@ -7,11 +7,11 @@ use gpui::{
     Action, AnyElement, App, BackgroundExecutor, DismissEvent, FocusHandle, ForegroundExecutor,
     Subscription, Task,
 };
-use language_models::AllLanguageModelSettings;
 use language_model::{
     AuthenticateError, ConfiguredModel, IconOrSvg, LanguageModel, LanguageModelId,
     LanguageModelProvider, LanguageModelProviderId, LanguageModelRegistry,
 };
+use language_models::AllLanguageModelSettings;
 use ordered_float::OrderedFloat;
 use picker::{Picker, PickerDelegate};
 use settings::Settings;
@@ -102,12 +102,9 @@ fn all_models(cx: &App) -> GroupedModels {
         .flat_map(|provider| {
             let compatible_api_kind = compatible_api_kind(&provider.id(), cx);
             let favorites_index = &favorites_index;
-            provider
-                .provided_models(cx)
-                .into_iter()
-                .map(move |model| {
-                    ModelInfo::new(&**provider, model, compatible_api_kind, &favorites_index)
-                })
+            provider.provided_models(cx).into_iter().map(move |model| {
+                ModelInfo::new(&**provider, model, compatible_api_kind, &favorites_index)
+            })
         })
         .collect();
 
@@ -133,16 +130,25 @@ impl CompatibleApiKind {
     }
 }
 
-fn compatible_api_kind(provider_id: &LanguageModelProviderId, cx: &App) -> Option<CompatibleApiKind> {
+fn compatible_api_kind(
+    provider_id: &LanguageModelProviderId,
+    cx: &App,
+) -> Option<CompatibleApiKind> {
     let settings = AllLanguageModelSettings::get_global(cx);
-    if settings.openai_compatible.contains_key(provider_id.0.as_ref()) {
+    if settings
+        .openai_compatible
+        .contains_key(provider_id.0.as_ref())
+    {
         Some(CompatibleApiKind::OpenAi)
     } else if settings
         .anthropic_compatible
         .contains_key(provider_id.0.as_ref())
     {
         Some(CompatibleApiKind::Anthropic)
-    } else if settings.google_compatible.contains_key(provider_id.0.as_ref()) {
+    } else if settings
+        .google_compatible
+        .contains_key(provider_id.0.as_ref())
+    {
         Some(CompatibleApiKind::Gemini)
     } else {
         None
@@ -151,11 +157,15 @@ fn compatible_api_kind(provider_id: &LanguageModelProviderId, cx: &App) -> Optio
 
 fn is_third_party_provider(provider_id: &LanguageModelProviderId, cx: &App) -> bool {
     let settings = AllLanguageModelSettings::get_global(cx);
-    settings.openai_compatible.contains_key(provider_id.0.as_ref())
+    settings
+        .openai_compatible
+        .contains_key(provider_id.0.as_ref())
         || settings
             .anthropic_compatible
             .contains_key(provider_id.0.as_ref())
-        || settings.google_compatible.contains_key(provider_id.0.as_ref())
+        || settings
+            .google_compatible
+            .contains_key(provider_id.0.as_ref())
 }
 
 #[derive(Clone)]
@@ -238,10 +248,8 @@ impl LanguageModelPickerDelegate {
                             let query = picker.query(cx);
                             let active_model = (picker.delegate.get_active_model)(cx);
                             picker.delegate.all_models = Arc::new(all_models(cx));
-                            picker.delegate.collapsed_providers = picker
-                                .delegate
-                                .all_models
-                                .default_collapsed_providers(
+                            picker.delegate.collapsed_providers =
+                                picker.delegate.all_models.default_collapsed_providers(
                                     active_model.as_ref(),
                                     picker.delegate.popover_styles,
                                 );
@@ -312,19 +320,20 @@ impl LanguageModelPickerDelegate {
             self.collapsed_providers.remove(provider_id);
         }
 
-        self.filtered_entries = self
-            .all_models
-            .entries_with_collapsed(
-                &self.collapsed_providers,
-                self.popover_styles,
-                self.popover_styles,
-            );
+        self.filtered_entries = self.all_models.entries_with_collapsed(
+            &self.collapsed_providers,
+            self.popover_styles,
+            self.popover_styles,
+        );
 
         let selected_index = self
             .filtered_entries
             .iter()
             .position(|entry| {
-                if let LanguageModelPickerEntry::Provider { provider_id: id, .. } = entry {
+                if let LanguageModelPickerEntry::Provider {
+                    provider_id: id, ..
+                } = entry
+                {
                     id == provider_id
                 } else {
                     false
@@ -734,14 +743,17 @@ impl PickerDelegate for LanguageModelPickerDelegate {
                 ModelMatcher::new(recommended_models, fg_executor.clone(), bg_executor.clone());
             let matcher_all =
                 ModelMatcher::new(available_models, fg_executor.clone(), bg_executor.clone());
-            (matcher_rec.exact_search(&query), matcher_all.fuzzy_search(&query))
+            (
+                matcher_rec.exact_search(&query),
+                matcher_all.fuzzy_search(&query),
+            )
         };
 
         let filtered_models = GroupedModels::new(all, recommended);
         if self.popover_styles && query_is_empty && self.collapsed_providers.is_empty() {
-            self.collapsed_providers =
-                self.all_models
-                    .default_collapsed_providers(active_model.as_ref(), true);
+            self.collapsed_providers = self
+                .all_models
+                .default_collapsed_providers(active_model.as_ref(), true);
         }
         let enable_provider_collapse = self.popover_styles;
         let collapsed_providers_for_render = if self.popover_styles && !query_is_empty {
@@ -790,13 +802,11 @@ impl PickerDelegate for LanguageModelPickerDelegate {
         self.collapsed_providers = self
             .all_models
             .default_collapsed_providers(active_model.as_ref(), self.popover_styles);
-        self.filtered_entries = self
-            .all_models
-            .entries_with_collapsed(
-                &self.collapsed_providers,
-                self.popover_styles,
-                self.popover_styles,
-            );
+        self.filtered_entries = self.all_models.entries_with_collapsed(
+            &self.collapsed_providers,
+            self.popover_styles,
+            self.popover_styles,
+        );
         self.selected_index = Self::get_active_model_index(&self.filtered_entries, active_model);
 
         cx.emit(DismissEvent);
@@ -953,7 +963,7 @@ mod tests {
             _: LanguageModelRequest,
             _: &App,
         ) -> BoxFuture<'static, http_client::Result<u64>> {
-            unimplemented!()
+            Box::pin(async { Ok(0) })
         }
 
         fn stream_completion(
@@ -970,7 +980,7 @@ mod tests {
                 LanguageModelCompletionError,
             >,
         > {
-            unimplemented!()
+            Box::pin(async { Ok(Box::pin(futures::stream::empty())) })
         }
     }
 
@@ -1205,7 +1215,11 @@ mod tests {
     #[gpui::test]
     fn test_provider_is_collapsible_when_model_count_at_least_two(_cx: &mut TestAppContext) {
         let grouped_models = GroupedModels::new(
-            create_models(vec![("zed", "claude"), ("zed", "gemini"), ("openai", "gpt-4")]),
+            create_models(vec![
+                ("zed", "claude"),
+                ("zed", "gemini"),
+                ("openai", "gpt-4"),
+            ]),
             vec![],
         );
         let collapsed_providers =
@@ -1238,7 +1252,11 @@ mod tests {
     #[gpui::test]
     fn test_collapsible_provider_expands_after_toggle_off(_cx: &mut TestAppContext) {
         let grouped_models = GroupedModels::new(
-            create_models(vec![("zed", "claude"), ("zed", "gemini"), ("openai", "gpt-4")]),
+            create_models(vec![
+                ("zed", "claude"),
+                ("zed", "gemini"),
+                ("openai", "gpt-4"),
+            ]),
             vec![],
         );
         let entries = grouped_models.entries_with_collapsed(&HashSet::default(), true, false);

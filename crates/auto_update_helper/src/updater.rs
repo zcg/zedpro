@@ -155,7 +155,7 @@ impl Job {
 }
 
 #[cfg(not(test))]
-pub(crate) static JOBS: LazyLock<[Job; 22]> = LazyLock::new(|| {
+pub(crate) static JOBS: LazyLock<[Job; 21]> = LazyLock::new(|| {
     fn p(value: &str) -> &Path {
         Path::new(value)
     }
@@ -167,9 +167,6 @@ pub(crate) static JOBS: LazyLock<[Job; 22]> = LazyLock::new(|| {
         Job::mkdir(p("old\\bin")),
         Job::move_file(p("bin\\Zed.exe"), p("old\\bin\\Zed.exe")),
         Job::move_file(p("bin\\zed"), p("old\\bin\\zed")),
-        //
-        // TODO: remove after a few weeks once everyone is on the new version and this file never exists
-        Job::move_if_exists(p("OpenConsole.exe"), p("old\\OpenConsole.exe")),
         Job::mkdir(p("old\\x64")),
         Job::mkdir(p("old\\arm64")),
         Job::move_if_exists(p("x64\\OpenConsole.exe"), p("old\\x64\\OpenConsole.exe")),

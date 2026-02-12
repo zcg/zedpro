@@ -129,8 +129,7 @@ const fn default_supports_chat_completions() -> bool {
 
 impl Model {
     pub fn default_fast() -> Self {
-        // TODO: Replace with FiveMini since all other models are deprecated
-        Self::FourPointOneMini
+        Self::FiveMini
     }
 
     pub fn from_id(id: &str) -> Result<Self> {

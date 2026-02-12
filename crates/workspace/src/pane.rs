@@ -3281,6 +3281,7 @@ impl Pane {
             let workspace = workspace.read(cx);
             workspace.utility_pane(UtilityPaneSlot::Left).map(|pane| {
                 let toggle_icon = pane.toggle_icon(cx);
+                let toggle_tooltip = pane.toggle_tooltip(cx);
                 let workspace_handle = self.workspace.clone();
 
                 h_flex()
@@ -3291,7 +3292,7 @@ impl Pane {
                     .child(
                         IconButton::new("open_aside_left", toggle_icon)
                             .icon_size(IconSize::Small)
-                            .tooltip(Tooltip::text("Toggle Agent Pane")) // TODO: Probably want to make this generic
+                            .tooltip(Tooltip::text(toggle_tooltip))
                             .on_click(move |_, window, cx| {
                                 workspace_handle
                                     .update(cx, |workspace, cx| {
@@ -3312,6 +3313,7 @@ impl Pane {
             let workspace = workspace.read(cx);
             workspace.utility_pane(UtilityPaneSlot::Right).map(|pane| {
                 let toggle_icon = pane.toggle_icon(cx);
+                let toggle_tooltip = pane.toggle_tooltip(cx);
                 let workspace_handle = self.workspace.clone();
 
                 h_flex()
@@ -3324,7 +3326,7 @@ impl Pane {
                     .child(
                         IconButton::new("open_aside_right", toggle_icon)
                             .icon_size(IconSize::Small)
-                            .tooltip(Tooltip::text("Toggle Agent Pane")) // TODO: Probably want to make this generic
+                            .tooltip(Tooltip::text(toggle_tooltip))
                             .on_click(move |_, window, cx| {
                                 workspace_handle
                                     .update(cx, |workspace, cx| {

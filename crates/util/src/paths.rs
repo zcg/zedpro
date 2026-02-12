@@ -12,7 +12,7 @@ use std::path::StripPrefixError;
 use std::sync::{Arc, OnceLock};
 use std::{
     ffi::OsStr,
-    path::{Path, PathBuf},
+    path::{Path, PathBuf, Prefix},
     sync::LazyLock,
 };
 
@@ -119,32 +119,32 @@ impl<T: AsRef<Path>> PathExt for T {
     }
 
     fn local_to_wsl(&self) -> Option<PathBuf> {
-        // quite sketchy to convert this back to path at the end, but a lot of functions only accept paths
-        // todo: ideally rework them..?
-        let mut new_path = std::ffi::OsString::new();
+        let mut new_path = String::new();
         for component in self.as_ref().components() {
             match component {
                 std::path::Component::Prefix(prefix) => {
-                    let drive_letter = prefix.as_os_str().to_string_lossy().to_lowercase();
-                    let drive_letter = drive_letter.strip_suffix(':')?;
-
-                    new_path.push(format!("/mnt/{}", drive_letter));
+                    let drive_letter = match prefix.kind() {
+                        Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => letter as char,
+                        _ => return None,
+                    };
+                    new_path.push_str("/mnt/");
+                    new_path.push(drive_letter.to_ascii_lowercase());
                 }
                 std::path::Component::RootDir => {}
                 std::path::Component::CurDir => {
-                    new_path.push("/.");
+                    new_path.push_str("/.");
                 }
                 std::path::Component::ParentDir => {
-                    new_path.push("/..");
+                    new_path.push_str("/..");
                 }
                 std::path::Component::Normal(os_str) => {
-                    new_path.push("/");
-                    new_path.push(os_str);
+                    new_path.push('/');
+                    new_path.push_str(&os_str.to_string_lossy());
                 }
             }
         }
 
-        Some(new_path.into())
+        Some(PathBuf::from(new_path))
     }
 
     fn multiple_extensions(&self) -> Option<String> {

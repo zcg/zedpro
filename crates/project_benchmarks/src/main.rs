@@ -71,7 +71,9 @@ impl RemoteClientDelegate for BenchmarkRemoteClient {
         _version: Option<Version>,
         _cx: &mut gpui::AsyncApp,
     ) -> gpui::Task<gpui::Result<Option<String>>> {
-        unimplemented!()
+        gpui::Task::ready(Err(anyhow!(
+            "benchmark remote delegate does not support server download url resolution"
+        )))
     }
 
     fn download_server_binary_locally(
@@ -81,7 +83,9 @@ impl RemoteClientDelegate for BenchmarkRemoteClient {
         _version: Option<Version>,
         _cx: &mut gpui::AsyncApp,
     ) -> gpui::Task<gpui::Result<std::path::PathBuf>> {
-        unimplemented!()
+        gpui::Task::ready(Err(anyhow!(
+            "benchmark remote delegate does not support downloading server binaries"
+        )))
     }
 
     fn set_status(&self, status: Option<&str>, _: &mut gpui::AsyncApp) {

@@ -7790,11 +7790,7 @@ pub fn render_breadcrumb_text(
     if suffix_start_ix > prefix_end_ix {
         segments.splice(
             prefix_end_ix..suffix_start_ix,
-            Some(BreadcrumbText {
-                text: "⋯".into(),
-                highlights: None,
-                font: None,
-            }),
+            Some(BreadcrumbText::plain("⋯")),
         );
     }
 
@@ -7816,8 +7812,8 @@ pub fn render_breadcrumb_text(
             return styled_element;
         }
 
-        StyledText::new(segment.text.replace('\n', "⏎"))
-            .with_default_highlights(&text_style, segment.highlights.unwrap_or_default())
+        StyledText::new(segment.highlighted_text.text.replace('\n', "⏎"))
+            .with_default_highlights(&text_style, segment.highlighted_text.highlights)
             .into_any()
     });
 
@@ -7931,13 +7927,13 @@ fn apply_dirty_filename_style(
     text_style: &gpui::TextStyle,
     cx: &App,
 ) -> Option<gpui::AnyElement> {
-    let text = segment.text.replace('\n', "⏎");
+    let text = segment.highlighted_text.text.replace('\n', "⏎");
 
-    let filename_position = std::path::Path::new(&segment.text)
+    let filename_position = std::path::Path::new(segment.highlighted_text.text.as_ref())
         .file_name()
         .and_then(|f| {
             let filename_str = f.to_string_lossy();
-            segment.text.rfind(filename_str.as_ref())
+            segment.highlighted_text.text.rfind(filename_str.as_ref())
         })?;
 
     let bold_weight = FontWeight::BOLD;

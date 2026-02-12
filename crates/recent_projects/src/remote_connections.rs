@@ -47,7 +47,9 @@ impl RemoteSettings {
         self.wsl_connections.clone().0.into_iter()
     }
 
-    pub fn dev_container_connections(&self) -> impl Iterator<Item = DevContainerConnection> + use<> {
+    pub fn dev_container_connections(
+        &self,
+    ) -> impl Iterator<Item = DevContainerConnection> + use<> {
         self.dev_container_connections.clone().0.into_iter()
     }
 

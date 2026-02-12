@@ -27,8 +27,6 @@ impl Display for MarkdownString {
 ///
 /// * `;` is used in HTML entity syntax, but `&` is escaped, so they are parsed as plaintext.
 ///
-/// TODO: There is one escape this doesn't do currently. Period after numbers at the start of the
-/// line (`[0-9]*\.`) should also be escaped to avoid it being interpreted as a list item.
 pub struct MarkdownEscaped<'a>(pub &'a str);
 
 /// Implements `Display` to format markdown inline code (wrapped in backticks), handling code that
@@ -45,17 +43,47 @@ pub struct MarkdownCodeBlock<'a> {
     pub text: &'a str,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum LinePrefixState {
+    LeadingWhitespace,
+    Digits,
+    Other,
+}
+
 impl Display for MarkdownEscaped<'_> {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         let mut start_of_unescaped = None;
+        let mut line_prefix_state = LinePrefixState::LeadingWhitespace;
+
         for (ix, c) in self.0.char_indices() {
+            let at_line_start = line_prefix_state == LinePrefixState::LeadingWhitespace;
+            let escape_period_in_ordered_list =
+                c == '.' && line_prefix_state == LinePrefixState::Digits;
+            let escape_block_marker_at_line_start =
+                at_line_start && matches!(c, '#' | '+' | '=' | '-');
+
             match c {
-                // Always escaped.
-                '\\' | '`' | '*' | '_' | '[' | '^' | '$' | '~' | '&' |
-                // TODO: these only need to be escaped when they are the first non-whitespace
-                // character of the line of a block. There should probably be both an `escape_block`
-                // which does this and an `escape_inline` method which does not escape these.
-                '#' | '+' | '=' | '-' => {
+                '\\' | '`' | '*' | '_' | '[' | '^' | '$' | '~' | '&' => {
+                    match start_of_unescaped {
+                        None => {}
+                        Some(start_of_unescaped) => {
+                            write!(formatter, "{}", &self.0[start_of_unescaped..ix])?;
+                        }
+                    }
+                    write!(formatter, "\\")?;
+                    start_of_unescaped = Some(ix);
+                }
+                '.' if escape_period_in_ordered_list => {
+                    match start_of_unescaped {
+                        None => {}
+                        Some(start_of_unescaped) => {
+                            write!(formatter, "{}", &self.0[start_of_unescaped..ix])?;
+                        }
+                    }
+                    write!(formatter, "\\")?;
+                    start_of_unescaped = Some(ix);
+                }
+                '#' | '+' | '=' | '-' if escape_block_marker_at_line_start => {
                     match start_of_unescaped {
                         None => {}
                         Some(start_of_unescaped) => {
@@ -97,6 +125,22 @@ impl Display for MarkdownEscaped<'_> {
                     }
                 }
             }
+
+            line_prefix_state = match c {
+                '\n' => LinePrefixState::LeadingWhitespace,
+                _ if c.is_whitespace() => match line_prefix_state {
+                    LinePrefixState::LeadingWhitespace => LinePrefixState::LeadingWhitespace,
+                    LinePrefixState::Digits => LinePrefixState::Other,
+                    LinePrefixState::Other => LinePrefixState::Other,
+                },
+                _ if c.is_ascii_digit() => match line_prefix_state {
+                    LinePrefixState::LeadingWhitespace | LinePrefixState::Digits => {
+                        LinePrefixState::Digits
+                    }
+                    LinePrefixState::Other => LinePrefixState::Other,
+                },
+                _ => LinePrefixState::Other,
+            };
         }
         if let Some(start_of_unescaped) = start_of_unescaped {
             write!(formatter, "{}", &self.0[start_of_unescaped..])?;
@@ -213,10 +257,10 @@ mod tests {
         \# Heading
 
         Another heading
-        \=\=\=
+        \===
 
         Another heading variant
-        \-\-\-
+        \---
 
         Paragraph with \[link](https://example.com) and \`code\`, \*emphasis\*, and \~strikethrough\~.
 
@@ -229,7 +273,7 @@ mod tests {
           \* Item 2
           \+ Item 3
 
-        Some math:  \$\`\\sqrt{3x\-1}\+(1\+x)\^2\`\$
+        Some math:  \$\`\\sqrt{3x-1}+(1+x)\^2\`\$
 
         HTML entity: \&nbsp;
         "#;
@@ -250,6 +294,13 @@ mod tests {
             MarkdownInlineCode("some `text` no leading or trailing backticks").to_string(),
             "``some `text` no leading or trailing backticks``"
         );
+    }
+
+    #[test]
+    fn test_markdown_escaped_ordered_list_marker() {
+        let input = "1. Item\n  23. Nested item\nvalue 23. not a list";
+        let expected = "1\\. Item\n  23\\. Nested item\nvalue 23. not a list";
+        assert_eq!(MarkdownEscaped(input).to_string(), expected);
     }
 
     #[test]

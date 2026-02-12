@@ -244,7 +244,11 @@ impl ActiveCall {
                     this.report_call_event("Participant Invited", cx)
                 })?;
             } else {
-                //TODO: report collaboration error
+                this.update(cx, |this, cx| {
+                    if let Err(error) = result.as_ref() {
+                        this.report_collaboration_error("Call Invite", error, cx);
+                    }
+                })?;
                 log::error!("invite failed: {:?}", result);
             }
 
@@ -474,6 +478,30 @@ impl ActiveCall {
                 room_id = room.id(),
                 channel_id = room.channel_id()
             )
+        }
+    }
+
+    pub fn report_collaboration_error(
+        &self,
+        operation: &'static str,
+        error: &anyhow::Error,
+        cx: &mut App,
+    ) {
+        if let Some(room) = self.room() {
+            let room = room.read(cx);
+            telemetry::event!(
+                "Collaboration Error",
+                operation = operation,
+                room_id = room.id(),
+                channel_id = room.channel_id(),
+                message = error.to_string(),
+            );
+        } else {
+            telemetry::event!(
+                "Collaboration Error",
+                operation = operation,
+                message = error.to_string(),
+            );
         }
     }
 }

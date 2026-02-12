@@ -889,6 +889,10 @@
     ///
     /// Default: false
     "tree_view": false,
+    // Amount of indentation in pixels for nested items in tree view.
+    //
+    // Default: 20
+    "indent_size": 20,
     "scrollbar": {
       // When to show the scrollbar in the git panel.
       //

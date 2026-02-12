@@ -124,8 +124,11 @@ impl GoogleCompatibleLanguageModelProvider {
                 };
                 if this.settings != settings {
                     let api_url = SharedString::new(settings.api_url.as_str());
-                    this.api_key_state
-                        .handle_url_change(api_url, |this| &mut this.api_key_state, cx);
+                    this.api_key_state.handle_url_change(
+                        api_url,
+                        |this| &mut this.api_key_state,
+                        cx,
+                    );
                     this.settings = settings;
                     cx.notify();
                 }
@@ -340,7 +343,10 @@ impl LanguageModel for GoogleCompatibleLanguageModel {
         let provider_name = self.provider_name.clone();
         let (api_key, api_url, request_compat) = self.state.read_with(cx, |state, _cx| {
             (
-                state.api_key_state.key(&state.settings.api_url).map(|k| k.to_string()),
+                state
+                    .api_key_state
+                    .key(&state.settings.api_url)
+                    .map(|k| k.to_string()),
                 state.settings.api_url.clone(),
                 state.settings.request_compat.clone(),
             )
@@ -408,7 +414,10 @@ impl LanguageModel for GoogleCompatibleLanguageModel {
         let provider = self.provider_name.clone();
         let (api_key, api_url, request_compat) = self.state.read_with(cx, |state, _cx| {
             (
-                state.api_key_state.key(&state.settings.api_url).map(|k| k.to_string()),
+                state
+                    .api_key_state
+                    .key(&state.settings.api_url)
+                    .map(|k| k.to_string()),
                 state.settings.api_url.clone(),
                 state.settings.request_compat.clone(),
             )

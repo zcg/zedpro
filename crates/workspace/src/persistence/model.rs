@@ -16,11 +16,7 @@ use language::{Toolchain, ToolchainScope};
 use project::{Project, debugger::breakpoint_store::SourceBreakpoint};
 use remote::RemoteConnectionOptions;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 use util::ResultExt;
 use uuid::Uuid;
 
@@ -40,13 +36,6 @@ pub(crate) enum RemoteConnectionKind {
 pub enum SerializedWorkspaceLocation {
     Local,
     Remote(RemoteConnectionOptions),
-}
-
-impl SerializedWorkspaceLocation {
-    /// Get sorted paths
-    pub fn sorted_paths(&self) -> Arc<Vec<PathBuf>> {
-        unimplemented!()
-    }
 }
 
 #[derive(Debug, PartialEq, Clone)]

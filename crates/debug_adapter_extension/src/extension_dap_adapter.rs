@@ -90,20 +90,29 @@ impl DebugAdapter for ExtensionDapAdapter {
         delegate: &Arc<dyn DapDelegate>,
         config: &DebugTaskDefinition,
         user_installed_path: Option<PathBuf>,
-        // TODO support user args in the extension API
-        _user_args: Option<Vec<String>>,
-        // TODO support user env in the extension API
-        _user_env: Option<HashMap<String, String>>,
+        user_args: Option<Vec<String>>,
+        user_env: Option<HashMap<String, String>>,
         _cx: &mut AsyncApp,
     ) -> Result<DebugAdapterBinary> {
-        self.extension
+        let mut binary = self
+            .extension
             .get_dap_binary(
                 self.debug_adapter_name.clone(),
                 config.clone(),
                 user_installed_path,
                 Arc::new(WorktreeDelegateAdapter(delegate.clone())),
             )
-            .await
+            .await?;
+
+        if let Some(args) = user_args {
+            binary.arguments.extend(args);
+        }
+
+        if let Some(env) = user_env {
+            binary.envs.extend(env);
+        }
+
+        Ok(binary)
     }
 
     async fn config_from_zed_format(&self, zed_scenario: ZedDebugConfig) -> Result<DebugScenario> {

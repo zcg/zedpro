@@ -894,10 +894,29 @@ impl VsCodeSettings {
             });
 
         ProjectTerminalSettingsContent {
-            // TODO: handle arguments
             shell: self
                 .read_string(&format!("terminal.integrated.{platform}Exec"))
-                .map(|s| Shell::Program(s)),
+                .map(|program| {
+                    let args = self
+                        .read_value(&format!("terminal.integrated.{platform}ExecArgs"))
+                        .and_then(|value| value.as_array())
+                        .map(|args| {
+                            args.iter()
+                                .filter_map(|arg| arg.as_str().map(str::to_owned))
+                                .collect::<Vec<_>>()
+                        })
+                        .filter(|args| !args.is_empty());
+
+                    if let Some(args) = args {
+                        Shell::WithArguments {
+                            program,
+                            args,
+                            title_override: None,
+                        }
+                    } else {
+                        Shell::Program(program)
+                    }
+                }),
             working_directory: None,
             env,
             detect_venv: None,

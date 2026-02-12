@@ -1386,8 +1386,9 @@ mod element {
             let overlay_opacity = WorkspaceSettings::get(None, cx)
                 .active_pane_modifiers
                 .inactive_opacity
-                .map(|val| val.0.clamp(0.0, 1.0))
-                .and_then(|val| (val <= 1.).then_some(val));
+                .0
+                .clamp(0.0, 1.0);
+            let overlay_opacity = (overlay_opacity <= 1.).then_some(overlay_opacity);
 
             let mut overlay_background = cx.theme().colors().editor_background;
             if let Some(opacity) = overlay_opacity {
@@ -1396,8 +1397,8 @@ mod element {
 
             let overlay_border = WorkspaceSettings::get(None, cx)
                 .active_pane_modifiers
-                .border_size
-                .and_then(|val| (val >= 0.).then_some(val));
+                .border_size;
+            let overlay_border = (overlay_border >= 0.).then_some(overlay_border);
 
             for (ix, child) in &mut layout.children.iter_mut().enumerate() {
                 if overlay_opacity.is_some() || overlay_border.is_some() {

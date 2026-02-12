@@ -25,6 +25,7 @@ pub struct GitPanelSettings {
     pub sort_by_path: bool,
     pub collapse_untracked_diff: bool,
     pub tree_view: bool,
+    pub indent_size: f32,
 }
 
 impl ScrollbarVisibility for GitPanelSettings {
@@ -58,6 +59,7 @@ impl Settings for GitPanelSettings {
             sort_by_path: git_panel.sort_by_path.unwrap(),
             collapse_untracked_diff: git_panel.collapse_untracked_diff.unwrap(),
             tree_view: git_panel.tree_view.unwrap(),
+            indent_size: git_panel.indent_size.unwrap(),
         }
     }
 }

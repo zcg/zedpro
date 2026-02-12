@@ -3570,6 +3570,7 @@ dependencies = [
  "gpui",
  "language",
  "log",
+ "markdown",
  "node_runtime",
  "notifications",
  "project",
@@ -17143,6 +17144,7 @@ dependencies = [
  "core-foundation-sys",
  "sys-locale",
  "time",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -18440,6 +18442,7 @@ dependencies = [
  "util_macros",
  "walkdir",
  "which 6.0.3",
+ "windows 0.61.3",
 ]
 
 [[package]]

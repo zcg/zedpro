@@ -288,8 +288,7 @@ impl AcpThreadHistory {
             .cwd
             .clone()
             .unwrap_or_else(|| paths::home_dir().as_path().into());
-        let load_task =
-            connection.load_session(entry, project.clone(), session_cwd.as_path(), cx);
+        let load_task = connection.load_session(entry, project.clone(), session_cwd.as_path(), cx);
 
         window
             .spawn(cx, async move |cx| {

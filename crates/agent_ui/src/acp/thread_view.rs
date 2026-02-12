@@ -124,12 +124,10 @@ impl ThreadError {
                 .downcast_ref::<acp::Error>()
                 .map(|acp_error| SharedString::from(acp_error.code.to_string()));
 
-            // TODO: we should have Gemini return better errors here.
-            if agent_name == "Gemini CLI"
-                && message.contains("Could not load the default credentials")
+            let is_gemini_auth_error = message.contains("Could not load the default credentials")
                 || message.contains("API key not valid")
-                || message.contains("Request had invalid authentication credentials")
-            {
+                || message.contains("Request had invalid authentication credentials");
+            if agent_name == "Gemini CLI" && is_gemini_auth_error {
                 Self::AuthenticationRequired(message)
             } else {
                 Self::Other {
@@ -2018,8 +2016,11 @@ impl AcpServerView {
             return;
         }
 
-        // TODO: Change this once we have title summarization for external agents.
-        let title = self.agent.name();
+        let title = self
+            .as_active_thread()
+            .map(|active| active.read(cx).thread.read(cx).title())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| self.agent.name());
 
         match settings.notify_when_agent_waiting {
             NotifyWhenAgentWaiting::PrimaryScreen => {
@@ -3044,7 +3045,7 @@ pub(crate) mod tests {
             _method_id: acp::AuthMethodId,
             _cx: &mut App,
         ) -> Task<gpui::Result<()>> {
-            unimplemented!()
+            Task::ready(Ok(()))
         }
 
         fn prompt(
@@ -3056,9 +3057,7 @@ pub(crate) mod tests {
             Task::ready(Err(anyhow::anyhow!("Error prompting")))
         }
 
-        fn cancel(&self, _session_id: &acp::SessionId, _cx: &mut App) {
-            unimplemented!()
-        }
+        fn cancel(&self, _session_id: &acp::SessionId, _cx: &mut App) {}
 
         fn into_any(self: Rc<Self>) -> Rc<dyn Any> {
             self
@@ -3108,7 +3107,7 @@ pub(crate) mod tests {
             _method_id: acp::AuthMethodId,
             _cx: &mut App,
         ) -> Task<gpui::Result<()>> {
-            unimplemented!()
+            Task::ready(Ok(()))
         }
 
         fn prompt(
@@ -3120,9 +3119,7 @@ pub(crate) mod tests {
             Task::ready(Ok(acp::PromptResponse::new(acp::StopReason::Refusal)))
         }
 
-        fn cancel(&self, _session_id: &acp::SessionId, _cx: &mut App) {
-            unimplemented!()
-        }
+        fn cancel(&self, _session_id: &acp::SessionId, _cx: &mut App) {}
 
         fn into_any(self: Rc<Self>) -> Rc<dyn Any> {
             self

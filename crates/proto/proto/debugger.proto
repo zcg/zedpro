@@ -107,6 +107,7 @@ message DapEvaluateResponse {
     optional uint64 named_variables = 4;
     optional uint64 indexed_variables = 5;
     optional string memory_reference = 6;
+    optional uint64 value_location_reference = 7;
 }
 
 
@@ -184,6 +185,7 @@ message DapSetVariableValueResponse {
     optional uint64 named_variables = 5;
     optional uint64 indexed_variables = 6;
     optional string memory_reference = 7;
+    optional uint64 value_location_reference = 8;
 }
 
 message DapPauseRequest {
@@ -350,12 +352,21 @@ message DapVariable {
     string name = 1;
     string value = 2;
     optional string type = 3;
-    // optional DapVariablePresentationHint presentation_hint = 4;
+    optional DapVariablePresentationHint presentation_hint = 4;
     optional string evaluate_name = 5;
     uint64 variables_reference = 6;
     optional uint64 named_variables = 7;
     optional uint64 indexed_variables = 8;
     optional string memory_reference = 9;
+    optional uint64 declaration_location_reference = 10;
+    optional uint64 value_location_reference = 11;
+}
+
+message DapVariablePresentationHint {
+    optional DapVariablePresentationHintKind kind = 1;
+    repeated DapVariablePresentationHintAttributes attributes = 2;
+    optional DapVariablePresentationHintVisibility visibility = 3;
+    optional bool lazy = 4;
 }
 
 message DapThread {
@@ -445,6 +456,42 @@ enum DapStackPresentationHint {
     Label = 1;
     Subtle = 2;
     StackUnknown = 3;
+}
+
+enum DapVariablePresentationHintKind {
+    VariableProperty = 0;
+    VariableMethod = 1;
+    VariableClass = 2;
+    VariableData = 3;
+    VariableEvent = 4;
+    VariableBaseClass = 5;
+    VariableInnerClass = 6;
+    VariableInterface = 7;
+    VariableMostDerivedClass = 8;
+    VariableVirtual = 9;
+    VariableDataBreakpoint = 10;
+    VariableKindUnknown = 11;
+}
+
+enum DapVariablePresentationHintAttributes {
+    VariableStatic = 0;
+    VariableConstant = 1;
+    VariableReadOnly = 2;
+    VariableRawString = 3;
+    VariableHasObjectId = 4;
+    VariableCanHaveObjectId = 5;
+    VariableHasSideEffects = 6;
+    VariableHasDataBreakpoint = 7;
+    VariableAttributeUnknown = 8;
+}
+
+enum DapVariablePresentationHintVisibility {
+    VariablePublic = 0;
+    VariablePrivate = 1;
+    VariableProtected = 2;
+    VariableInternal = 3;
+    VariableFinal = 4;
+    VariableVisibilityUnknown = 5;
 }
 message DapModule {
     DapModuleId id = 1;

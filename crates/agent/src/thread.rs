@@ -3428,10 +3428,7 @@ impl UserMessageContent {
         match value {
             acp::ContentBlock::Text(text_content) => Self::Text(text_content.text),
             acp::ContentBlock::Image(image_content) => Self::Image(convert_image(image_content)),
-            acp::ContentBlock::Audio(_) => {
-                // TODO
-                Self::Text("[audio]".to_string())
-            }
+            acp::ContentBlock::Audio(audio) => Self::Text(format!("[audio:{}]", audio.mime_type)),
             acp::ContentBlock::ResourceLink(resource_link) => {
                 match MentionUri::parse(&resource_link.uri, path_style) {
                     Ok(uri) => Self::Mention {
@@ -3463,9 +3460,17 @@ impl UserMessageContent {
                         }
                     }
                 }
-                acp::EmbeddedResourceResource::BlobResourceContents(_) => {
-                    // TODO
-                    Self::Text("[blob]".to_string())
+                acp::EmbeddedResourceResource::BlobResourceContents(resource) => {
+                    match MentionUri::parse(&resource.uri, path_style) {
+                        Ok(uri) => Self::Mention {
+                            uri,
+                            content: String::new(),
+                        },
+                        Err(err) => {
+                            log::error!("Failed to parse blob resource link: {}", err);
+                            Self::Text(format!("[blob]({})", resource.uri))
+                        }
+                    }
                 }
                 other => {
                     log::warn!("Unexpected content type: {:?}", other);

@@ -1,7 +1,7 @@
 use gpui::{AnyElement, Empty, Entity, FocusHandle, Focusable, ListState, Subscription, list};
 use project::debugger::session::{Session, SessionEvent};
+use std::sync::Arc;
 use ui::prelude::*;
-use util::maybe;
 
 pub(crate) struct LoadedSourceList {
     list: ListState,
@@ -9,6 +9,7 @@ pub(crate) struct LoadedSourceList {
     focus_handle: FocusHandle,
     _subscription: Subscription,
     session: Entity<Session>,
+    entries: Arc<[dap::Source]>,
 }
 
 impl LoadedSourceList {
@@ -32,16 +33,16 @@ impl LoadedSourceList {
             focus_handle,
             _subscription,
             invalidate: true,
+            entries: Arc::default(),
         }
     }
 
     fn render_entry(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
-        let Some(source) = maybe!({
-            self.session
-                .update(cx, |state, cx| state.loaded_sources(cx).get(ix).cloned())
-        }) else {
+        let Some(source) = self.entries.get(ix) else {
             return Empty.into_any();
         };
+        let source_name = source.name.clone();
+        let source_path = source.path.clone();
 
         v_flex()
             .rounded_md()
@@ -53,13 +54,13 @@ impl LoadedSourceList {
                 h_flex()
                     .gap_0p5()
                     .text_ui_sm(cx)
-                    .when_some(source.name.clone(), |this, name| this.child(name)),
+                    .when_some(source_name, |this, name| this.child(name)),
             )
             .child(
                 h_flex()
                     .text_ui_xs(cx)
                     .text_color(cx.theme().colors().text_muted)
-                    .when_some(source.path, |this, path| this.child(path)),
+                    .when_some(source_path, |this, path| this.child(path)),
             )
             .into_any()
     }
@@ -74,10 +75,10 @@ impl Focusable for LoadedSourceList {
 impl Render for LoadedSourceList {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.invalidate {
-            let len = self
+            self.entries = self
                 .session
-                .update(cx, |session, cx| session.loaded_sources(cx).len());
-            self.list.reset(len);
+                .update(cx, |session, cx| session.loaded_sources(cx));
+            self.list.reset(self.entries.len());
             self.invalidate = false;
             cx.notify();
         }

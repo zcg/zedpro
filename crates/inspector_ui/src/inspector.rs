@@ -58,7 +58,8 @@ fn render_inspector(
     window: &mut Window,
     cx: &mut Context<Inspector>,
 ) -> AnyElement {
-    let ui_font = theme::setup_ui_font(window, cx);
+    window.set_rem_size(theme::get_ui_font_size(cx));
+    let ui_font = theme::get_ui_font(cx);
     let colors = cx.theme().colors();
     let inspector_id = inspector.active_element_id();
     let toolbar_height = PlatformTitleBar::height(window);

@@ -3,15 +3,17 @@ use serde::Deserialize;
 use util::ResultExt as _;
 
 use crate::{
-    DebugScenario, DebugTaskFile, EnvVariableReplacer, TcpArgumentsTemplate, VariableName,
+    BuildTaskDefinition, DebugScenario, DebugTaskFile, EnvVariableReplacer, TcpArgumentsTemplate,
+    VariableName,
 };
 
-// TODO support preLaunchTask linkage with other tasks
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct VsCodeDebugTaskDefinition {
     r#type: String,
     name: String,
+    #[serde(default)]
+    pre_launch_task: Option<String>,
     #[serde(default)]
     port: Option<u16>,
     #[serde(flatten)]
@@ -33,7 +35,9 @@ impl VsCodeDebugTaskDefinition {
         }
         let definition = DebugScenario {
             label: label.into(),
-            build: None,
+            build: self
+                .pre_launch_task
+                .map(|task_name| BuildTaskDefinition::ByName(task_name.into())),
             adapter: adapter.into(),
             tcp_connection: self.port.map(|port| TcpArgumentsTemplate {
                 port: Some(port),
@@ -100,7 +104,7 @@ fn task_type_to_adapter_name(task_type: &str) -> String {
 mod tests {
     use serde_json::json;
 
-    use crate::{DebugScenario, DebugTaskFile, VariableName};
+    use crate::{BuildTaskDefinition, DebugScenario, DebugTaskFile, VariableName};
 
     use super::VsCodeDebugTaskFile;
 
@@ -188,6 +192,43 @@ mod tests {
                 }),
                 tcp_connection: None,
                 build: None
+            }])
+        );
+    }
+
+    #[test]
+    fn test_parsing_vscode_prelaunch_task() {
+        let raw = r#"
+            {
+                "version": "0.2.0",
+                "configurations": [
+                    {
+                        "name": "Debug with Build",
+                        "request": "launch",
+                        "type": "node",
+                        "program": "${workspaceFolder}/xyz.js",
+                        "preLaunchTask": "npm: build"
+                    }
+                ]
+            }
+        "#;
+
+        let parsed: VsCodeDebugTaskFile =
+            serde_json_lenient::from_str(raw).expect("deserializing launch.json");
+        let zed = DebugTaskFile::try_from(parsed).expect("converting to Zed debug templates");
+
+        pretty_assertions::assert_eq!(
+            zed,
+            DebugTaskFile(vec![DebugScenario {
+                label: "Debug with Build".into(),
+                adapter: "JavaScript".into(),
+                config: json!({
+                    "request": "launch",
+                    "program": "${ZED_WORKTREE_ROOT}/xyz.js",
+                    "type": "node",
+                }),
+                tcp_connection: None,
+                build: Some(BuildTaskDefinition::ByName("npm: build".into()))
             }])
         );
     }

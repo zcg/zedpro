@@ -72,13 +72,11 @@ impl DisconnectedOverlay {
                 let handle = cx.entity().downgrade();
 
                 let remote_connection_options = project.read(cx).remote_connection_options(cx);
-                if let Some(RemoteConnectionOptions::Docker(options)) = remote_connection_options.clone()
+                if let Some(RemoteConnectionOptions::Docker(options)) =
+                    remote_connection_options.clone()
                 {
                     if Self::return_devcontainer_to_host_on_disconnect(
-                        &options,
-                        workspace,
-                        window,
-                        cx,
+                        &options, workspace, window, cx,
                     ) {
                         return;
                     }
@@ -117,11 +115,17 @@ impl DisconnectedOverlay {
         }
     }
 
-    fn handle_return_to_host(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn handle_return_to_host(
+        &mut self,
+        _: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.finished = true;
         cx.emit(DismissEvent);
 
-        let Host::RemoteServerProject(RemoteConnectionOptions::Docker(options), _) = &self.host else {
+        let Host::RemoteServerProject(RemoteConnectionOptions::Docker(options), _) = &self.host
+        else {
             return;
         };
 
@@ -208,7 +212,12 @@ impl DisconnectedOverlay {
                 let _ = old_window.update(cx, |_, window, _| window.remove_window());
                 Ok(())
             })
-            .detach_and_prompt_err("Failed to return to host folder", window, cx, |_, _, _| None);
+            .detach_and_prompt_err(
+                "Failed to return to host folder",
+                window,
+                cx,
+                |_, _, _| None,
+            );
         } else {
             let workspace_handle = workspace.clone();
             cx.spawn_in(window, async move |_, cx| {
@@ -262,7 +271,12 @@ impl DisconnectedOverlay {
                 let _ = old_window.update(cx, |_, window, _| window.remove_window());
                 Ok(())
             })
-            .detach_and_prompt_err("Failed to return to host folder", window, cx, |_, _, _| None);
+            .detach_and_prompt_err(
+                "Failed to return to host folder",
+                window,
+                cx,
+                |_, _, _| None,
+            );
         } else {
             let workspace_handle = cx.entity();
             cx.spawn_in(window, async move |_, cx| {

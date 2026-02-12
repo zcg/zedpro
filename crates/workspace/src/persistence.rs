@@ -1653,7 +1653,18 @@ impl WorkspaceDb {
         ))?()?
         .into_iter()
         .filter_map(
-            |(id, kind, host, port, user, distro, container_id, name, use_podman, docker_host_user)| {
+            |(
+                id,
+                kind,
+                host,
+                port,
+                user,
+                distro,
+                container_id,
+                name,
+                use_podman,
+                docker_host_user,
+            )| {
                 Some((
                     RemoteConnectionId(id),
                     Self::remote_connection_from_row(

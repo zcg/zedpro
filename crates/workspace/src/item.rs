@@ -15,7 +15,7 @@ use gpui::{
     EventEmitter, FocusHandle, Focusable, Font, HighlightStyle, Pixels, Point, Render,
     SharedString, Task, WeakEntity, Window,
 };
-use language::Capability;
+use language::{Capability, HighlightedText};
 use project::{Project, ProjectEntryId, ProjectPath};
 pub use settings::{
     ActivateOnClose, ClosePosition, RegisterSetting, Settings, SettingsLocation, ShowCloseButton,
@@ -123,12 +123,40 @@ pub enum ItemEvent {
     Edit,
 }
 
-// TODO: Combine this with existing HighlightedText struct?
 #[derive(Debug)]
 pub struct BreadcrumbText {
-    pub text: String,
-    pub highlights: Option<Vec<(Range<usize>, HighlightStyle)>>,
+    pub highlighted_text: HighlightedText,
     pub font: Option<Font>,
+}
+
+impl BreadcrumbText {
+    pub fn plain(text: impl Into<SharedString>) -> Self {
+        Self {
+            highlighted_text: HighlightedText {
+                text: text.into(),
+                highlights: Vec::new(),
+            },
+            font: None,
+        }
+    }
+
+    pub fn highlighted(
+        text: impl Into<SharedString>,
+        highlights: Vec<(Range<usize>, HighlightStyle)>,
+    ) -> Self {
+        Self {
+            highlighted_text: HighlightedText {
+                text: text.into(),
+                highlights,
+            },
+            font: None,
+        }
+    }
+
+    pub fn with_font(mut self, font: Option<Font>) -> Self {
+        self.font = font;
+        self
+    }
 }
 
 #[derive(Clone, Copy, Default, Debug)]

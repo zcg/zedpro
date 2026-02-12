@@ -502,13 +502,11 @@ impl AgentConfiguration {
                                                     )),
                                                     IconName::Info,
                                                 )
-                                                    .icon_size(IconSize::XSmall)
-                                                    .icon_color(Color::Muted)
-                                                    .style(ButtonStyle::Transparent)
-                                                    .size(ButtonSize::None)
-                                                    .tooltip(Tooltip::text(
-                                                        model.details.clone(),
-                                                    )),
+                                                .icon_size(IconSize::XSmall)
+                                                .icon_color(Color::Muted)
+                                                .style(ButtonStyle::Transparent)
+                                                .size(ButtonSize::None)
+                                                .tooltip(Tooltip::text(model.details.clone())),
                                             )
                                             .child(
                                                 Label::new(model.summary)
@@ -548,29 +546,31 @@ impl AgentConfiguration {
                                                 })),
                                             )
                                             .child(
-                                        Button::new(
-                                            SharedString::from(format!(
-                                                "test-provider-model-{}-{}",
-                                                provider_id, index
-                                            )),
-                                            "Test Availability",
-                                        )
-                                        .style(ButtonStyle::Outlined)
-                                        .label_size(LabelSize::Small)
-                                        .on_click(cx.listener(move |_this, _event, window, cx| {
-                                            workspace
-                                                .update(cx, |workspace, cx| {
-                                                    ModelAvailabilityTestModal::toggle(
-                                                        provider_id.clone(),
-                                                        model_name.clone(),
-                                                        protocol,
-                                                        workspace,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                })
-                                                .log_err();
-                                        })),
+                                                Button::new(
+                                                    SharedString::from(format!(
+                                                        "test-provider-model-{}-{}",
+                                                        provider_id, index
+                                                    )),
+                                                    "Test Availability",
+                                                )
+                                                .style(ButtonStyle::Outlined)
+                                                .label_size(LabelSize::Small)
+                                                .on_click(cx.listener(
+                                                    move |_this, _event, window, cx| {
+                                                        workspace
+                                                            .update(cx, |workspace, cx| {
+                                                                ModelAvailabilityTestModal::toggle(
+                                                                    provider_id.clone(),
+                                                                    model_name.clone(),
+                                                                    protocol,
+                                                                    workspace,
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            })
+                                                            .log_err();
+                                                    },
+                                                )),
                                             ),
                                     ),
                             )
@@ -1707,12 +1707,12 @@ fn provider_origin_chip(is_third_party: bool, cx: &App) -> impl IntoElement {
     }
 }
 
-fn compatible_provider_protocol(
-    provider_id: &Arc<str>,
-    cx: &App,
-) -> Option<LlmCompatibleProvider> {
+fn compatible_provider_protocol(provider_id: &Arc<str>, cx: &App) -> Option<LlmCompatibleProvider> {
     let settings = AllLanguageModelSettings::get_global(cx);
-    if settings.openai_compatible.contains_key(provider_id.as_ref()) {
+    if settings
+        .openai_compatible
+        .contains_key(provider_id.as_ref())
+    {
         Some(LlmCompatibleProvider::OpenAi)
     } else if settings
         .anthropic_compatible
@@ -1764,33 +1764,29 @@ fn provider_models_summary(provider_id: &Arc<str>, cx: &App) -> Vec<ProviderMode
         provider
             .available_models
             .iter()
-            .map(|model| {
-                ProviderModelSummary {
-                    model_name: SharedString::from(model.name.clone()),
-                    protocol: LlmCompatibleProvider::Anthropic,
-                    summary: SharedString::from(model.name.clone()),
-                    details: SharedString::from(format!(
-                        "Protocol: Anthropic\nmax_tokens={}\nmax_output_tokens={}",
-                        model.max_tokens,
-                        model.max_output_tokens.unwrap_or(0)
-                    )),
-                }
+            .map(|model| ProviderModelSummary {
+                model_name: SharedString::from(model.name.clone()),
+                protocol: LlmCompatibleProvider::Anthropic,
+                summary: SharedString::from(model.name.clone()),
+                details: SharedString::from(format!(
+                    "Protocol: Anthropic\nmax_tokens={}\nmax_output_tokens={}",
+                    model.max_tokens,
+                    model.max_output_tokens.unwrap_or(0)
+                )),
             })
             .collect()
     } else if let Some(provider) = settings.google_compatible.get(provider_id.as_ref()) {
         provider
             .available_models
             .iter()
-            .map(|model| {
-                ProviderModelSummary {
-                    model_name: SharedString::from(model.name.clone()),
-                    protocol: LlmCompatibleProvider::Gemini,
-                    summary: SharedString::from(model.name.clone()),
-                    details: SharedString::from(format!(
-                        "Protocol: Gemini\nmax_tokens={}",
-                        model.max_tokens
-                    )),
-                }
+            .map(|model| ProviderModelSummary {
+                model_name: SharedString::from(model.name.clone()),
+                protocol: LlmCompatibleProvider::Gemini,
+                summary: SharedString::from(model.name.clone()),
+                details: SharedString::from(format!(
+                    "Protocol: Gemini\nmax_tokens={}",
+                    model.max_tokens
+                )),
             })
             .collect()
     } else {

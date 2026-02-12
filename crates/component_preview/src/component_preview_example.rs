@@ -83,7 +83,7 @@ pub fn run_component_preview() {
             {
                 move |window, cx| {
                     let app_state = app_state;
-                    theme::setup_ui_font(window, cx);
+                    window.set_rem_size(theme::get_ui_font_size(cx));
 
                     let project = Project::local(
                         app_state.client.clone(),

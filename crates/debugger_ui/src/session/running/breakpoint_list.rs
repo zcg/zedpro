@@ -201,27 +201,61 @@ impl BreakpointList {
             ActiveBreakpointStripMode::Condition => "Set Condition",
             ActiveBreakpointStripMode::HitCondition => "Set Hit Condition",
         };
-        let mut is_exception_breakpoint = true;
-        let active_value = self.selected_ix.and_then(|ix| {
-            self.breakpoints.get(ix).and_then(|bp| {
-                if let BreakpointEntryKind::LineBreakpoint(bp) = &bp.kind {
-                    is_exception_breakpoint = false;
+        let supports_exception_condition = self
+            .session
+            .as_ref()
+            .is_some_and(|session| {
+                let capabilities = session.read(cx).capabilities();
+                capabilities
+                    .supports_exception_filter_options
+                    .unwrap_or_default()
+            });
+        let (active_value, is_read_only) = self
+            .selected_ix
+            .and_then(|ix| self.breakpoints.get(ix))
+            .map(|bp| match &bp.kind {
+                BreakpointEntryKind::LineBreakpoint(bp) => (
                     match prop {
                         ActiveBreakpointStripMode::Log => bp.breakpoint.message.clone(),
                         ActiveBreakpointStripMode::Condition => bp.breakpoint.condition.clone(),
                         ActiveBreakpointStripMode::HitCondition => {
                             bp.breakpoint.hit_condition.clone()
                         }
-                    }
-                } else {
-                    None
+                    },
+                    false,
+                ),
+                BreakpointEntryKind::DataBreakpoint(bp) => {
+                    let active_value = match prop {
+                        ActiveBreakpointStripMode::Log => None,
+                        ActiveBreakpointStripMode::Condition => {
+                            bp.0.dap.condition.as_deref().map(Arc::<str>::from)
+                        }
+                        ActiveBreakpointStripMode::HitCondition => {
+                            bp.0.dap.hit_condition.as_deref().map(Arc::<str>::from)
+                        }
+                    };
+                    let is_read_only = matches!(prop, ActiveBreakpointStripMode::Log);
+                    (active_value, is_read_only)
+                }
+                BreakpointEntryKind::ExceptionBreakpoint(bp) => {
+                    let active_value = match prop {
+                        ActiveBreakpointStripMode::Condition => {
+                            bp.condition.as_deref().map(Arc::<str>::from)
+                        }
+                        ActiveBreakpointStripMode::Log | ActiveBreakpointStripMode::HitCondition => {
+                            None
+                        }
+                    };
+                    let is_read_only = !matches!(prop, ActiveBreakpointStripMode::Condition)
+                        || !supports_exception_condition;
+                    (active_value, is_read_only)
                 }
             })
-        });
+            .unwrap_or((None, true));
 
         self.input.update(cx, |this, cx| {
             this.set_placeholder_text(placeholder, window, cx);
-            this.set_read_only(is_exception_breakpoint);
+            this.set_read_only(is_read_only);
             this.set_text(active_value.as_deref().unwrap_or(""), window, cx);
         });
     }
@@ -319,7 +353,11 @@ impl BreakpointList {
         }
     }
     fn confirm(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = self.selected_ix.and_then(|ix| self.breakpoints.get_mut(ix)) else {
+        let Some(entry_kind) = self
+            .selected_ix
+            .and_then(|ix| self.breakpoints.get(ix))
+            .map(|entry| entry.kind.clone())
+        else {
             return;
         };
 
@@ -331,7 +369,7 @@ impl BreakpointList {
 
                 match mode {
                     ActiveBreakpointStripMode::Log => {
-                        if let BreakpointEntryKind::LineBreakpoint(line_breakpoint) = &entry.kind {
+                        if let BreakpointEntryKind::LineBreakpoint(line_breakpoint) = &entry_kind {
                             Self::edit_line_breakpoint_inner(
                                 &self.breakpoint_store,
                                 line_breakpoint.breakpoint.path.clone(),
@@ -342,25 +380,68 @@ impl BreakpointList {
                         }
                     }
                     ActiveBreakpointStripMode::Condition => {
-                        if let BreakpointEntryKind::LineBreakpoint(line_breakpoint) = &entry.kind {
-                            Self::edit_line_breakpoint_inner(
-                                &self.breakpoint_store,
-                                line_breakpoint.breakpoint.path.clone(),
-                                line_breakpoint.breakpoint.row,
-                                BreakpointEditAction::EditCondition(Arc::from(text)),
-                                cx,
-                            );
+                        match &entry_kind {
+                            BreakpointEntryKind::LineBreakpoint(line_breakpoint) => {
+                                Self::edit_line_breakpoint_inner(
+                                    &self.breakpoint_store,
+                                    line_breakpoint.breakpoint.path.clone(),
+                                    line_breakpoint.breakpoint.row,
+                                    BreakpointEditAction::EditCondition(Arc::from(text.as_str())),
+                                    cx,
+                                );
+                            }
+                            BreakpointEntryKind::DataBreakpoint(data_breakpoint) => {
+                                let value = if text.is_empty() {
+                                    None
+                                } else {
+                                    Some(text.clone())
+                                };
+                                self.edit_data_breakpoint_condition(
+                                    &data_breakpoint.0.dap.data_id,
+                                    value,
+                                    cx,
+                                );
+                            }
+                            BreakpointEntryKind::ExceptionBreakpoint(exception_breakpoint) => {
+                                let value = if text.is_empty() {
+                                    None
+                                } else {
+                                    Some(text.clone())
+                                };
+                                self.edit_exception_breakpoint_condition(
+                                    &exception_breakpoint.id,
+                                    value,
+                                    cx,
+                                );
+                            }
                         }
                     }
                     ActiveBreakpointStripMode::HitCondition => {
-                        if let BreakpointEntryKind::LineBreakpoint(line_breakpoint) = &entry.kind {
-                            Self::edit_line_breakpoint_inner(
-                                &self.breakpoint_store,
-                                line_breakpoint.breakpoint.path.clone(),
-                                line_breakpoint.breakpoint.row,
-                                BreakpointEditAction::EditHitCondition(Arc::from(text)),
-                                cx,
-                            );
+                        match &entry_kind {
+                            BreakpointEntryKind::LineBreakpoint(line_breakpoint) => {
+                                Self::edit_line_breakpoint_inner(
+                                    &self.breakpoint_store,
+                                    line_breakpoint.breakpoint.path.clone(),
+                                    line_breakpoint.breakpoint.row,
+                                    BreakpointEditAction::EditHitCondition(Arc::from(
+                                        text.as_str(),
+                                    )),
+                                    cx,
+                                );
+                            }
+                            BreakpointEntryKind::DataBreakpoint(data_breakpoint) => {
+                                let value = if text.is_empty() {
+                                    None
+                                } else {
+                                    Some(text.clone())
+                                };
+                                self.edit_data_breakpoint_hit_condition(
+                                    &data_breakpoint.0.dap.data_id,
+                                    value,
+                                    cx,
+                                );
+                            }
+                            BreakpointEntryKind::ExceptionBreakpoint(_) => {}
                         }
                     }
                 }
@@ -371,7 +452,7 @@ impl BreakpointList {
 
             return;
         }
-        match &mut entry.kind {
+        match &entry_kind {
             BreakpointEntryKind::LineBreakpoint(line_breakpoint) => {
                 let path = line_breakpoint.breakpoint.path.clone();
                 let row = line_breakpoint.breakpoint.row;
@@ -480,6 +561,45 @@ impl BreakpointList {
         if let Some(session) = &self.session {
             session.update(cx, |this, cx| {
                 this.toggle_data_breakpoint(id, cx);
+            });
+        }
+    }
+
+    fn edit_data_breakpoint_condition(
+        &mut self,
+        id: &str,
+        condition: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = &self.session {
+            session.update(cx, |this, cx| {
+                this.set_data_breakpoint_condition(id, condition, cx);
+            });
+        }
+    }
+
+    fn edit_exception_breakpoint_condition(
+        &mut self,
+        id: &str,
+        condition: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = &self.session {
+            session.update(cx, |this, cx| {
+                this.set_exception_breakpoint_condition(id, condition, cx);
+            });
+        }
+    }
+
+    fn edit_data_breakpoint_hit_condition(
+        &mut self,
+        id: &str,
+        hit_condition: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = &self.session {
+            session.update(cx, |this, cx| {
+                this.set_data_breakpoint_hit_condition(id, hit_condition, cx);
             });
         }
     }
@@ -713,11 +833,12 @@ impl Render for BreakpointList {
             session
                 .read(cx)
                 .exception_breakpoints()
-                .map(|(data, is_enabled)| BreakpointEntry {
+                .map(|state| BreakpointEntry {
                     kind: BreakpointEntryKind::ExceptionBreakpoint(ExceptionBreakpoint {
-                        id: data.filter.clone(),
-                        data: data.clone(),
-                        is_enabled: *is_enabled,
+                        id: state.filter.filter.clone(),
+                        data: state.filter.clone(),
+                        is_enabled: state.is_enabled,
+                        condition: state.condition.clone(),
                     }),
                     weak: weak.clone(),
                 })
@@ -967,6 +1088,7 @@ struct ExceptionBreakpoint {
     id: String,
     data: ExceptionBreakpointsFilter,
     is_enabled: bool,
+    condition: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1255,8 +1377,12 @@ impl BreakpointEntry {
             BreakpointEntryKind::LineBreakpoint(line_breakpoint) => {
                 line_breakpoint.breakpoint.condition.is_some()
             }
-            // We don't support conditions on exception/data breakpoints
-            _ => false,
+            BreakpointEntryKind::DataBreakpoint(data_breakpoint) => {
+                data_breakpoint.0.dap.condition.is_some()
+            }
+            BreakpointEntryKind::ExceptionBreakpoint(exception_breakpoint) => {
+                exception_breakpoint.condition.is_some()
+            }
         }
     }
 
@@ -1265,7 +1391,10 @@ impl BreakpointEntry {
             BreakpointEntryKind::LineBreakpoint(line_breakpoint) => {
                 line_breakpoint.breakpoint.hit_condition.is_some()
             }
-            _ => false,
+            BreakpointEntryKind::DataBreakpoint(data_breakpoint) => {
+                data_breakpoint.0.dap.hit_condition.is_some()
+            }
+            BreakpointEntryKind::ExceptionBreakpoint(_) => false,
         }
     }
 }
@@ -1292,7 +1421,7 @@ impl From<&Capabilities> for SupportedBreakpointProperties {
                 Self::HIT_CONDITION,
             ),
             (
-                caps.supports_exception_options,
+                caps.supports_exception_filter_options,
                 Self::EXCEPTION_FILTER_OPTIONS,
             ),
         ] {
@@ -1306,12 +1435,14 @@ impl From<&Capabilities> for SupportedBreakpointProperties {
 
 impl SupportedBreakpointProperties {
     fn for_exception_breakpoints(self) -> Self {
-        // TODO: we don't yet support conditions for exception breakpoints at the data layer, hence all props are disabled here.
-        Self::empty()
+        if self.contains(Self::EXCEPTION_FILTER_OPTIONS) {
+            Self::CONDITION
+        } else {
+            Self::empty()
+        }
     }
     fn for_data_breakpoints(self) -> Self {
-        // TODO: we don't yet support conditions for data breakpoints at the data layer, hence all props are disabled here.
-        Self::empty()
+        self & (Self::CONDITION | Self::HIT_CONDITION)
     }
 }
 #[derive(IntoElement)]

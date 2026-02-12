@@ -179,15 +179,18 @@ impl RenderOnce for ModelSelectorProviderItem {
                             .gap_1p5()
                             .items_center()
                             .children(
-                                self.is_collapsible
-                                    .then_some(
-                                        Icon::new(chevron)
-                                            .size(IconSize::XSmall)
-                                            .color(Color::Muted)
-                                            .into_any_element(),
-                                    ),
+                                self.is_collapsible.then_some(
+                                    Icon::new(chevron)
+                                        .size(IconSize::XSmall)
+                                        .color(Color::Muted)
+                                        .into_any_element(),
+                                ),
                             )
-                            .child(Label::new(self.title).size(LabelSize::Small).color(Color::Muted)),
+                            .child(
+                                Label::new(self.title)
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            ),
                     )
                     .child(
                         Label::new(format!("{}", self.model_count))

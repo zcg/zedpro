@@ -83,6 +83,21 @@ fn is_build_flag(mut arg: &str) -> Option<bool> {
     }
 }
 
+fn normalize_shell_escaped_test_regex(arg: &str) -> String {
+    fn decode(segment: &str) -> Option<String> {
+        let inner = segment.strip_prefix("\\^")?.strip_suffix("\\$")?;
+        Some(format!("^{inner}$"))
+    }
+
+    if let Some((left, right)) = arg.split_once("/")
+        && let (Some(left), Some(right)) = (decode(left), decode(right))
+    {
+        return format!("{left}/{right}");
+    }
+
+    decode(arg).unwrap_or_else(|| arg.to_string())
+}
+
 #[async_trait]
 impl DapLocator for GoLocator {
     fn name(&self) -> SharedString {
@@ -114,29 +129,7 @@ impl DapLocator for GoLocator {
 
                 for arg in build_config.args.iter().skip(1) {
                     if all_args_are_test || next_arg_is_test {
-                        // HACK: tasks assume that they are run in a shell context,
-                        // so the -run regex has escaped specials. Delve correctly
-                        // handles escaping, so we undo that here.
-                        if let Some((left, right)) = arg.split_once("/")
-                            && left.starts_with("\\^")
-                            && left.ends_with("\\$")
-                            && right.starts_with("\\^")
-                            && right.ends_with("\\$")
-                        {
-                            let mut left = left[1..left.len() - 2].to_string();
-                            left.push('$');
-
-                            let mut right = right[1..right.len() - 2].to_string();
-                            right.push('$');
-
-                            args.push(format!("{left}/{right}"));
-                        } else if arg.starts_with("\\^") && arg.ends_with("\\$") {
-                            let mut arg = arg[1..arg.len() - 2].to_string();
-                            arg.push('$');
-                            args.push(arg);
-                        } else {
-                            args.push(arg.clone());
-                        }
+                        args.push(normalize_shell_escaped_test_regex(arg));
                         next_arg_is_test = false;
                     } else if next_arg_is_build {
                         build_flags.push(arg.clone());
@@ -243,5 +236,34 @@ impl DapLocator for GoLocator {
         _executor: BackgroundExecutor,
     ) -> Result<DebugRequest> {
         unreachable!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_shell_escaped_test_regex;
+
+    #[test]
+    fn normalizes_shell_escaped_single_regex() {
+        assert_eq!(
+            normalize_shell_escaped_test_regex("\\^TestFoo\\$"),
+            "^TestFoo$"
+        );
+    }
+
+    #[test]
+    fn normalizes_shell_escaped_subtest_regex() {
+        assert_eq!(
+            normalize_shell_escaped_test_regex("\\^TestFoo\\$/\\^case_1\\$"),
+            "^TestFoo$/^case_1$"
+        );
+    }
+
+    #[test]
+    fn leaves_plain_argument_unchanged() {
+        assert_eq!(
+            normalize_shell_escaped_test_regex("TestFoo"),
+            "TestFoo".to_string()
+        );
     }
 }

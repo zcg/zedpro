@@ -77,7 +77,8 @@ impl EventEmitter<AgentNotificationEvent> for AgentNotification {}
 
 impl Render for AgentNotification {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ui_font = theme::setup_ui_font(window, cx);
+        window.set_rem_size(theme::get_ui_font_size(cx));
+        let ui_font = theme::get_ui_font(cx);
         let line_height = window.line_height();
 
         let bg = cx.theme().colors().elevated_surface_background;

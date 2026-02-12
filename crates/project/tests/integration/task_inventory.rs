@@ -324,7 +324,7 @@ async fn test_reloading_debug_scenarios(cx: &mut TestAppContext) {
 
     let (_, scenario) = inventory
         .update(cx, |this, cx| {
-            this.list_debug_scenarios(&TaskContexts::default(), vec![], vec![], false, cx)
+            this.list_debug_scenarios(&TaskContexts::default(), vec![], vec![], false, false, cx)
         })
         .await
         .1
@@ -339,7 +339,7 @@ async fn test_reloading_debug_scenarios(cx: &mut TestAppContext) {
     assert_eq!(
         inventory
             .update(cx, |this, cx| {
-                this.list_debug_scenarios(&Default::default(), vec![], vec![], false, cx)
+                this.list_debug_scenarios(&Default::default(), vec![], vec![], false, false, cx)
             })
             .await
             .0
@@ -370,7 +370,7 @@ async fn test_reloading_debug_scenarios(cx: &mut TestAppContext) {
     assert_eq!(
         inventory
             .update(cx, |this, cx| {
-                this.list_debug_scenarios(&Default::default(), vec![], vec![], false, cx)
+                this.list_debug_scenarios(&Default::default(), vec![], vec![], false, false, cx)
             })
             .await
             .0
@@ -401,7 +401,14 @@ async fn test_reloading_debug_scenarios(cx: &mut TestAppContext) {
     assert!(
         inventory
             .update(cx, |this, cx| {
-                this.list_debug_scenarios(&TaskContexts::default(), vec![], vec![], false, cx)
+                this.list_debug_scenarios(
+                    &TaskContexts::default(),
+                    vec![],
+                    vec![],
+                    false,
+                    false,
+                    cx,
+                )
             })
             .await
             .0

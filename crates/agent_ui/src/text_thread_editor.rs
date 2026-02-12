@@ -37,7 +37,7 @@ use language_model::{
 use multi_buffer::MultiBufferRow;
 use picker::{Picker, popover_menu::PickerPopoverMenu};
 use project::{Project, Worktree};
-use project::{ProjectPath, lsp_store::LocalLspAdapterDelegate};
+use project::{ProjectPath, WorktreeId, lsp_store::LocalLspAdapterDelegate};
 use rope::Point;
 use serde::{Deserialize, Serialize};
 use settings::{
@@ -3129,11 +3129,15 @@ pub fn humanize_token_count(count: u64) -> String {
 
 pub fn make_lsp_adapter_delegate(
     project: &Entity<Project>,
+    preferred_worktree_id: Option<WorktreeId>,
     cx: &mut App,
 ) -> Result<Option<Arc<dyn LspAdapterDelegate>>> {
     project.update(cx, |project, cx| {
-        // TODO: Find the right worktree.
-        let Some(worktree) = project.worktrees(cx).next() else {
+        let worktree = preferred_worktree_id
+            .and_then(|worktree_id| project.worktree_for_id(worktree_id, cx))
+            .or_else(|| project.visible_worktrees(cx).next())
+            .or_else(|| project.worktrees(cx).next());
+        let Some(worktree) = worktree else {
             return Ok(None::<Arc<dyn LspAdapterDelegate>>);
         };
         let http_client = project.client().http_client();

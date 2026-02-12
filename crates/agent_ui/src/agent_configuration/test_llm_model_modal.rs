@@ -83,7 +83,13 @@ impl ModelAvailabilityTestModal {
         cx: &mut Context<Workspace>,
     ) {
         workspace.toggle_modal(window, cx, move |window, cx| {
-            Self::new(provider_id.clone(), model_name.clone(), protocol, window, cx)
+            Self::new(
+                provider_id.clone(),
+                model_name.clone(),
+                protocol,
+                window,
+                cx,
+            )
         });
     }
 

@@ -129,7 +129,6 @@ impl<T: 'static> Copy for SettingField<T> {}
 
 /// Helper for unimplemented settings, used in combination with `SettingField::unimplemented`
 /// to keep the setting around in the UI with valid pick and write implementations, but don't actually try to render it.
-/// TODO(settings_ui): In non-dev builds (`#[cfg(not(debug_assertions))]`) make this render as edit-in-json
 #[derive(Clone, Copy)]
 struct UnimplementedSettingField;
 
@@ -223,7 +222,7 @@ impl<T: PartialEq + Clone + Send + Sync + 'static> AnySettingField for SettingFi
             } else {
                 None
             };
-            update_settings_file(
+            let _ = update_settings_file(
                 current_file.clone(),
                 None,
                 window,
@@ -231,9 +230,7 @@ impl<T: PartialEq + Clone + Send + Sync + 'static> AnySettingField for SettingFi
                 move |settings, _| {
                     (this.write)(settings, value_to_set);
                 },
-            )
-            // todo(settings_ui): Don't log err
-            .log_err();
+            );
         }));
     }
 
@@ -447,6 +444,7 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<String>(render_text_field)
         .add_basic_renderer::<SharedString>(render_text_field)
         .add_basic_renderer::<settings::SaturatingBool>(render_toggle_button)
+        .add_basic_renderer::<Option<f32>>(render_optional_f32_field)
         .add_basic_renderer::<settings::CursorShape>(render_dropdown)
         .add_basic_renderer::<settings::RestoreOnStartupBehavior>(render_dropdown)
         .add_basic_renderer::<settings::BottomDockLayout>(render_dropdown)
@@ -494,6 +492,7 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<u32>(render_number_field)
         .add_basic_renderer::<u64>(render_number_field)
         .add_basic_renderer::<usize>(render_number_field)
+        .add_basic_renderer::<Vec<usize>>(render_usize_list_field)
         .add_basic_renderer::<NonZero<usize>>(render_number_field)
         .add_basic_renderer::<NonZeroU32>(render_number_field)
         .add_basic_renderer::<settings::CodeFade>(render_number_field)
@@ -745,6 +744,7 @@ pub struct SettingsWindow {
     search_index: Option<Arc<SearchIndex>>,
     list_state: ListState,
     shown_errors: HashSet<String>,
+    language_names: Vec<SharedString>,
 }
 
 struct SearchIndex {
@@ -1423,7 +1423,7 @@ impl SettingsUiFile {
         Some(match file {
             settings::SettingsFile::User => SettingsUiFile::User,
             settings::SettingsFile::Project(location) => SettingsUiFile::Project(location),
-            settings::SettingsFile::Server => SettingsUiFile::Server("todo: server name"),
+            settings::SettingsFile::Server => SettingsUiFile::Server("Remote Server"),
             settings::SettingsFile::Default => return None,
             settings::SettingsFile::Global => return None,
         })
@@ -1484,6 +1484,7 @@ impl SettingsWindow {
         let mut ui_font_size = ThemeSettings::get_global(cx).ui_font_size(cx);
         cx.observe_global_in::<SettingsStore>(window, move |this, window, cx| {
             this.fetch_files(window, cx);
+            this.refresh_pages_if_languages_changed(window, cx);
 
             // Whenever settings are changed, it's possible that the changed
             // settings affects the rendering of the `SettingsWindow`, like is
@@ -1663,6 +1664,7 @@ impl SettingsWindow {
             search_index: None,
             shown_errors: HashSet::default(),
             list_state,
+            language_names: all_language_names(cx),
         };
 
         this.fetch_files(window, cx);
@@ -2114,6 +2116,7 @@ impl SettingsWindow {
     fn build_ui(&mut self, window: &mut Window, cx: &mut Context<SettingsWindow>) {
         if self.pages.is_empty() {
             self.pages = page_data::settings_data(cx);
+            self.language_names = all_language_names(cx);
             self.build_navbar(cx);
             self.setup_navbar_focus_subscriptions(window, cx);
             self.build_content_handles(window, cx);
@@ -2125,6 +2128,31 @@ impl SettingsWindow {
         self.update_matches(cx);
 
         cx.notify();
+    }
+
+    fn refresh_pages_if_languages_changed(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<SettingsWindow>,
+    ) {
+        let latest_language_names = all_language_names(cx);
+        if latest_language_names == self.language_names {
+            return;
+        }
+
+        self.language_names = latest_language_names;
+        self.pages = page_data::settings_data(cx);
+        if !self.pages.is_empty() {
+            self.navbar_entry = self.navbar_entry.min(self.pages.len().saturating_sub(1));
+        } else {
+            self.navbar_entry = 0;
+        }
+        self.build_navbar(cx);
+        self.setup_navbar_focus_subscriptions(window, cx);
+        self.build_content_handles(window, cx);
+        self.build_filter_table();
+        self.reset_list_state();
+        self.update_matches(cx);
     }
 
     #[track_caller]
@@ -2427,8 +2455,6 @@ impl SettingsWindow {
         }
     }
 
-    // TODO:
-    //  Reconsider this after preview launch
     // fn file_location_str(&self) -> String {
     //     match &self.current_file {
     //         SettingsUiFile::User => "settings.json".to_string(),
@@ -3423,8 +3449,8 @@ impl SettingsWindow {
 
                 let worktree_id = *worktree_id;
 
-                // TODO: move zed::open_local_file() APIs to this crate, and
-                // re-implement the "initial_contents" behavior
+                // We intentionally open via workspace path APIs here so the created settings file
+                // shows up in the current project's worktree context.
                 corresponding_workspace
                     .update(cx, |_, window, cx| {
                         cx.spawn_in(window, async move |workspace, cx| {
@@ -3665,7 +3691,8 @@ impl SettingsWindow {
 
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ui_font = theme::setup_ui_font(window, cx);
+        window.set_rem_size(theme::get_ui_font_size(cx));
+        let ui_font = theme::get_ui_font(cx);
 
         client_side_decorations(
             v_flex()
@@ -3794,11 +3821,12 @@ fn update_settings_file(
             update_project_setting_file(worktree_id, rel_path, update, settings_window, cx)
         }
         SettingsUiFile::User => {
-            // todo(settings_ui) error?
             SettingsStore::global(cx).update_settings_file(<dyn fs::Fs>::global(cx), update);
             Ok(())
         }
-        SettingsUiFile::Server(_) => unimplemented!(),
+        SettingsUiFile::Server(_) => {
+            anyhow::bail!("Server settings are read-only and cannot be edited from Settings UI")
+        }
     }
 }
 
@@ -3971,7 +3999,7 @@ fn render_text_field<T: From<String> + Into<String> + AsRef<str> + Clone>(
         )
         .on_confirm({
             move |new_text, window, cx| {
-                update_settings_file(
+                let _ = update_settings_file(
                     file.clone(),
                     field.json_path,
                     window,
@@ -3979,8 +4007,7 @@ fn render_text_field<T: From<String> + Into<String> + AsRef<str> + Clone>(
                     move |settings, _cx| {
                         (field.write)(settings, new_text.map(Into::into));
                     },
-                )
-                .log_err(); // todo(settings_ui) don't log err
+                );
             }
         })
         .into_any_element()
@@ -4008,10 +4035,9 @@ fn render_toggle_button<B: Into<bool> + From<bool> + Copy>(
                 telemetry::event!("Settings Change", setting = field.json_path, type = file.setting_type());
 
                 let state = *state == ui::ToggleState::Selected;
-                update_settings_file(file.clone(), field.json_path, window, cx, move |settings, _cx| {
+                let _ = update_settings_file(file.clone(), field.json_path, window, cx, move |settings, _cx| {
                     (field.write)(settings, Some(state.into()));
-                })
-                .log_err(); // todo(settings_ui) don't log err
+                });
             }
         })
         .into_any_element()
@@ -4037,7 +4063,7 @@ fn render_number_field<T: NumberFieldType + Send + Sync>(
         .on_change({
             move |value, window, cx| {
                 let value = *value;
-                update_settings_file(
+                let _ = update_settings_file(
                     file.clone(),
                     field.json_path,
                     window,
@@ -4045,8 +4071,120 @@ fn render_number_field<T: NumberFieldType + Send + Sync>(
                     move |settings, _cx| {
                         (field.write)(settings, Some(value));
                     },
-                )
-                .log_err(); // todo(settings_ui) don't log err
+                );
+            }
+        })
+        .into_any_element()
+}
+
+fn render_optional_f32_field(
+    field: SettingField<Option<f32>>,
+    file: SettingsUiFile,
+    metadata: Option<&SettingsFieldMetadata>,
+    _window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let (_, value) = SettingsStore::global(cx).get_value_from_file(file.to_settings(), field.pick);
+    let initial_text = value
+        .copied()
+        .flatten()
+        .map(|value| value.to_string());
+
+    SettingsInputField::new()
+        .tab_index(0)
+        .when_some(initial_text, |editor, text| editor.with_initial_text(text))
+        .when_some(
+            metadata.and_then(|metadata| metadata.placeholder),
+            |editor, placeholder| editor.with_placeholder(placeholder),
+        )
+        .on_confirm({
+            move |new_text, window, cx| {
+                let Some(new_text) = new_text else {
+                    let _ = update_settings_file(file.clone(), field.json_path, window, cx, move |settings, _cx| {
+                        (field.write)(settings, None);
+                    });
+                    return;
+                };
+
+                let new_text = new_text.trim();
+                if new_text.is_empty() {
+                    let _ = update_settings_file(file.clone(), field.json_path, window, cx, move |settings, _cx| {
+                        (field.write)(settings, None);
+                    });
+                    return;
+                }
+
+                let Ok(value) = new_text.parse::<f32>() else {
+                    return;
+                };
+
+                let _ = update_settings_file(file.clone(), field.json_path, window, cx, move |settings, _cx| {
+                    (field.write)(settings, Some(Some(value)));
+                });
+            }
+        })
+        .into_any_element()
+}
+
+fn render_usize_list_field(
+    field: SettingField<Vec<usize>>,
+    file: SettingsUiFile,
+    metadata: Option<&SettingsFieldMetadata>,
+    _window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let (_, initial_values) =
+        SettingsStore::global(cx).get_value_from_file(file.to_settings(), field.pick);
+    let initial_text = initial_values.map(|values| {
+        values
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    });
+
+    SettingsInputField::new()
+        .tab_index(0)
+        .when_some(initial_text, |editor, text| editor.with_initial_text(text))
+        .when_some(
+            metadata.and_then(|metadata| metadata.placeholder),
+            |editor, placeholder| editor.with_placeholder(placeholder),
+        )
+        .on_confirm({
+            move |new_text, window, cx| {
+                let Some(new_text) = new_text else {
+                    let _ = update_settings_file(
+                        file.clone(),
+                        field.json_path,
+                        window,
+                        cx,
+                        move |settings, _cx| {
+                            (field.write)(settings, None);
+                        },
+                    );
+                    return;
+                };
+
+                let parsed = new_text
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|part| !part.is_empty())
+                    .map(str::parse::<usize>)
+                    .collect::<Result<Vec<_>, _>>();
+
+                let Some(parsed) = parsed.log_err() else {
+                    return;
+                };
+
+                let _ = update_settings_file(
+                    file.clone(),
+                    field.json_path,
+                    window,
+                    cx,
+                    move |settings, _cx| {
+                        (field.write)(settings, Some(parsed));
+                    },
+                );
             }
         })
         .into_any_element()
@@ -4073,7 +4211,7 @@ fn render_editable_number_field<T: NumberFieldType + Send + Sync>(
         .on_change({
             move |value, window, cx| {
                 let value = *value;
-                update_settings_file(
+                let _ = update_settings_file(
                     file.clone(),
                     field.json_path,
                     window,
@@ -4081,8 +4219,7 @@ fn render_editable_number_field<T: NumberFieldType + Send + Sync>(
                     move |settings, _cx| {
                         (field.write)(settings, Some(value));
                     },
-                )
-                .log_err(); // todo(settings_ui) don't log err
+                );
             }
         })
         .into_any_element()
@@ -4113,7 +4250,7 @@ where
             if value == current_value {
                 return;
             }
-            update_settings_file(
+            let _ = update_settings_file(
                 file.clone(),
                 field.json_path,
                 window,
@@ -4121,8 +4258,7 @@ where
                 move |settings, _cx| {
                     (field.write)(settings, Some(value));
                 },
-            )
-            .log_err(); // todo(settings_ui) don't log err
+            );
         }
     })
     .tab_index(0)
@@ -4167,7 +4303,7 @@ fn render_font_picker(
                 font_picker(
                     current_value,
                     move |font_name, window, cx| {
-                        update_settings_file(
+                        let _ = update_settings_file(
                             file.clone(),
                             field.json_path,
                             window,
@@ -4175,8 +4311,7 @@ fn render_font_picker(
                             move |settings, _cx| {
                                 (field.write)(settings, Some(font_name.to_string().into()));
                             },
-                        )
-                        .log_err(); // todo(settings_ui) don't log err
+                        );
                     },
                     window,
                     cx,
@@ -4217,7 +4352,7 @@ fn render_theme_picker(
                 theme_picker(
                     current_value,
                     move |theme_name, window, cx| {
-                        update_settings_file(
+                        let _ = update_settings_file(
                             file.clone(),
                             field.json_path,
                             window,
@@ -4228,8 +4363,7 @@ fn render_theme_picker(
                                     Some(settings::ThemeName(theme_name.into())),
                                 );
                             },
-                        )
-                        .log_err(); // todo(settings_ui) don't log err
+                        );
                     },
                     window,
                     cx,
@@ -4270,7 +4404,7 @@ fn render_icon_theme_picker(
                 icon_theme_picker(
                     current_value,
                     move |theme_name, window, cx| {
-                        update_settings_file(
+                        let _ = update_settings_file(
                             file.clone(),
                             field.json_path,
                             window,
@@ -4281,8 +4415,7 @@ fn render_icon_theme_picker(
                                     Some(settings::IconThemeName(theme_name.into())),
                                 );
                             },
-                        )
-                        .log_err(); // todo(settings_ui) don't log err
+                        );
                     },
                     window,
                     cx,

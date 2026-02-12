@@ -69,11 +69,6 @@ impl Styled for ContentGroup {
 
 impl RenderOnce for ContentGroup {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        // TODO:
-        // Baked in padding will make scrollable views inside of content boxes awkward.
-        //
-        // Do we make the padding optional, or do we push to use a different component?
-
         self.base
             .when(self.fill, |this| {
                 this.bg(cx.theme().colors().text.opacity(0.05))

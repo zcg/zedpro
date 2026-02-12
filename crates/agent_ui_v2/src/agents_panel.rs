@@ -158,11 +158,7 @@ impl AgentsPanel {
                     && let Some(session_list) = connection.session_list(cx)
                 {
                     history_handle.update(cx, |history, cx| {
-                        history.set_session_list(
-                            Some(session_list),
-                            Some(connection.clone()),
-                            cx,
-                        );
+                        history.set_session_list(Some(session_list), Some(connection.clone()), cx);
                     });
                 }
             });

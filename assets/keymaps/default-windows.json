@@ -33,6 +33,8 @@
       "ctrl-,": "zed::OpenSettings",
       "ctrl-alt-,": "zed::OpenSettingsFile",
       "ctrl-q": "zed::Quit",
+      "ctrl-alt-h": "zed::HideOthers",
+      "ctrl-alt-shift-h": "zed::ShowAll",
       "f4": "debugger::Start",
       "shift-f5": "debugger::Stop",
       "ctrl-shift-f5": "debugger::RerunSession",

@@ -183,8 +183,7 @@ pub(crate) fn zed_default_dark() -> Theme {
                 editor_document_highlight_bracket_background: gpui::green(),
 
                 terminal_background: bg,
-                // todo("Use one colors for terminal")
-                terminal_ansi_background: crate::black().dark().step_12(),
+                terminal_ansi_background: bg,
                 terminal_foreground: crate::white().dark().step_12(),
                 terminal_bright_foreground: crate::white().dark().step_11(),
                 terminal_dim_foreground: crate::white().dark().step_10(),

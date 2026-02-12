@@ -73,9 +73,9 @@ impl LanguageModelProvider for FakeLanguageModelProvider {
         &self,
         _target_agent: ConfigurationViewTargetAgent,
         _window: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) -> AnyView {
-        unimplemented!()
+        cx.new(|_| gpui::Empty).into()
     }
 
     fn reset_credentials(&self, _: &mut App) -> Task<Result<()>> {

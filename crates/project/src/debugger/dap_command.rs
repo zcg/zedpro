@@ -26,6 +26,10 @@ pub trait LocalDapCommand: 'static + Send + Sync + std::fmt::Debug {
         true
     }
 
+    fn supports(&self, capabilities: &Capabilities) -> bool {
+        Self::is_supported(capabilities)
+    }
+
     fn to_dap(&self) -> <Self::DapRequest as dap::requests::Request>::Arguments;
 
     fn response_from_dap(
@@ -63,6 +67,10 @@ impl<T: LocalDapCommand> LocalDapCommand for Arc<T> {
 
     fn is_supported(capabilities: &Capabilities) -> bool {
         T::is_supported(capabilities)
+    }
+
+    fn supports(&self, capabilities: &Capabilities) -> bool {
+        (**self).supports(capabilities)
     }
 
     fn to_dap(&self) -> <Self::DapRequest as dap::requests::Request>::Arguments {
@@ -957,6 +965,7 @@ impl DapCommand for SetVariableValueCommand {
             variables_reference: message.variables_reference,
             indexed_variables: message.indexed_variables,
             memory_reference: message.memory_reference,
+            value_location_reference: message.value_location_reference,
         }
     }
 
@@ -968,7 +977,7 @@ impl DapCommand for SetVariableValueCommand {
             named_variables: message.named_variables,
             indexed_variables: message.indexed_variables,
             memory_reference: message.memory_reference,
-            value_location_reference: None, // TODO
+            value_location_reference: message.value_location_reference,
         })
     }
 }
@@ -1455,7 +1464,7 @@ impl DapCommand for EvaluateCommand {
             named_variables: message.named_variables,
             indexed_variables: message.indexed_variables,
             memory_reference: message.memory_reference,
-            value_location_reference: None, //TODO
+            value_location_reference: message.value_location_reference,
         })
     }
 
@@ -1470,6 +1479,7 @@ impl DapCommand for EvaluateCommand {
             named_variables: message.named_variables,
             indexed_variables: message.indexed_variables,
             memory_reference: message.memory_reference,
+            value_location_reference: message.value_location_reference,
         }
     }
 }
@@ -1719,10 +1729,21 @@ impl LocalDapCommand for DataBreakpointInfoCommand {
     type DapRequest = dap::requests::DataBreakpointInfo;
     const CACHEABLE: bool = true;
 
-    // todo(debugger): We should expand this trait in the future to take a &self
-    // Depending on this command is_supported could be differentb
     fn is_supported(capabilities: &Capabilities) -> bool {
         capabilities.supports_data_breakpoints.unwrap_or(false)
+    }
+
+    fn supports(&self, capabilities: &Capabilities) -> bool {
+        if !Self::is_supported(capabilities) {
+            return false;
+        }
+
+        let uses_byte_count = matches!(
+            &*self.context,
+            DataBreakpointContext::Variable { bytes: Some(_), .. }
+                | DataBreakpointContext::Address { bytes: Some(_), .. }
+        );
+        !uses_byte_count || capabilities.supports_data_breakpoint_bytes.unwrap_or(false)
     }
 
     fn to_dap(&self) -> <Self::DapRequest as dap::requests::Request>::Arguments {

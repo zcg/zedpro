@@ -301,33 +301,7 @@ pub enum ShowScrollbar {
     Never,
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    Serialize,
-    Deserialize,
-    PartialEq,
-    Eq,
-    JsonSchema,
-    MergeFrom,
-    strum::VariantArray,
-    strum::VariantNames,
-)]
-#[serde(rename_all = "snake_case")]
-// todo() -> combine with CursorShape
-pub enum CursorShapeContent {
-    /// Cursor is a block like `█`.
-    #[default]
-    Block,
-    /// Cursor is an underscore like `_`.
-    Underline,
-    /// Cursor is a vertical bar like `⎸`.
-    Bar,
-    /// Cursor is a hollow box like `▯`.
-    Hollow,
-}
+pub type CursorShapeContent = crate::CursorShape;
 
 #[derive(
     Copy,

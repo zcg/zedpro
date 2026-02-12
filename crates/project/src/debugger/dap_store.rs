@@ -106,6 +106,8 @@ impl EventEmitter<DapStoreEvent> for DapStore {}
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PersistedExceptionBreakpoint {
     pub enabled: bool,
+    #[serde(default)]
+    pub condition: Option<String>,
 }
 
 /// Represents best-effort serialization of adapter state during last session (e.g. watches)
@@ -249,7 +251,7 @@ impl DapStore {
         cx: &mut Context<Self>,
     ) -> Task<Result<DebugAdapterBinary>> {
         match &self.mode {
-            DapStoreMode::Local(_) => {
+            DapStoreMode::Local(local_store) => {
                 let Some(adapter) = DapRegistry::global(cx).adapter(&definition.adapter) else {
                     return Task::ready(Err(anyhow!("Failed to find a debug adapter")));
                 };
@@ -271,7 +273,7 @@ impl DapStore {
                 let user_args = dap_settings.and_then(|s| s.args.clone());
                 let user_env = dap_settings.and_then(|s| s.env.clone());
 
-                let delegate = self.delegate(worktree, console, cx);
+                let delegate = Self::delegate(local_store, worktree, console, cx);
 
                 let worktree = worktree.clone();
                 cx.spawn(async move |this, cx| {
@@ -594,15 +596,11 @@ impl DapStore {
     }
 
     fn delegate(
-        &self,
+        local_store: &LocalDapStore,
         worktree: &Entity<Worktree>,
         console: UnboundedSender<String>,
         cx: &mut App,
     ) -> Arc<dyn DapDelegate> {
-        let Some(local_store) = self.as_local() else {
-            unimplemented!("Starting session on remote side");
-        };
-
         Arc::new(DapAdapterDelegate::new(
             local_store.fs.clone(),
             worktree.read(cx).snapshot(),
@@ -904,10 +902,13 @@ impl DapStore {
         let adapter = session.adapter();
         let exceptions = session.exception_breakpoints();
         let exception_breakpoints = exceptions
-            .map(|(exception, enabled)| {
+            .map(|state| {
                 (
-                    exception.filter.clone(),
-                    PersistedExceptionBreakpoint { enabled: *enabled },
+                    state.filter.filter.clone(),
+                    PersistedExceptionBreakpoint {
+                        enabled: state.is_enabled,
+                        condition: state.condition.clone(),
+                    },
                 )
             })
             .collect();

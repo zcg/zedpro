@@ -13,7 +13,11 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use std::sync::Arc;
 #[cfg(feature = "test-support")]
-use std::{any::type_name, fmt};
+use std::{
+    any::type_name,
+    fmt,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 pub use url::{Host, Url};
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
@@ -359,6 +363,7 @@ type FakeHttpHandler = Arc<
 pub struct FakeHttpClient {
     handler: Mutex<Option<FakeHttpHandler>>,
     user_agent: HeaderValue,
+    request_count: AtomicUsize,
 }
 
 #[cfg(feature = "test-support")]
@@ -374,6 +379,7 @@ impl FakeHttpClient {
                 client: Arc::new(Self {
                     handler: Mutex::new(Some(Arc::new(move |req| Box::pin(handler(req))))),
                     user_agent: HeaderValue::from_static(type_name::<Self>()),
+                    request_count: AtomicUsize::new(0),
                 }),
                 proxy: None,
             },
@@ -411,6 +417,14 @@ impl FakeHttpClient {
             Box::pin(new_handler(old_handler.clone(), req))
         }));
     }
+
+    pub fn request_count(&self) -> usize {
+        self.request_count.load(Ordering::Relaxed)
+    }
+
+    pub fn reset_request_count(&self) {
+        self.request_count.store(0, Ordering::Relaxed);
+    }
 }
 
 #[cfg(feature = "test-support")]
@@ -426,6 +440,7 @@ impl HttpClient for FakeHttpClient {
         &self,
         req: Request<AsyncBody>,
     ) -> BoxFuture<'static, anyhow::Result<Response<AsyncBody>>> {
+        self.request_count.fetch_add(1, Ordering::Relaxed);
         ((self.handler.lock().as_ref().unwrap())(req)) as _
     }
 

@@ -238,7 +238,7 @@ pub struct CompletionsMenu {
     pub entries: Rc<RefCell<Box<[StringMatch]>>>,
     pub selected_item: usize,
     filter_task: Task<()>,
-    cancel_filter: Arc<AtomicBool>,
+    cancel_filter: FuzzyMatchCancellation,
     scroll_handle: UniformListScrollHandle,
     // The `ScrollHandle` used on the Markdown documentation rendered on the
     // side of the completions menu.
@@ -280,10 +280,29 @@ pub enum CompletionsMenuSource {
     Words { ignore_threshold: bool },
 }
 
-// TODO: There should really be a wrapper around fuzzy match tasks that does this.
-impl Drop for CompletionsMenu {
+struct FuzzyMatchCancellation {
+    flag: Arc<AtomicBool>,
+}
+
+impl FuzzyMatchCancellation {
+    fn new() -> Self {
+        Self {
+            flag: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn token(&self) -> Arc<AtomicBool> {
+        self.flag.clone()
+    }
+
+    fn cancel(&self) {
+        self.flag.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Drop for FuzzyMatchCancellation {
     fn drop(&mut self) {
-        self.cancel_filter.store(true, Ordering::Relaxed);
+        self.cancel();
     }
 }
 
@@ -341,7 +360,7 @@ impl CompletionsMenu {
             entries: Rc::new(RefCell::new(Box::new([]))),
             selected_item: 0,
             filter_task: Task::ready(()),
-            cancel_filter: Arc::new(AtomicBool::new(false)),
+            cancel_filter: FuzzyMatchCancellation::new(),
             scroll_handle: scroll_handle.unwrap_or_else(UniformListScrollHandle::new),
             scroll_handle_aside: ScrollHandle::new(),
             resolve_completions: true,
@@ -414,7 +433,7 @@ impl CompletionsMenu {
             entries: RefCell::new(entries).into(),
             selected_item: 0,
             filter_task: Task::ready(()),
-            cancel_filter: Arc::new(AtomicBool::new(false)),
+            cancel_filter: FuzzyMatchCancellation::new(),
             scroll_handle: scroll_handle.unwrap_or_else(UniformListScrollHandle::new),
             scroll_handle_aside: ScrollHandle::new(),
             resolve_completions: false,
@@ -636,19 +655,17 @@ impl CompletionsMenu {
     }
 
     fn start_markdown_parse_for_nearby_entries(&self, cx: &mut Context<Editor>) {
-        // Enqueue parse tasks of nearer items first.
-        //
-        // TODO: This means that the nearer items will actually be further back in the cache, which
-        // is not ideal. In practice this is fine because `get_or_create_markdown` moves the current
-        // selection to the front (when `is_render = true`).
+        // Enqueue parse tasks from farther to nearer items so nearby entries end up nearer
+        // the front of the cache (new entries are inserted with `push_front`).
         let entry_indices = util::wrapped_usize_outward_from(
             self.selected_item,
             MARKDOWN_CACHE_BEFORE_ITEMS,
             MARKDOWN_CACHE_AFTER_ITEMS,
             self.entries.borrow().len(),
-        );
+        )
+        .collect::<Vec<_>>();
 
-        for index in entry_indices {
+        for index in entry_indices.into_iter().rev() {
             self.get_or_create_entry_markdown(index, cx);
         }
     }
@@ -1056,6 +1073,8 @@ impl CompletionsMenu {
 
         let mat = &self.entries.borrow()[self.selected_item];
         let completions = self.completions.borrow();
+        let fallback_by_new_text =
+            Self::fallback_documentation_for_new_text(&completions, mat.candidate_id);
         let multiline_docs = match completions[mat.candidate_id].documentation.as_ref() {
             Some(CompletionDocumentation::MultiLinePlainText(text)) => div().child(text.clone()),
             Some(CompletionDocumentation::SingleLineAndMultiLinePlainText {
@@ -1075,18 +1094,36 @@ impl CompletionsMenu {
                 Self::render_markdown(markdown, window, cx)
             }
             None => {
-                // Handle the case where documentation hasn't yet been resolved but there's a
-                // `new_text` match in the cache.
-                //
-                // TODO: It's inconsistent that documentation caching based on matching `new_text`
-                // only works for markdown. Consider generally caching the results of resolving
-                // completions.
-                let Some((false, markdown)) =
-                    self.get_or_create_markdown(mat.candidate_id, None, true, &completions, cx)
-                else {
-                    return None;
-                };
-                Self::render_markdown(markdown, window, cx)
+                if let Some(CompletionDocumentation::MultiLinePlainText(text))
+                | Some(CompletionDocumentation::SingleLineAndMultiLinePlainText {
+                    plain_text: Some(text),
+                    ..
+                }) = fallback_by_new_text
+                {
+                    div().child(text.clone())
+                } else if let Some(CompletionDocumentation::MultiLineMarkdown(source)) =
+                    fallback_by_new_text
+                {
+                    let Some((false, markdown)) = self.get_or_create_markdown(
+                        mat.candidate_id,
+                        Some(source),
+                        true,
+                        &completions,
+                        cx,
+                    ) else {
+                        return None;
+                    };
+                    Self::render_markdown(markdown, window, cx)
+                } else {
+                    // Handle the case where documentation hasn't yet been resolved but there's a
+                    // `new_text` match in the markdown cache.
+                    let Some((false, markdown)) =
+                        self.get_or_create_markdown(mat.candidate_id, None, true, &completions, cx)
+                    else {
+                        return None;
+                    };
+                    Self::render_markdown(markdown, window, cx)
+                }
             }
             Some(CompletionDocumentation::MultiLineMarkdown(_)) => return None,
             Some(CompletionDocumentation::SingleLine(_)) => return None,
@@ -1115,6 +1152,22 @@ impl CompletionsMenu {
         )
     }
 
+    fn fallback_documentation_for_new_text<'a>(
+        completions: &'a [Completion],
+        candidate_id: usize,
+    ) -> Option<&'a CompletionDocumentation> {
+        let candidate = completions.get(candidate_id)?;
+        completions
+            .iter()
+            .enumerate()
+            .filter(|(other_id, _)| *other_id != candidate_id)
+            .find_map(|(_, completion)| {
+                (completion.new_text == candidate.new_text)
+                    .then_some(completion.documentation.as_ref())
+                    .flatten()
+            })
+    }
+
     fn render_markdown(
         markdown: Entity<Markdown>,
         window: &mut Window,
@@ -1140,8 +1193,8 @@ impl CompletionsMenu {
         window: &mut Window,
         cx: &mut Context<Editor>,
     ) {
-        self.cancel_filter.store(true, Ordering::Relaxed);
-        self.cancel_filter = Arc::new(AtomicBool::new(false));
+        self.cancel_filter.cancel();
+        self.cancel_filter = FuzzyMatchCancellation::new();
         let matches = self.do_async_filtering(query, query_end, buffer, cx);
         let id = self.id;
         self.filter_task = cx.spawn_in(window, async move |editor, cx| {
@@ -1168,7 +1221,7 @@ impl CompletionsMenu {
         let buffer_snapshot = buffer.read(cx).snapshot();
         let background_executor = cx.background_executor().clone();
         let match_candidates = self.match_candidates.clone();
-        let cancel_filter = self.cancel_filter.clone();
+        let cancel_filter = self.cancel_filter.token();
         let default_query = query.clone();
 
         let matches_task = cx.background_spawn(async move {

@@ -96,7 +96,7 @@ fn main() {
                 ..Default::default()
             },
             move |window, cx| {
-                theme::setup_ui_font(window, cx);
+                window.set_rem_size(theme::get_ui_font_size(cx));
 
                 cx.new(|cx| StoryWrapper::new(selector.story(window, cx)))
             },

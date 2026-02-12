@@ -2172,25 +2172,43 @@ impl Editor {
                         }
                     }
                     project::Event::SnippetEdit(id, snippet_edits) => {
-                        // todo(lw): Non singletons
-                        if let Some(buffer) = editor.buffer.read(cx).as_singleton() {
-                            let snapshot = buffer.read(cx).snapshot();
-                            let focus_handle = editor.focus_handle(cx);
-                            if snapshot.remote_id() == *id && focus_handle.is_focused(window) {
-                                for (range, snippet) in snippet_edits {
-                                    let buffer_range =
-                                        language::range_from_lsp(*range).to_offset(&snapshot);
-                                    editor
-                                        .insert_snippet(
-                                            &[MultiBufferOffset(buffer_range.start)
-                                                ..MultiBufferOffset(buffer_range.end)],
-                                            snippet.clone(),
-                                            window,
-                                            cx,
-                                        )
-                                        .ok();
-                                }
-                            }
+                        let focus_handle = editor.focus_handle(cx);
+                        if !focus_handle.is_focused(window) {
+                            return;
+                        }
+
+                        let Some(buffer) = editor.buffer.read(cx).buffer(*id) else {
+                            return;
+                        };
+
+                        let buffer_snapshot = buffer.read(cx).snapshot();
+                        let multibuffer = editor.buffer.read(cx);
+                        let multibuffer_snapshot = multibuffer.snapshot(cx);
+                        let ranges_and_snippets = snippet_edits
+                            .iter()
+                            .filter_map(|(range, snippet)| {
+                                let buffer_range =
+                                    language::range_from_lsp(*range).to_offset(&buffer_snapshot);
+                                let start = multibuffer.buffer_anchor_to_anchor(
+                                    &buffer,
+                                    buffer_snapshot.anchor_before(buffer_range.start),
+                                    cx,
+                                )?;
+                                let end = multibuffer.buffer_anchor_to_anchor(
+                                    &buffer,
+                                    buffer_snapshot.anchor_after(buffer_range.end),
+                                    cx,
+                                )?;
+                                Some((
+                                    start.to_offset(&multibuffer_snapshot)
+                                        ..end.to_offset(&multibuffer_snapshot),
+                                    snippet.clone(),
+                                ))
+                            })
+                            .collect::<Vec<_>>();
+
+                        for (range, snippet) in ranges_and_snippets {
+                            editor.insert_snippet(&[range], snippet, window, cx).ok();
                         }
                     }
                     project::Event::LanguageServerBufferRegistered { buffer_id, .. } => {
@@ -10033,8 +10051,7 @@ impl Editor {
                                     }
                                 }
                                 EditPrediction::MoveOutside { .. } => {
-                                    // TODO [zeta2] custom icon for external jump?
-                                    Icon::new(icons.base)
+                                    Icon::new(IconName::ArrowUpRight)
                                 }
                                 EditPrediction::Edit { .. } => Icon::new(icons.base),
                             }))
@@ -15530,8 +15547,26 @@ impl Editor {
                 .context("snippet not found")?;
             Snippet::parse(&snippet.body)?
         } else {
-            // todo(andrew): open modal to select snippet
-            bail!("`name` or `snippet` is required")
+            let project = self.project().context("no project")?;
+            let snippet_store = project.read(cx).snippets().read(cx);
+            let snippets = snippet_store.snippets_for(action.language.clone(), cx);
+
+            match snippets.as_slice() {
+                [snippet] => Snippet::parse(&snippet.body)?,
+                [] => bail!("`name` or `snippet` is required (no matching snippets found)"),
+                _ => {
+                    let available = snippets
+                        .iter()
+                        .take(6)
+                        .map(|snippet| snippet.name.as_str())
+                        .collect_vec()
+                        .join(", ");
+                    let suffix = if snippets.len() > 6 { ", ..." } else { "" };
+                    bail!(
+                        "`name` or `snippet` is required (multiple snippets available: {available}{suffix})"
+                    )
+                }
+            }
         };
 
         self.insert_snippet(&insertion_ranges, snippet, window, cx)
@@ -16013,7 +16048,7 @@ impl Editor {
         self.hide_mouse_cursor(HideMouseCursorOrigin::TypingAction, cx);
         let text_layout_details = &self.text_layout_details(window, cx);
         self.transact(window, cx, |this, window, cx| {
-            let mut selections = this
+            let selections = this
                 .selections
                 .all::<MultiBufferPoint>(&this.display_snapshot(cx));
             let mut edits = Vec::new();
@@ -16099,7 +16134,34 @@ impl Editor {
                 }
             }
 
-            // TODO: Handle selections that cross excerpts
+            let mut split_selections = Vec::with_capacity(selections.len());
+            for selection in selections {
+                let boundary_points = snapshot
+                    .excerpt_boundaries_in_range(selection.start..selection.end)
+                    .map(|boundary| Point::new(boundary.row.0, 0))
+                    .filter(|point| *point > selection.start && *point < selection.end)
+                    .collect_vec();
+
+                if boundary_points.is_empty() {
+                    split_selections.push(selection);
+                    continue;
+                }
+
+                let mut segment_start = selection.start;
+                for point in boundary_points {
+                    let mut split_selection = selection.clone();
+                    split_selection.start = segment_start;
+                    split_selection.end = point;
+                    split_selections.push(split_selection);
+                    segment_start = point;
+                }
+
+                let mut tail_selection = selection;
+                tail_selection.start = segment_start;
+                split_selections.push(tail_selection);
+            }
+            let mut selections = split_selections;
+
             for selection in &mut selections {
                 let start_column = snapshot
                     .indent_size_for_line(MultiBufferRow(selection.start.row))
@@ -18116,15 +18178,25 @@ impl Editor {
                         Ok(Navigated::Yes)
                     }
                     Some(Either::Right(path)) => {
-                        // TODO(andrew): respect preview tab settings
-                        //               `enable_keep_preview_on_code_navigation` and
-                        //               `enable_preview_file_from_code_navigation`
                         let Some(workspace) = workspace else {
                             return Ok(Navigated::No);
                         };
+                        let (keep_old_preview, allow_new_preview) = cx.update(|_, cx| {
+                            let preview_tabs_settings = PreviewTabsSettings::get_global(cx);
+                            (
+                                preview_tabs_settings.enable_keep_preview_on_code_navigation,
+                                preview_tabs_settings.enable_preview_file_from_code_navigation,
+                            )
+                        })?;
                         workspace
                             .update_in(cx, |workspace, window, cx| {
-                                workspace.open_resolved_path(path, window, cx)
+                                workspace.open_resolved_path_with_preview(
+                                    path,
+                                    allow_new_preview,
+                                    keep_old_preview,
+                                    window,
+                                    cx,
+                                )
                             })?
                             .await?;
                         Ok(Navigated::Yes)
@@ -18357,9 +18429,8 @@ impl Editor {
                 }
             };
 
-            // TODO(cameron): is this needed?
-            // the thinking is to avoid "jumping to the current location" (avoid
-            // polluting "jumplist" in vim terms)
+            // Avoid jumping to the current location, which would create a no-op
+            // navigation entry and pollute jump history.
             if current_location_index == destination_location_index {
                 return Ok(());
             }
@@ -25334,19 +25405,14 @@ impl Editor {
                         }
                     })
             });
-            vec![BreadcrumbText {
-                text,
-                highlights: None,
-                font: Some(settings.buffer_font.clone()),
-            }]
+            vec![BreadcrumbText::plain(text).with_font(Some(settings.buffer_font.clone()))]
         } else {
             vec![]
         };
 
-        breadcrumbs.extend(symbols.iter().map(|symbol| BreadcrumbText {
-            text: symbol.text.clone(),
-            highlights: Some(symbol.highlight_ranges.clone()),
-            font: Some(settings.buffer_font.clone()),
+        breadcrumbs.extend(symbols.iter().map(|symbol| {
+            BreadcrumbText::highlighted(symbol.text.clone(), symbol.highlight_ranges.clone())
+                .with_font(Some(settings.buffer_font.clone()))
         }));
         Some(breadcrumbs)
     }

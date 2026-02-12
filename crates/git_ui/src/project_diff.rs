@@ -1665,12 +1665,10 @@ impl RenderOnce for ProjectDiffEmptyState {
                     }
                 })
         };
-
         v_flex().size_full().items_center().justify_center().child(
             v_flex()
                 .gap_1()
                 .when(self.no_repo, |this| {
-                    // TODO: add git init
                     this.text_center()
                         .child(Label::new("No Repository").color(Color::Muted))
                 })

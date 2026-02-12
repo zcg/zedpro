@@ -83,6 +83,23 @@ pub struct LanguageModels {
 }
 
 impl LanguageModels {
+    fn should_suppress_background_auth_error(
+        provider_id: &str,
+        error: &language_model::AuthenticateError,
+    ) -> bool {
+        match (provider_id, error) {
+            // Language model selector preloads providers in the background; missing
+            // credentials are expected until users configure a provider.
+            (_, language_model::AuthenticateError::CredentialsNotFound) => true,
+            // Local providers surface "connection refused" whenever the local server
+            // is not running. This is a common idle state and should not spam logs.
+            ("lmstudio" | "ollama", language_model::AuthenticateError::ConnectionRefused) => true,
+            // Copilot Chat returns auth errors when the feature is disabled.
+            ("copilot_chat", _) => true,
+            _ => false,
+        }
+    }
+
     fn new(cx: &mut App) -> Self {
         let (refresh_models_tx, refresh_models_rx) = watch::channel(());
 
@@ -183,43 +200,11 @@ impl LanguageModels {
         cx.background_spawn(async move {
             for (provider_id, provider_name, authenticate_task) in authenticate_all_providers {
                 if let Err(err) = authenticate_task.await {
-                    match err {
-                        language_model::AuthenticateError::CredentialsNotFound => {
-                            // Since we're authenticating these providers in the
-                            // background for the purposes of populating the
-                            // language selector, we don't care about providers
-                            // where the credentials are not found.
-                        }
-                        language_model::AuthenticateError::ConnectionRefused => {
-                            // Not logging connection refused errors as they are mostly from LM Studio's noisy auth failures.
-                            // LM Studio only has one auth method (endpoint call) which fails for users who haven't enabled it.
-                            // TODO: Better manage LM Studio auth logic to avoid these noisy failures.
-                        }
-                        _ => {
-                            // Some providers have noisy failure states that we
-                            // don't want to spam the logs with every time the
-                            // language model selector is initialized.
-                            //
-                            // Ideally these should have more clear failure modes
-                            // that we know are safe to ignore here, like what we do
-                            // with `CredentialsNotFound` above.
-                            match provider_id.0.as_ref() {
-                                "lmstudio" | "ollama" => {
-                                    // LM Studio and Ollama both make fetch requests to the local APIs to determine if they are "authenticated".
-                                    //
-                                    // These fail noisily, so we don't log them.
-                                }
-                                "copilot_chat" => {
-                                    // Copilot Chat returns an error if Copilot is not enabled, so we don't log those errors.
-                                }
-                                _ => {
-                                    log::error!(
-                                        "Failed to authenticate provider: {}: {err:#}",
-                                        provider_name.0
-                                    );
-                                }
-                            }
-                        }
+                    if !Self::should_suppress_background_auth_error(provider_id.0.as_ref(), &err) {
+                        log::error!(
+                            "Failed to authenticate provider: {}: {err:#}",
+                            provider_name.0
+                        );
                     }
                 }
             }
@@ -454,11 +439,14 @@ impl NativeAgent {
 
             let worktrees = worktrees
                 .into_iter()
-                .map(|(worktree, _rules_error)| {
-                    // TODO: show error message
-                    // if let Some(rules_error) = rules_error {
-                    //     this.update(cx, |_, cx| cx.emit(rules_error)).ok();
-                    // }
+                .map(|(worktree, rules_error)| {
+                    if let Some(rules_error) = rules_error {
+                        log::warn!(
+                            "Failed to load rules for worktree '{}': {}",
+                            worktree.root_name,
+                            rules_error.message
+                        );
+                    }
                     worktree
                 })
                 .collect::<Vec<_>>();
@@ -471,14 +459,11 @@ impl NativeAgent {
                         title: prompt_metadata.title.map(|title| title.to_string()),
                         contents,
                     }),
-                    Err(_err) => {
-                        // TODO: show error message
-                        // this.update(cx, |_, cx| {
-                        //     cx.emit(RulesLoadingError {
-                        //         message: format!("{err:?}").into(),
-                        //     });
-                        // })
-                        // .ok();
+                    Err(err) => {
+                        log::warn!(
+                            "Failed to load default user rules prompt '{}': {err:#}",
+                            prompt_metadata.id
+                        );
                         None
                     }
                 })

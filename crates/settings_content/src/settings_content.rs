@@ -582,6 +582,11 @@ pub struct GitPanelSettingsContent {
     ///
     /// Default: false
     pub tree_view: Option<bool>,
+    /// Amount of indentation (in pixels) for nested items in tree view.
+    ///
+    /// Default: 20
+    #[serde(serialize_with = "crate::serialize_optional_f32_with_two_decimal_places")]
+    pub indent_size: Option<f32>,
 }
 
 #[derive(

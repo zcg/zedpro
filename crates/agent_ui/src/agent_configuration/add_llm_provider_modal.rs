@@ -111,8 +111,12 @@ impl AddLlmProviderInput {
 
     fn add_model(&mut self, window: &mut Window, cx: &mut App) {
         let model_index = self.models.len();
-        self.models
-            .push(ModelInput::new(self.default_provider, model_index, window, cx));
+        self.models.push(ModelInput::new(
+            self.default_provider,
+            model_index,
+            window,
+            cx,
+        ));
     }
 
     fn remove_model(&mut self, index: usize) {
@@ -341,15 +345,17 @@ fn load_provider_input_for_edit(
             }
             .ok_or_else(|| SharedString::from("Provider settings not found"))?;
 
-            input.provider_name
-                .update(cx, |field, cx| field.set_text(provider_id.as_ref(), window, cx));
-            input
-                .api_url
-                .update(cx, |field, cx| field.set_text(&provider.api_url, window, cx));
+            input.provider_name.update(cx, |field, cx| {
+                field.set_text(provider_id.as_ref(), window, cx)
+            });
+            input.api_url.update(cx, |field, cx| {
+                field.set_text(&provider.api_url, window, cx)
+            });
 
             input.models.clear();
             for (index, model) in provider.available_models.iter().enumerate() {
-                input.models
+                input
+                    .models
                     .push(model_input_from_openai_model(model, index, window, cx));
             }
             provider.available_models.len()
@@ -364,15 +370,17 @@ fn load_provider_input_for_edit(
             }
             .ok_or_else(|| SharedString::from("Provider settings not found"))?;
 
-            input.provider_name
-                .update(cx, |field, cx| field.set_text(provider_id.as_ref(), window, cx));
-            input
-                .api_url
-                .update(cx, |field, cx| field.set_text(&provider.api_url, window, cx));
+            input.provider_name.update(cx, |field, cx| {
+                field.set_text(provider_id.as_ref(), window, cx)
+            });
+            input.api_url.update(cx, |field, cx| {
+                field.set_text(&provider.api_url, window, cx)
+            });
 
             input.models.clear();
             for (index, model) in provider.available_models.iter().enumerate() {
-                input.models
+                input
+                    .models
                     .push(model_input_from_anthropic_model(model, index, window, cx));
             }
             provider.available_models.len()
@@ -387,15 +395,17 @@ fn load_provider_input_for_edit(
             }
             .ok_or_else(|| SharedString::from("Provider settings not found"))?;
 
-            input.provider_name
-                .update(cx, |field, cx| field.set_text(provider_id.as_ref(), window, cx));
-            input
-                .api_url
-                .update(cx, |field, cx| field.set_text(&provider.api_url, window, cx));
+            input.provider_name.update(cx, |field, cx| {
+                field.set_text(provider_id.as_ref(), window, cx)
+            });
+            input.api_url.update(cx, |field, cx| {
+                field.set_text(&provider.api_url, window, cx)
+            });
 
             input.models.clear();
             for (index, model) in provider.available_models.iter().enumerate() {
-                input.models
+                input
+                    .models
                     .push(model_input_from_gemini_model(model, index, window, cx));
             }
             provider.available_models.len()
@@ -569,27 +579,28 @@ fn save_provider_to_settings(
 
     let (openai_provider_id, anthropic_provider_id, gemini_provider_id) = match &mode {
         ProviderModalMode::Create => {
-            let primary_provider =
-                if !openai_models.is_empty() && anthropic_models.is_empty() && gemini_models.is_empty()
-                {
-                    LlmCompatibleProvider::OpenAi
-                } else if openai_models.is_empty()
-                    && !anthropic_models.is_empty()
-                    && gemini_models.is_empty()
-                {
-                    LlmCompatibleProvider::Anthropic
-                } else if openai_models.is_empty()
-                    && anthropic_models.is_empty()
-                    && !gemini_models.is_empty()
-                {
-                    LlmCompatibleProvider::Gemini
-                } else if !openai_models.is_empty() {
-                    LlmCompatibleProvider::OpenAi
-                } else if !anthropic_models.is_empty() {
-                    LlmCompatibleProvider::Anthropic
-                } else {
-                    LlmCompatibleProvider::Gemini
-                };
+            let primary_provider = if !openai_models.is_empty()
+                && anthropic_models.is_empty()
+                && gemini_models.is_empty()
+            {
+                LlmCompatibleProvider::OpenAi
+            } else if openai_models.is_empty()
+                && !anthropic_models.is_empty()
+                && gemini_models.is_empty()
+            {
+                LlmCompatibleProvider::Anthropic
+            } else if openai_models.is_empty()
+                && anthropic_models.is_empty()
+                && !gemini_models.is_empty()
+            {
+                LlmCompatibleProvider::Gemini
+            } else if !openai_models.is_empty() {
+                LlmCompatibleProvider::OpenAi
+            } else if !anthropic_models.is_empty() {
+                LlmCompatibleProvider::Anthropic
+            } else {
+                LlmCompatibleProvider::Gemini
+            };
 
             let openai_provider_id = if openai_models.is_empty() {
                 None
@@ -618,7 +629,11 @@ fn save_provider_to_settings(
                     LlmCompatibleProvider::Gemini,
                 ))
             };
-            (openai_provider_id, anthropic_provider_id, gemini_provider_id)
+            (
+                openai_provider_id,
+                anthropic_provider_id,
+                gemini_provider_id,
+            )
         }
         ProviderModalMode::Edit {
             provider_id,
@@ -636,7 +651,11 @@ fn save_provider_to_settings(
                 LlmCompatibleProvider::Gemini => Some(provider_id.clone()),
                 _ => None,
             };
-            (openai_provider_id, anthropic_provider_id, gemini_provider_id)
+            (
+                openai_provider_id,
+                anthropic_provider_id,
+                gemini_provider_id,
+            )
         }
     };
 
@@ -647,12 +666,15 @@ fn save_provider_to_settings(
     ];
 
     if matches!(mode, ProviderModalMode::Create)
-        && LanguageModelRegistry::read_global(cx).providers().iter().any(|provider| {
-            provider_ids.iter().flatten().any(|provider_id| {
-                provider.id().0.as_ref() == provider_id.as_ref()
-                    || provider.name().0.as_ref() == provider_id.as_ref()
+        && LanguageModelRegistry::read_global(cx)
+            .providers()
+            .iter()
+            .any(|provider| {
+                provider_ids.iter().flatten().any(|provider_id| {
+                    provider.id().0.as_ref() == provider_id.as_ref()
+                        || provider.name().0.as_ref() == provider_id.as_ref()
+                })
             })
-        })
     {
         return Task::ready(Err(
             "Provider Name (or one of its compatibility aliases) is already taken".into(),
@@ -767,11 +789,7 @@ impl AddLlmProviderModal {
             .unwrap_or(false)
     }
 
-    pub fn toggle(
-        workspace: &mut Workspace,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    ) {
+    pub fn toggle(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
         workspace.toggle_modal(window, cx, |window, cx| {
             Self::new_create(LlmCompatibleProvider::OpenAi, window, cx)
         });
@@ -995,12 +1013,17 @@ impl AddLlmProviderModal {
                     v_flex()
                         .gap_1()
                         .child(
-                            Checkbox::new(("supports-tools", ix), model.capabilities.supports_tools)
-                                .label("Supports tools")
-                                .on_click(cx.listener(move |this, checked, _window, cx| {
+                            Checkbox::new(
+                                ("supports-tools", ix),
+                                model.capabilities.supports_tools,
+                            )
+                            .label("Supports tools")
+                            .on_click(cx.listener(
+                                move |this, checked, _window, cx| {
                                     this.input.models[ix].capabilities.supports_tools = *checked;
                                     cx.notify();
-                                })),
+                                },
+                            )),
                         )
                         .child(
                             Checkbox::new(
@@ -1008,10 +1031,12 @@ impl AddLlmProviderModal {
                                 model.capabilities.supports_images,
                             )
                             .label("Supports images")
-                            .on_click(cx.listener(move |this, checked, _window, cx| {
-                                this.input.models[ix].capabilities.supports_images = *checked;
-                                cx.notify();
-                            })),
+                            .on_click(cx.listener(
+                                move |this, checked, _window, cx| {
+                                    this.input.models[ix].capabilities.supports_images = *checked;
+                                    cx.notify();
+                                },
+                            )),
                         )
                         .child(
                             Checkbox::new(
@@ -1019,12 +1044,14 @@ impl AddLlmProviderModal {
                                 model.capabilities.supports_parallel_tool_calls,
                             )
                             .label("Supports parallel_tool_calls")
-                            .on_click(cx.listener(move |this, checked, _window, cx| {
-                                this.input.models[ix]
-                                    .capabilities
-                                    .supports_parallel_tool_calls = *checked;
-                                cx.notify();
-                            })),
+                            .on_click(cx.listener(
+                                move |this, checked, _window, cx| {
+                                    this.input.models[ix]
+                                        .capabilities
+                                        .supports_parallel_tool_calls = *checked;
+                                    cx.notify();
+                                },
+                            )),
                         )
                         .child(
                             Checkbox::new(
@@ -1032,11 +1059,13 @@ impl AddLlmProviderModal {
                                 model.capabilities.supports_prompt_cache_key,
                             )
                             .label("Supports prompt_cache_key")
-                            .on_click(cx.listener(move |this, checked, _window, cx| {
-                                this.input.models[ix].capabilities.supports_prompt_cache_key =
-                                    *checked;
-                                cx.notify();
-                            })),
+                            .on_click(cx.listener(
+                                move |this, checked, _window, cx| {
+                                    this.input.models[ix].capabilities.supports_prompt_cache_key =
+                                        *checked;
+                                    cx.notify();
+                                },
+                            )),
                         )
                         .child(
                             Checkbox::new(
@@ -1044,11 +1073,13 @@ impl AddLlmProviderModal {
                                 model.capabilities.supports_chat_completions,
                             )
                             .label("Supports /chat/completions")
-                            .on_click(cx.listener(move |this, checked, _window, cx| {
-                                this.input.models[ix].capabilities.supports_chat_completions =
-                                    *checked;
-                                cx.notify();
-                            })),
+                            .on_click(cx.listener(
+                                move |this, checked, _window, cx| {
+                                    this.input.models[ix].capabilities.supports_chat_completions =
+                                        *checked;
+                                    cx.notify();
+                                },
+                            )),
                         ),
                 )
             })

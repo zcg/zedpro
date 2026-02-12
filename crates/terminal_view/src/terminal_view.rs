@@ -975,7 +975,10 @@ fn subscribe_for_terminal_events(
     window: &mut Window,
     cx: &mut Context<TerminalView>,
 ) -> Vec<Subscription> {
-    let terminal_subscription = cx.observe(terminal, |_, _, cx| cx.notify());
+    let terminal_subscription = cx.observe(terminal, |this, terminal, cx| {
+        this.scroll_handle.update(terminal.read(cx));
+        cx.notify();
+    });
     let mut previous_cwd = None;
     let terminal_events_subscription = cx.subscribe_in(
         terminal,
@@ -1182,9 +1185,6 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // TODO: this should be moved out of render
-        self.scroll_handle.update(self.terminal.read(cx));
-
         if let Some(new_display_offset) = self.scroll_handle.future_display_offset.take() {
             self.terminal.update(cx, |term, _| {
                 let delta = new_display_offset as i32 - term.last_content.display_offset as i32;
@@ -1495,11 +1495,9 @@ impl Item for TerminalView {
     }
 
     fn breadcrumbs(&self, cx: &App) -> Option<Vec<BreadcrumbText>> {
-        Some(vec![BreadcrumbText {
-            text: self.terminal().read(cx).breadcrumb_text.clone(),
-            highlights: None,
-            font: None,
-        }])
+        Some(vec![BreadcrumbText::plain(
+            self.terminal().read(cx).breadcrumb_text.clone(),
+        )])
     }
 
     fn added_to_workspace(

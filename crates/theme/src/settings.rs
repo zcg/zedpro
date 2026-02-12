@@ -5,7 +5,7 @@ use crate::{
 use collections::HashMap;
 use derive_more::{Deref, DerefMut};
 use gpui::{
-    App, Context, Font, FontFallbacks, FontStyle, Global, Pixels, Subscription, Window, px,
+    App, Context, Font, FontFallbacks, FontStyle, Global, Pixels, Subscription, px,
 };
 use refineable::Refineable;
 use schemars::JsonSchema;
@@ -51,13 +51,8 @@ pub enum UiDensity {
 
 impl UiDensity {
     /// The spacing ratio of a given density.
-    /// TODO: Standardize usage throughout the app or remove
     pub fn spacing_ratio(self) -> f32 {
-        match self {
-            UiDensity::Compact => 0.75,
-            UiDensity::Default => 1.0,
-            UiDensity::Comfortable => 1.25,
-        }
+        settings::UiDensity::from(self).spacing_ratio()
     }
 }
 
@@ -88,6 +83,16 @@ impl From<settings::UiDensity> for UiDensity {
             settings::UiDensity::Compact => Self::Compact,
             settings::UiDensity::Default => Self::Default,
             settings::UiDensity::Comfortable => Self::Comfortable,
+        }
+    }
+}
+
+impl From<UiDensity> for settings::UiDensity {
+    fn from(val: UiDensity) -> Self {
+        match val {
+            UiDensity::Compact => Self::Compact,
+            UiDensity::Default => Self::Default,
+            UiDensity::Comfortable => Self::Comfortable,
         }
     }
 }
@@ -530,10 +535,14 @@ impl ThemeSettings {
         self.agent_buffer_font_size
     }
 
-    // TODO: Rename: `line_height` -> `buffer_line_height`
+    /// Returns the buffer's line height.
+    pub fn buffer_line_height(&self) -> f32 {
+        f32::max(self.buffer_line_height.value(), MIN_LINE_HEIGHT)
+    }
+
     /// Returns the buffer's line height.
     pub fn line_height(&self) -> f32 {
-        f32::max(self.buffer_line_height.value(), MIN_LINE_HEIGHT)
+        self.buffer_line_height()
     }
 
     /// Applies the theme overrides, if there are any, to the current theme.
@@ -614,17 +623,14 @@ pub fn reset_buffer_font_size(cx: &mut App) {
     }
 }
 
-// TODO: Make private, change usages to use `get_ui_font_size` instead.
-#[allow(missing_docs)]
-pub fn setup_ui_font(window: &mut Window, cx: &mut App) -> gpui::Font {
-    let (ui_font, ui_font_size) = {
-        let theme_settings = ThemeSettings::get_global(cx);
-        let font = theme_settings.ui_font.clone();
-        (font, theme_settings.ui_font_size(cx))
-    };
+/// Returns the effective UI font size, including temporary size adjustments.
+pub fn get_ui_font_size(cx: &App) -> Pixels {
+    ThemeSettings::get_global(cx).ui_font_size(cx)
+}
 
-    window.set_rem_size(ui_font_size);
-    ui_font
+/// Returns the configured UI font family/style.
+pub fn get_ui_font(cx: &App) -> gpui::Font {
+    ThemeSettings::get_global(cx).ui_font.clone()
 }
 
 /// Sets the adjusted UI font size.

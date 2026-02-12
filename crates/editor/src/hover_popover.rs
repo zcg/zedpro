@@ -191,7 +191,15 @@ pub fn hover_at_inlay(
                 };
 
                 this.update(cx, |this, cx| {
-                    // TODO: no background highlights happen for inlays currently
+                    this.highlight_inlays(
+                        HighlightKey::HoverState,
+                        vec![inlay_hover.range.clone()],
+                        gpui::HighlightStyle {
+                            background_color: Some(cx.theme().colors().element_hover),
+                            ..Default::default()
+                        },
+                        cx,
+                    );
                     this.hover_state.info_popovers = vec![hover_popover];
                     cx.notify();
                 })?;
@@ -218,6 +226,7 @@ pub fn hide_hover(editor: &mut Editor, cx: &mut Context<Editor>) -> bool {
     editor.hover_state.triggered_from = None;
 
     editor.clear_background_highlights(HighlightKey::HoverState, cx);
+    editor.clear_highlights(HighlightKey::HoverState, cx);
 
     if did_hide {
         cx.notify();

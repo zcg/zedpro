@@ -1613,23 +1613,74 @@ impl AcpThreadView {
             .map(|rules_file| ProjectEntryId::from_usize(rules_file.project_entry_id))
             .collect::<Vec<_>>();
 
-        self.workspace
-            .update(cx, move |workspace, cx| {
-                // TODO: Open a multibuffer instead? In some cases this doesn't make the set of rules
-                // files clear. For example, if rules file 1 is already open but rules file 2 is not,
-                // this would open and focus rules file 2 in a tab that is not next to rules file 1.
-                let project = workspace.project().read(cx);
-                let project_paths = project_entry_ids
+        let workspace = self.workspace.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            let Some((project, project_paths)) = workspace
+                .update(cx, |workspace, cx| {
+                    let project = workspace.project().clone();
+                    let project_paths = project_entry_ids
+                        .iter()
+                        .filter_map(|entry_id| project.read(cx).path_for_entry(*entry_id, cx))
+                        .collect::<Vec<_>>();
+                    (project, project_paths)
+                })
+                .ok()
+            else {
+                return anyhow::Ok(());
+            };
+
+            if project_paths.is_empty() {
+                return anyhow::Ok(());
+            }
+
+            let open_buffer_tasks = project.update(cx, |project, cx| {
+                project_paths
                     .into_iter()
-                    .flat_map(|entry_id| project.path_for_entry(entry_id, cx))
-                    .collect::<Vec<_>>();
-                for project_path in project_paths {
-                    workspace
-                        .open_path(project_path, None, true, window, cx)
-                        .detach_and_log_err(cx);
-                }
-            })
-            .ok();
+                    .map(|project_path| project.open_buffer(project_path, cx))
+                    .collect::<Vec<_>>()
+            });
+            let buffers: Vec<_> = futures::future::join_all(open_buffer_tasks)
+                .await
+                .into_iter()
+                .filter_map(|result| result.log_err())
+                .collect();
+
+            if buffers.is_empty() {
+                return anyhow::Ok(());
+            }
+
+            workspace.update_in(cx, |workspace, window, cx| {
+                let multibuffer = cx.new(|cx| {
+                    let mut multibuffer = MultiBuffer::new(project.read(cx).capability());
+                    for buffer in &buffers {
+                        let snapshot = buffer.read(cx).snapshot();
+                        let full_range = Point::zero()..snapshot.max_point();
+                        multibuffer.push_excerpts(
+                            buffer.clone(),
+                            [multi_buffer::ExcerptRange::new(full_range)],
+                            cx,
+                        );
+                    }
+                    multibuffer.with_title("Rules".into())
+                });
+
+                workspace.add_item_to_active_pane(
+                    Box::new(cx.new(|cx| {
+                        let mut editor =
+                            Editor::for_multibuffer(multibuffer, Some(project.clone()), window, cx);
+                        editor.set_breadcrumb_header("Rules".to_string());
+                        editor
+                    })),
+                    None,
+                    true,
+                    window,
+                    cx,
+                );
+            })?;
+
+            anyhow::Ok(())
+        })
+        .detach_and_log_err(cx);
     }
 
     fn activity_bar_bg(&self, cx: &Context<Self>) -> Hsla {
@@ -6718,6 +6769,76 @@ impl AcpThreadView {
         cx.notify();
     }
 
+    fn select_previous_recent_history(
+        &mut self,
+        _: &menu::SelectPrevious,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.resumed_without_history || self.recent_history_entries.is_empty() {
+            return;
+        }
+
+        let len = self.recent_history_entries.len();
+        let next_index = self
+            .hovered_recent_history_item
+            .map(|index| if index == 0 { len - 1 } else { index - 1 })
+            .unwrap_or(len - 1);
+
+        self.hovered_recent_history_item = Some(next_index);
+        cx.notify();
+    }
+
+    fn select_next_recent_history(
+        &mut self,
+        _: &menu::SelectNext,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.resumed_without_history || self.recent_history_entries.is_empty() {
+            return;
+        }
+
+        let len = self.recent_history_entries.len();
+        let next_index = self
+            .hovered_recent_history_item
+            .map(|index| if index + 1 >= len { 0 } else { index + 1 })
+            .unwrap_or(0);
+
+        self.hovered_recent_history_item = Some(next_index);
+        cx.notify();
+    }
+
+    fn open_recent_history_entry(
+        &mut self,
+        _: &menu::Confirm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.resumed_without_history {
+            return;
+        }
+
+        let Some(index) = self
+            .hovered_recent_history_item
+            .or_else(|| (!self.recent_history_entries.is_empty()).then_some(0))
+        else {
+            return;
+        };
+        let Some(entry) = self.recent_history_entries.get(index).cloned() else {
+            return;
+        };
+
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        if let Some(panel) = workspace.read(cx).panel::<AgentPanel>(cx) {
+            panel.update(cx, |panel, cx| {
+                panel.load_agent_thread(entry, window, cx);
+            });
+        }
+    }
+
     fn render_empty_state_section_header(
         &self,
         label: impl Into<SharedString>,
@@ -6780,7 +6901,6 @@ impl AcpThreadView {
                                 .into_iter()
                                 .enumerate()
                                 .map(move |(index, entry)| {
-                                    // TODO: Add keyboard navigation.
                                     let is_hovered =
                                         self.hovered_recent_history_item == Some(index);
                                     crate::acp::thread_history::AcpHistoryEntryElement::new(
@@ -7028,6 +7148,9 @@ impl Render for AcpThreadView {
 
         v_flex()
             .key_context("AcpThread")
+            .on_action(cx.listener(Self::select_previous_recent_history))
+            .on_action(cx.listener(Self::select_next_recent_history))
+            .on_action(cx.listener(Self::open_recent_history_entry))
             .on_action(cx.listener(|this, _: &menu::Cancel, _, cx| {
                 this.cancel_generation(cx);
             }))

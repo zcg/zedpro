@@ -24,6 +24,7 @@ use objc::{
     runtime::{Class, Object, Protocol, Sel},
     sel, sel_impl,
 };
+use postage::oneshot;
 use std::{
     cell::RefCell,
     ffi::c_void,
@@ -198,7 +199,11 @@ impl platform::Window for StatusItem {
     }
 
     fn mouse_position(&self) -> Vector2F {
-        unimplemented!()
+        unsafe {
+            let point: NSPoint =
+                msg_send![self.0.borrow().native_window(), mouseLocationOutsideOfEventStream];
+            vec2f(point.x as f32, point.y as f32)
+        }
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -213,32 +218,27 @@ impl platform::Window for StatusItem {
         _: &str,
         _: &[&str],
     ) -> postage::oneshot::Receiver<usize> {
-        unimplemented!()
+        let (mut tx, rx) = oneshot::channel();
+        let _ = tx.send(0);
+        rx
     }
 
     fn activate(&self) {
-        unimplemented!()
+        unsafe {
+            let window = self.0.borrow().native_window();
+            let _: () = msg_send![window, makeKeyAndOrderFront: nil];
+        }
     }
 
-    fn set_title(&mut self, _: &str) {
-        unimplemented!()
-    }
+    fn set_title(&mut self, _: &str) {}
 
-    fn set_edited(&mut self, _: bool) {
-        unimplemented!()
-    }
+    fn set_edited(&mut self, _: bool) {}
 
-    fn show_character_palette(&self) {
-        unimplemented!()
-    }
+    fn show_character_palette(&self) {}
 
-    fn minimize(&self) {
-        unimplemented!()
-    }
+    fn minimize(&self) {}
 
-    fn zoom(&self) {
-        unimplemented!()
-    }
+    fn zoom(&self) {}
 
     fn present_scene(&mut self, scene: Scene) {
         self.0.borrow_mut().scene = Some(scene);
@@ -247,9 +247,7 @@ impl platform::Window for StatusItem {
         }
     }
 
-    fn toggle_fullscreen(&self) {
-        unimplemented!()
-    }
+    fn toggle_fullscreen(&self) {}
 
     fn on_event(&mut self, callback: Box<dyn FnMut(platform::Event) -> bool>) {
         self.0.borrow_mut().event_callback = Some(callback);

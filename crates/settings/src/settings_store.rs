@@ -562,29 +562,18 @@ impl SettingsStore {
     }
 
     pub fn get_all_files(&self) -> Vec<SettingsFile> {
-        let mut files = Vec::from_iter(
-            self.local_settings
-                .keys()
-                // rev because these are sorted by path, so highest precedence is last
-                .rev()
-                .cloned()
-                .map(SettingsFile::Project),
-        );
+        self.iter_all_files().collect()
+    }
 
-        if self.server_settings.is_some() {
-            files.push(SettingsFile::Server);
-        }
-        // ignoring profiles
-        // ignoring os profiles
-        // ignoring release channel profiles
-        // ignoring global
-        // ignoring extension
-
-        if self.user_settings.is_some() {
-            files.push(SettingsFile::User);
-        }
-        files.push(SettingsFile::Default);
-        files
+    fn iter_all_files(&self) -> impl Iterator<Item = SettingsFile> + '_ {
+        self.local_settings
+            .keys()
+            .rev()
+            .cloned()
+            .map(SettingsFile::Project)
+            .chain(self.server_settings.is_some().then_some(SettingsFile::Server))
+            .chain(self.user_settings.is_some().then_some(SettingsFile::User))
+            .chain(std::iter::once(SettingsFile::Default))
     }
 
     pub fn get_content_for_file(&self, file: SettingsFile) -> Option<&SettingsContent> {
@@ -605,11 +594,10 @@ impl SettingsStore {
         target_file: SettingsFile,
         get: fn(&SettingsContent) -> &Option<T>,
     ) -> Vec<SettingsFile> {
-        let all_files = self.get_all_files();
         let mut found_file = false;
         let mut overrides = Vec::new();
 
-        for file in all_files.into_iter().rev() {
+        for file in self.iter_all_files().collect::<Vec<_>>().into_iter().rev() {
             if !found_file {
                 found_file = file == target_file;
                 continue;
@@ -662,14 +650,9 @@ impl SettingsStore {
         pick: fn(&'a SettingsContent) -> Option<T>,
         include_target_file: bool,
     ) -> (SettingsFile, Option<T>) {
-        // todo(settings_ui): Add a metadata field for overriding the "overrides" tag, for contextually different settings
-        //  e.g. disable AI isn't overridden, or a vec that gets extended instead or some such
-
-        // todo(settings_ui) cache all files
-        let all_files = self.get_all_files();
         let mut found_file = false;
 
-        for file in all_files.into_iter() {
+        for file in self.iter_all_files() {
             if !found_file && file != SettingsFile::Default {
                 if file != target_file {
                     continue;

@@ -36,23 +36,30 @@ pub struct WorkspaceSettings {
     pub window_decorations: settings::WindowDecorations,
 }
 
-#[derive(Copy, Clone, PartialEq, Debug, Default)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub struct ActivePanelModifiers {
     /// Size of the border surrounding the active pane.
     /// When set to 0, the active pane doesn't have any border.
     /// The border is drawn inset.
     ///
     /// Default: `0.0`
-    // TODO: make this not an option, it is never None
-    pub border_size: Option<f32>,
+    pub border_size: f32,
     /// Opacity of inactive panels.
     /// When set to 1.0, the inactive panes have the same opacity as the active one.
     /// If set to 0, the inactive panes content will not be visible at all.
     /// Values are clamped to the [0.0, 1.0] range.
     ///
     /// Default: `1.0`
-    // TODO: make this not an option, it is never None
-    pub inactive_opacity: Option<InactiveOpacity>,
+    pub inactive_opacity: InactiveOpacity,
+}
+
+impl Default for ActivePanelModifiers {
+    fn default() -> Self {
+        Self {
+            border_size: 0.0,
+            inactive_opacity: InactiveOpacity::from(1.0),
+        }
+    }
 }
 
 #[derive(Deserialize, RegisterSetting)]
@@ -68,20 +75,16 @@ impl Settings for WorkspaceSettings {
         let workspace = &content.workspace;
         Self {
             active_pane_modifiers: ActivePanelModifiers {
-                border_size: Some(
-                    workspace
-                        .active_pane_modifiers
-                        .unwrap()
-                        .border_size
-                        .unwrap(),
-                ),
-                inactive_opacity: Some(
-                    workspace
-                        .active_pane_modifiers
-                        .unwrap()
-                        .inactive_opacity
-                        .unwrap(),
-                ),
+                border_size: workspace
+                    .active_pane_modifiers
+                    .unwrap()
+                    .border_size
+                    .unwrap(),
+                inactive_opacity: workspace
+                    .active_pane_modifiers
+                    .unwrap()
+                    .inactive_opacity
+                    .unwrap(),
             },
             bottom_dock_layout: workspace.bottom_dock_layout.unwrap(),
             pane_split_direction_horizontal: workspace.pane_split_direction_horizontal.unwrap(),

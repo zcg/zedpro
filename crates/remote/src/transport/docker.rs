@@ -267,9 +267,7 @@ impl DockerExecConnection {
                 }
             },
             Err(e) => {
-                log::info!(
-                    "Error getting shell from passwd: {e}. Falling back to bash",
-                );
+                log::info!("Error getting shell from passwd: {e}. Falling back to bash",);
             }
         }
 
@@ -713,10 +711,7 @@ echo "/tmp"
     async fn ensure_container_running(&self) -> Result<()> {
         let id = self.connection_options.container_id.as_str();
         let status = self
-            .run_docker_command(
-                "inspect",
-                &["--format", "{{.State.Status}}", id],
-            )
+            .run_docker_command("inspect", &["--format", "{{.State.Status}}", id])
             .await
             .context("docker inspect")?;
         let status = status
@@ -804,10 +799,7 @@ echo "/tmp"
             return Ok(String::from_utf8_lossy(&output.stdout).to_string());
         }
 
-        anyhow::bail!(
-            "failed to run docker exec: {}",
-            stderr
-        );
+        anyhow::bail!("failed to run docker exec: {}", stderr);
     }
 
     async fn download_binary_on_server(
@@ -947,7 +939,12 @@ impl RemoteConnection for DockerExecConnection {
         };
 
         let mut docker_args = vec!["exec".to_string()];
-        for env_var in ["RUST_LOG", "RUST_BACKTRACE", "ZED_GENERATE_MINIDUMPS", "GITHUB_TOKEN"] {
+        for env_var in [
+            "RUST_LOG",
+            "RUST_BACKTRACE",
+            "ZED_GENERATE_MINIDUMPS",
+            "GITHUB_TOKEN",
+        ] {
             if let Some(value) = std::env::var(env_var).ok() {
                 docker_args.push("-e".to_string());
                 docker_args.push(format!("{}='{}'", env_var, value));

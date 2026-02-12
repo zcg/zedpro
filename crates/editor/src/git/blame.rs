@@ -635,11 +635,11 @@ impl GitBlame {
     }
 
     fn regenerate_on_edit(&mut self, cx: &mut Context<Self>) {
-        // todo(lw): hot foreground spawn
         self.regenerate_on_edit_task = cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(REGENERATE_ON_EDIT_DEBOUNCE_INTERVAL)
-                .await;
+            let timer = cx
+                .background_executor()
+                .timer(REGENERATE_ON_EDIT_DEBOUNCE_INTERVAL);
+            cx.background_spawn(async move { timer.await }).await;
 
             this.update(cx, |this, cx| {
                 this.generate(cx);

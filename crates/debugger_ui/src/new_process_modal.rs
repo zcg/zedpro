@@ -76,6 +76,26 @@ fn suggested_label(request: &DebugRequest, debugger: &str) -> SharedString {
     }
 }
 
+fn one_off_task_label(command: &str, args: &[String]) -> String {
+    const MAX_LABEL_CHARS: usize = 80;
+
+    let command_line = std::iter::once(command)
+        .chain(args.iter().map(String::as_str))
+        .join(" ");
+    let command_line = command_line.trim();
+    if command_line.is_empty() {
+        return "one-off".to_owned();
+    }
+
+    let mut chars = command_line.chars();
+    let truncated: String = chars.by_ref().take(MAX_LABEL_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        command_line.to_owned()
+    }
+}
+
 impl NewProcessModal {
     pub(super) fn show(
         workspace: &mut Workspace,
@@ -92,7 +112,6 @@ impl NewProcessModal {
 
         cx.spawn_in(window, async move |workspace, cx| {
             let task_contexts = workspace.update_in(cx, |workspace, window, cx| {
-                // todo(debugger): get the buffer here (if the active item is an editor) and store it so we can pass it to start_session later
                 tasks_ui::task_contexts(workspace, window, cx)
             })?;
             workspace.update_in(cx, |workspace, window, cx| {
@@ -181,6 +200,7 @@ impl NewProcessModal {
 
                             let lsp_tasks = lsp_tasks.await;
                             let add_current_language_tasks = !prefer_lsp || lsp_tasks.is_empty();
+                            let include_lsp_tasks = prefer_lsp || lsp_tasks.is_empty();
 
                             let lsp_tasks = lsp_tasks
                                 .into_iter()
@@ -214,6 +234,7 @@ impl NewProcessModal {
                                     lsp_tasks.clone(),
                                     current_resolved_tasks.clone(),
                                     add_current_language_tasks,
+                                    include_lsp_tasks,
                                     cx,
                                 )
                             }) {
@@ -245,6 +266,7 @@ impl NewProcessModal {
                                         used_tasks,
                                         current_resolved_tasks,
                                         add_current_language_tasks,
+                                        include_lsp_tasks,
                                         window,
                                         cx,
                                     );
@@ -1128,6 +1150,7 @@ impl DebugDelegate {
         lsp_tasks: Vec<(TaskSourceKind, task::ResolvedTask)>,
         current_resolved_tasks: Vec<(TaskSourceKind, task::ResolvedTask)>,
         add_current_language_tasks: bool,
+        include_lsp_tasks: bool,
         cx: &mut Context<Picker<Self>>,
     ) -> Task<()> {
         self.task_contexts = Some(task_contexts.clone());
@@ -1139,6 +1162,7 @@ impl DebugDelegate {
                         lsp_tasks,
                         current_resolved_tasks,
                         add_current_language_tasks,
+                        include_lsp_tasks,
                         cx,
                     )
                 })
@@ -1322,8 +1346,9 @@ impl PickerDelegate for DebugDelegate {
         };
 
         let args = args.collect::<Vec<_>>();
+        let task_label = one_off_task_label(&program, &args);
         let task = task::TaskTemplate {
-            label: "one-off".to_owned(), // TODO: rename using command as label
+            label: task_label.clone(),
             env,
             command: program,
             args,
@@ -1337,6 +1362,7 @@ impl PickerDelegate for DebugDelegate {
         else {
             return;
         };
+        let active_buffer = location.buffer.clone();
         let file = location.buffer.read(cx).file();
         let language = location.buffer.read(cx).language();
         let language_name = language.as_ref().map(|l| l.name());
@@ -1363,12 +1389,10 @@ impl PickerDelegate for DebugDelegate {
             let Some(debug_scenario) = cx
                 .background_spawn(async move {
                     for locator in locators {
-                        if let Some(scenario) =
-                            // TODO: use a more informative label than "one-off"
-                            locator
-                                .1
-                                .create_scenario(&task, &task.label, &adapter)
-                                .await
+                        if let Some(scenario) = locator
+                            .1
+                            .create_scenario(&task, &task_label, &adapter)
+                            .await
                         {
                             return Some(scenario);
                         }
@@ -1388,7 +1412,7 @@ impl PickerDelegate for DebugDelegate {
                         panel.start_session(
                             debug_scenario,
                             task_context,
-                            None,
+                            Some(active_buffer),
                             worktree_id,
                             window,
                             cx,

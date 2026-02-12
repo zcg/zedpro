@@ -145,7 +145,8 @@ pub enum ButtonStyle {
 
     /// Used for buttons that only change foreground color on hover and active states.
     ///
-    /// TODO: Better docs for this.
+    /// Prefer this style for low-emphasis icon/text actions embedded in toolbars
+    /// or inline controls where background chrome would be visually noisy.
     Transparent,
 }
 
@@ -289,10 +290,8 @@ impl ButtonStyle {
             ButtonStyle::Transparent => ButtonLikeStyles {
                 background: transparent_black(),
                 border_color: transparent_black(),
-                // TODO: These are not great
-                label_color: Color::Muted.color(cx),
-                // TODO: These are not great
-                icon_color: Color::Muted.color(cx),
+                label_color: Color::Default.color(cx),
+                icon_color: Color::Default.color(cx),
             },
         }
     }
@@ -327,10 +326,8 @@ impl ButtonStyle {
             ButtonStyle::Transparent => ButtonLikeStyles {
                 background: transparent_black(),
                 border_color: transparent_black(),
-                // TODO: These are not great
-                label_color: Color::Muted.color(cx),
-                // TODO: These are not great
-                icon_color: Color::Muted.color(cx),
+                label_color: Color::Default.color(cx),
+                icon_color: Color::Default.color(cx),
             },
         }
     }

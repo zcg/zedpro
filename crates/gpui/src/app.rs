@@ -392,8 +392,8 @@ impl SystemWindowTabController {
             .find_map(|(group, tabs)| tabs.iter().find(|tab| tab.id == id).map(|_| group));
 
         let current_group = current_group?;
-        // TODO: `.keys()` returns arbitrary order, what does "next" mean?
         let mut group_ids: Vec<_> = controller.tab_groups.keys().collect();
+        group_ids.sort_unstable();
         let idx = group_ids.iter().position(|g| *g == current_group)?;
         let next_idx = (idx + 1) % group_ids.len();
 
@@ -417,8 +417,8 @@ impl SystemWindowTabController {
             .find_map(|(group, tabs)| tabs.iter().find(|tab| tab.id == id).map(|_| group));
 
         let current_group = current_group?;
-        // TODO: `.keys()` returns arbitrary order, what does "previous" mean?
         let mut group_ids: Vec<_> = controller.tab_groups.keys().collect();
+        group_ids.sort_unstable();
         let idx = group_ids.iter().position(|g| *g == current_group)?;
         let prev_idx = if idx == 0 {
             group_ids.len() - 1
@@ -598,10 +598,14 @@ impl SystemWindowTabController {
         let (source_group_id, target_group_id) = {
             let controller = cx.global::<SystemWindowTabController>();
             let source_group_id = controller.tab_groups.iter().find_map(|(group_id, tabs)| {
-                tabs.iter().any(|tab| tab.id == source_id).then_some(*group_id)
+                tabs.iter()
+                    .any(|tab| tab.id == source_id)
+                    .then_some(*group_id)
             });
             let target_group_id = controller.tab_groups.iter().find_map(|(group_id, tabs)| {
-                tabs.iter().any(|tab| tab.id == target_id).then_some(*group_id)
+                tabs.iter()
+                    .any(|tab| tab.id == target_id)
+                    .then_some(*group_id)
             });
             (source_group_id, target_group_id)
         };
@@ -1011,6 +1015,15 @@ impl App {
     /// Gracefully quit the application via the platform's standard routine.
     pub fn quit(&self) {
         self.platform.quit();
+    }
+
+    /// Run app-quit observers immediately and then request the platform to quit.
+    ///
+    /// This is useful in headless environments where callers need deterministic
+    /// teardown before the platform quit callback is processed.
+    pub fn shutdown_and_quit(&mut self) {
+        self.shutdown();
+        self.quit();
     }
 
     /// Schedules all windows in the application to be redrawn. This can be called
@@ -1693,10 +1706,14 @@ impl App {
                 cx.window_update_stack.pop();
 
                 if window.removed {
-                    let window_ids_to_refresh = SystemWindowTabController::tab_group_window_ids(cx, id);
+                    let window_ids_to_refresh =
+                        SystemWindowTabController::tab_group_window_ids(cx, id);
                     if SystemWindowTabController::remove_tab(cx, id).is_some() {
                         cx.defer(move |cx| {
-                            SystemWindowTabController::refresh_window_ids(cx, window_ids_to_refresh);
+                            SystemWindowTabController::refresh_window_ids(
+                                cx,
+                                window_ids_to_refresh,
+                            );
                         });
                     }
 

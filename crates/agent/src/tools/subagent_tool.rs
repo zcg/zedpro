@@ -553,11 +553,15 @@ impl AgentConnection for SubagentDisplayConnection {
         _cwd: &Path,
         _cx: &mut App,
     ) -> Task<Result<Entity<AcpThread>>> {
-        unimplemented!("SubagentDisplayConnection does not support new_thread")
+        Task::ready(Err(anyhow!(
+            "SubagentDisplayConnection does not support new_thread"
+        )))
     }
 
     fn authenticate(&self, _method_id: acp::AuthMethodId, _cx: &mut App) -> Task<Result<()>> {
-        unimplemented!("SubagentDisplayConnection does not support authenticate")
+        Task::ready(Err(anyhow!(
+            "SubagentDisplayConnection does not support authenticate"
+        )))
     }
 
     fn prompt(
@@ -566,7 +570,9 @@ impl AgentConnection for SubagentDisplayConnection {
         _params: acp::PromptRequest,
         _cx: &mut App,
     ) -> Task<Result<acp::PromptResponse>> {
-        unimplemented!("SubagentDisplayConnection does not support prompt")
+        Task::ready(Err(anyhow!(
+            "SubagentDisplayConnection does not support prompt"
+        )))
     }
 
     fn cancel(&self, _session_id: &acp::SessionId, _cx: &mut App) {}

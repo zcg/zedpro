@@ -108,7 +108,6 @@ pub struct AmazonBedrockSettings {
     pub region: Option<String>,
     pub endpoint: Option<String>,
     pub profile_name: Option<String>,
-    pub role_arn: Option<String>,
     pub authentication_method: Option<BedrockAuthMethod>,
     pub allow_global: Option<bool>,
 }

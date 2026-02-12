@@ -1027,13 +1027,16 @@ pub(crate) struct ElementStateBox {
 }
 
 fn default_bounds(display_id: Option<DisplayId>, cx: &mut App) -> WindowBounds {
-    // TODO, BUG: if you open a window with the currently active window
-    // on the stack, this will erroneously fallback to `None`
-    //
-    // TODO these should be the initial window bounds not considering maximized/fullscreen
+    // Use active window geometry as a cascade base, but always open the new window in windowed mode.
     let active_window_bounds = cx
         .active_window()
-        .and_then(|w| w.update(cx, |_, window, _| window.window_bounds()).ok());
+        .and_then(|w| w.update(cx, |_, window, _| window.window_bounds()).ok())
+        .or_else(|| {
+            cx.windows()
+                .into_iter()
+                .rev()
+                .find_map(|w| w.update(cx, |_, window, _| window.window_bounds()).ok())
+        });
 
     const CASCADE_OFFSET: f32 = 25.0;
 
@@ -1056,11 +1059,14 @@ fn default_bounds(display_id: Option<DisplayId>, cx: &mut App) -> WindowBounds {
         },
         window_bounds_ctor,
     ): (_, fn(Bounds<Pixels>) -> WindowBounds) = match active_window_bounds {
-        Some(bounds) => match bounds {
-            WindowBounds::Windowed(bounds) => (bounds, WindowBounds::Windowed),
-            WindowBounds::Maximized(bounds) => (bounds, WindowBounds::Maximized),
-            WindowBounds::Fullscreen(bounds) => (bounds, WindowBounds::Fullscreen),
-        },
+        Some(bounds) => (
+            match bounds {
+                WindowBounds::Windowed(bounds)
+                | WindowBounds::Maximized(bounds)
+                | WindowBounds::Fullscreen(bounds) => bounds,
+            },
+            WindowBounds::Windowed,
+        ),
         None => (
             display
                 .as_ref()

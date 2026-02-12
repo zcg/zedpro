@@ -1794,10 +1794,14 @@ impl LocalWorktree {
         };
         let t0 = Instant::now();
         let mut refresh = self.refresh_entries_for_paths(paths);
-        // todo(lw): Hot foreground spawn
         cx.spawn(async move |this, cx| {
-            refresh.recv().await;
-            log::trace!("refreshed entry {path:?} in {:?}", t0.elapsed());
+            let elapsed = cx
+                .background_spawn(async move {
+                    refresh.recv().await;
+                    t0.elapsed()
+                })
+                .await;
+            log::trace!("refreshed entry {path:?} in {:?}", elapsed);
             let new_entry = this.read_with(cx, |this, _| {
                 this.entry_for_path(&path).cloned().with_context(|| {
                     format!("Could not find entry in worktree for {path:?} after refresh")
@@ -2157,20 +2161,22 @@ impl Snapshot {
         self.id
     }
 
-    // TODO:
-    // Consider the following:
-    //
-    // ```rust
-    // let abs_path: Arc<Path> = snapshot.abs_path(); // e.g. "C:\Users\user\Desktop\project"
-    // let some_non_trimmed_path = Path::new("\\\\?\\C:\\Users\\user\\Desktop\\project\\main.rs");
-    // // The caller perform some actions here:
-    // some_non_trimmed_path.strip_prefix(abs_path);  // This fails
-    // some_non_trimmed_path.starts_with(abs_path);   // This fails too
-    // ```
-    //
-    // This is definitely a bug, but it's not clear if we should handle it here or not.
+    /// Returns the worktree root path.
+    ///
+    /// On Windows, this path is sanitized (e.g. `\\?\` prefixes are removed). For prefix checks
+    /// with external paths, prefer `strip_abs_path_prefix` / `contains_abs_path`.
     pub fn abs_path(&self) -> &Arc<Path> {
         SanitizedPath::cast_arc_ref(&self.abs_path)
+    }
+
+    pub fn strip_abs_path_prefix<'a>(&self, path: &'a Path) -> Option<&'a Path> {
+        SanitizedPath::new(path)
+            .strip_prefix(SanitizedPath::new(self.abs_path().as_ref()))
+            .ok()
+    }
+
+    pub fn contains_abs_path(&self, path: &Path) -> bool {
+        SanitizedPath::new(path).starts_with(SanitizedPath::new(self.abs_path().as_ref()))
     }
 
     fn build_initial_update(&self, project_id: u64, worktree_id: u64) -> proto::UpdateWorktree {
@@ -2551,8 +2557,24 @@ impl LocalSnapshot {
         removed_entries.sort_unstable();
         updated_entries.sort_unstable_by_key(|e| e.id);
 
-        // TODO - optimize, knowing that removed_entries are sorted.
-        removed_entries.retain(|id| updated_entries.binary_search_by_key(id, |e| e.id).is_err());
+        let mut filtered_removed_entries = Vec::with_capacity(removed_entries.len());
+        let mut updated_entry_ids = updated_entries.iter().map(|entry| entry.id).peekable();
+        for removed_id in removed_entries {
+            while updated_entry_ids
+                .peek()
+                .is_some_and(|updated_id| *updated_id < removed_id)
+            {
+                updated_entry_ids.next();
+            }
+
+            if updated_entry_ids
+                .peek()
+                .is_none_or(|updated_id| *updated_id != removed_id)
+            {
+                filtered_removed_entries.push(removed_id);
+            }
+        }
+        let removed_entries = filtered_removed_entries;
 
         proto::UpdateWorktree {
             project_id,
@@ -5050,7 +5072,7 @@ impl BackgroundScanner {
 
             match existing_repository_entry {
                 None => {
-                    let Ok(relative) = dot_git_dir.strip_prefix(state.snapshot.abs_path()) else {
+                    let Some(relative) = state.snapshot.strip_abs_path_prefix(&dot_git_dir) else {
                         debug_panic!(
                             "update_git_repositories called with .git directory outside the worktree root"
                         );

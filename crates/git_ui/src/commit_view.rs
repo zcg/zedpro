@@ -827,7 +827,15 @@ impl language::File for GitBlob {
     }
 
     fn to_proto(&self, _cx: &App) -> language::proto::File {
-        unimplemented!()
+        let disk_state = self.disk_state();
+        language::proto::File {
+            worktree_id: self.worktree_id.to_proto(),
+            entry_id: None,
+            path: self.path.as_ref().to_proto(),
+            mtime: disk_state.mtime().map(|time| time.into()),
+            is_deleted: disk_state.is_deleted(),
+            is_historic: matches!(disk_state, DiskState::Historic { .. }),
+        }
     }
 
     fn is_private(&self) -> bool {

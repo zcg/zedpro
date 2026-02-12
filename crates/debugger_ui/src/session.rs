@@ -103,7 +103,7 @@ impl DebugSession {
             let quirks = session.quirks();
             let mut single_thread_name = || {
                 let threads = session.threads(cx);
-                match threads.as_slice() {
+                match threads.as_ref() {
                     [(thread, _)] => Some(SharedString::from(&thread.name)),
                     _ => None,
                 }

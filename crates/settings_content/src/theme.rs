@@ -380,7 +380,6 @@ pub enum UiDensity {
 
 impl UiDensity {
     /// The spacing ratio of a given density.
-    /// TODO: Standardize usage throughout the app or remove
     pub fn spacing_ratio(self) -> f32 {
         match self {
             UiDensity::Compact => 0.75,

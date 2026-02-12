@@ -49,7 +49,10 @@ impl Header for ZedChecksumHeader {
     }
 
     fn encode<E: Extend<axum::http::HeaderValue>>(&self, _values: &mut E) {
-        unimplemented!()
+        let encoded = hex::encode(&self.0);
+        if let Ok(value) = axum::http::HeaderValue::from_str(&encoded) {
+            _values.extend(std::iter::once(value));
+        }
     }
 }
 

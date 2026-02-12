@@ -74,6 +74,11 @@ You can see all of Zed's default bindings for each platform in the default keyma
 - [Windows](https://github.com/zed-industries/zed/blob/main/assets/keymaps/default-windows.json)
 - [Linux](https://github.com/zed-industries/zed/blob/main/assets/keymaps/default-linux.json).
 
+On macOS and Windows, window visibility commands are available by default:
+
+- {#action zed::HideOthers} ({#kb zed::HideOthers})
+- {#action zed::ShowAll} ({#kb zed::ShowAll})
+
 If you want to debug problems with custom keymaps, you can use `dev: Open Key Context View` from the command palette.
 Please file [an issue](https://github.com/zed-industries/zed) if you run into something you think should work but isn't.
 

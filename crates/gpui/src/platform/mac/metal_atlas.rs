@@ -234,7 +234,13 @@ impl MetalAtlasTexture {
         match self.metal_texture.pixel_format() {
             A8Unorm | R8Unorm => 1,
             RGBA8Unorm | BGRA8Unorm => 4,
-            _ => unimplemented!(),
+            other => {
+                log::error!(
+                    "Unsupported metal texture pixel format {:?}, defaulting to 4 bytes per pixel",
+                    other
+                );
+                4
+            }
         }
     }
 

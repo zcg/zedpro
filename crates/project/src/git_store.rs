@@ -861,9 +861,9 @@ impl GitStore {
                     repo.load_committed_text(buffer_id, repo_path, cx)
                 });
 
-                // todo(lw): hot foreground spawn
                 cx.spawn(async move |this, cx| {
-                    Self::open_diff_internal(this, DiffKind::Uncommitted, changes.await, buffer, cx)
+                    let changes = cx.background_spawn(async move { changes.await }).await;
+                    Self::open_diff_internal(this, DiffKind::Uncommitted, changes, buffer, cx)
                         .await
                         .map_err(Arc::new)
                 })
@@ -1615,7 +1615,6 @@ impl GitStore {
                     .detach();
                 }
             }
-            _ => {}
         }
     }
 
@@ -3689,6 +3688,17 @@ impl Repository {
         self.snapshot.clone()
     }
 
+    fn publish_snapshot_update(
+        &self,
+        updates_tx: Option<&mpsc::UnboundedSender<DownstreamUpdate>>,
+    ) {
+        if let Some(updates_tx) = updates_tx {
+            updates_tx
+                .unbounded_send(DownstreamUpdate::UpdateRepository(self.snapshot.clone()))
+                .ok();
+        }
+    }
+
     pub fn pending_ops(&self) -> impl Iterator<Item = PendingOps> + '_ {
         self.pending_ops.iter().cloned()
     }
@@ -4964,21 +4974,15 @@ impl Repository {
                     environment,
                     ..
                 }) => {
-                    // TODO would be nice to not have to do this manually
                     let result = backend.stash_drop(index, environment).await;
                     if result.is_ok()
                         && let Ok(stash_entries) = backend.stash_entries().await
                     {
-                        let snapshot = this.update(&mut cx, |this, cx| {
+                        this.update(&mut cx, |this, cx| {
                             this.snapshot.stash_entries = stash_entries;
                             cx.emit(RepositoryEvent::StashEntriesChanged);
-                            this.snapshot.clone()
+                            this.publish_snapshot_update(updates_tx.as_ref());
                         })?;
-                        if let Some(updates_tx) = updates_tx {
-                            updates_tx
-                                .unbounded_send(DownstreamUpdate::UpdateRepository(snapshot))
-                                .ok();
-                        }
                     }
 
                     result
@@ -5174,21 +5178,15 @@ impl Repository {
                                 cx.clone(),
                             )
                             .await;
-                        // TODO would be nice to not have to do this manually
                         if result.is_ok() {
                             let branches = backend.branches().await?;
                             let branch = branches.into_iter().find(|branch| branch.is_head);
                             log::info!("head branch after scan is {branch:?}");
-                            let snapshot = this.update(&mut cx, |this, cx| {
+                            this.update(&mut cx, |this, cx| {
                                 this.snapshot.branch = branch;
                                 cx.emit(RepositoryEvent::BranchChanged);
-                                this.snapshot.clone()
+                                this.publish_snapshot_update(updates_tx.as_ref());
                             })?;
-                            if let Some(updates_tx) = updates_tx {
-                                updates_tx
-                                    .unbounded_send(DownstreamUpdate::UpdateRepository(snapshot))
-                                    .ok();
-                            }
                         }
                         result
                     }

@@ -75,9 +75,7 @@ impl From<settings::AnthropicRequestCompatContent> for AnthropicRequestCompatSet
     fn from(value: settings::AnthropicRequestCompatContent) -> Self {
         Self {
             auth_mode: value.auth_mode.map(Into::into).unwrap_or_default(),
-            anthropic_version: value
-                .anthropic_version
-                .or(Some("2023-06-01".to_string())),
+            anthropic_version: value.anthropic_version.or(Some("2023-06-01".to_string())),
             allow_stream_fallback: value.allow_stream_fallback.unwrap_or(true),
             allow_count_tokens_fallback: value.allow_count_tokens_fallback.unwrap_or(true),
         }
@@ -134,8 +132,11 @@ impl AnthropicCompatibleLanguageModelProvider {
                 };
                 if this.settings != settings {
                     let api_url = SharedString::new(settings.api_url.as_str());
-                    this.api_key_state
-                        .handle_url_change(api_url, |this| &mut this.api_key_state, cx);
+                    this.api_key_state.handle_url_change(
+                        api_url,
+                        |this| &mut this.api_key_state,
+                        cx,
+                    );
                     this.settings = settings;
                     cx.notify();
                 }
@@ -333,7 +334,9 @@ fn map_anthropic_error(
         AnthropicError::BuildRequestBody(error) => {
             LanguageModelCompletionError::BuildRequestBody { provider, error }
         }
-        AnthropicError::HttpSend(error) => LanguageModelCompletionError::HttpSend { provider, error },
+        AnthropicError::HttpSend(error) => {
+            LanguageModelCompletionError::HttpSend { provider, error }
+        }
         AnthropicError::DeserializeResponse(error) => {
             LanguageModelCompletionError::DeserializeResponse { provider, error }
         }
@@ -348,10 +351,12 @@ fn map_anthropic_error(
             status_code,
             message,
         },
-        AnthropicError::RateLimit { retry_after } => LanguageModelCompletionError::RateLimitExceeded {
-            provider,
-            retry_after: Some(retry_after),
-        },
+        AnthropicError::RateLimit { retry_after } => {
+            LanguageModelCompletionError::RateLimitExceeded {
+                provider,
+                retry_after: Some(retry_after),
+            }
+        }
         AnthropicError::ServerOverloaded { retry_after } => {
             LanguageModelCompletionError::ServerOverloaded {
                 provider,
@@ -424,21 +429,23 @@ fn map_non_streaming_response(
                 events.push(Ok(LanguageModelCompletionEvent::RedactedThinking { data }));
             }
             ResponseContent::ToolUse { id, name, input } => {
-                events.push(Ok(LanguageModelCompletionEvent::ToolUse(LanguageModelToolUse {
-                    id: id.into(),
-                    name: name.into(),
-                    raw_input: input.to_string(),
-                    input,
-                    is_input_complete: true,
-                    thought_signature: None,
-                })));
+                events.push(Ok(LanguageModelCompletionEvent::ToolUse(
+                    LanguageModelToolUse {
+                        id: id.into(),
+                        name: name.into(),
+                        raw_input: input.to_string(),
+                        input,
+                        is_input_complete: true,
+                        thought_signature: None,
+                    },
+                )));
             }
         }
     }
 
-    events.push(Ok(LanguageModelCompletionEvent::UsageUpdate(convert_usage(
-        &response.usage,
-    ))));
+    events.push(Ok(LanguageModelCompletionEvent::UsageUpdate(
+        convert_usage(&response.usage),
+    )));
     events.push(Ok(LanguageModelCompletionEvent::Stop(parse_stop_reason(
         response.stop_reason.as_deref(),
     ))));
@@ -484,7 +491,11 @@ impl LanguageModel for AnthropicCompatibleLanguageModel {
     }
 
     fn telemetry_id(&self) -> String {
-        format!("anthropic-compatible/{}/{}", self.provider_id.0, self.model.id())
+        format!(
+            "anthropic-compatible/{}/{}",
+            self.provider_id.0,
+            self.model.id()
+        )
     }
 
     fn max_token_count(&self) -> u64 {
@@ -511,7 +522,10 @@ impl LanguageModel for AnthropicCompatibleLanguageModel {
 
         let (api_key, api_url, request_compat) = self.state.read_with(cx, |state, _cx| {
             (
-                state.api_key_state.key(&state.settings.api_url).map(|k| k.to_string()),
+                state
+                    .api_key_state
+                    .key(&state.settings.api_url)
+                    .map(|k| k.to_string()),
                 state.settings.api_url.clone(),
                 state.settings.request_compat.clone(),
             )
@@ -588,7 +602,10 @@ impl LanguageModel for AnthropicCompatibleLanguageModel {
         let http_client = self.http_client.clone();
         let (api_key, api_url) = self.state.read_with(cx, |state, _cx| {
             (
-                state.api_key_state.key(&state.settings.api_url).map(|k| k.to_string()),
+                state
+                    .api_key_state
+                    .key(&state.settings.api_url)
+                    .map(|k| k.to_string()),
                 state.settings.api_url.clone(),
             )
         });

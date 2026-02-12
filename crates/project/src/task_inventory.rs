@@ -281,6 +281,7 @@ impl Inventory {
         lsp_tasks: Vec<(TaskSourceKind, task::ResolvedTask)>,
         current_resolved_tasks: Vec<(TaskSourceKind, task::ResolvedTask)>,
         add_current_language_tasks: bool,
+        include_lsp_tasks: bool,
         cx: &mut App,
     ) -> Task<(
         Vec<(DebugScenario, DebugScenarioContext)>,
@@ -318,13 +319,20 @@ impl Inventory {
         });
         cx.background_spawn(async move {
             if let Some((adapter, locators)) = adapter {
-                for (kind, task) in
-                    lsp_tasks
-                        .into_iter()
-                        .chain(current_resolved_tasks.into_iter().filter(|(kind, _)| {
-                            add_current_language_tasks
-                                || !matches!(kind, TaskSourceKind::Language { .. })
-                        }))
+                for (kind, task) in lsp_tasks
+                    .into_iter()
+                    .filter(|(kind, _)| {
+                        include_lsp_tasks || !matches!(kind, TaskSourceKind::Lsp { .. })
+                    })
+                    .chain(
+                        current_resolved_tasks
+                            .into_iter()
+                            .filter(|(kind, _)| match kind {
+                                TaskSourceKind::Language { .. } => add_current_language_tasks,
+                                TaskSourceKind::Lsp { .. } => include_lsp_tasks,
+                                _ => true,
+                            }),
+                    )
                 {
                     let adapter = adapter.clone().into();
 

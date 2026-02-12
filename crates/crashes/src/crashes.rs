@@ -66,8 +66,10 @@ pub async fn init(crash_init: InitCrashHandler) {
 
     let exe = env::current_exe().expect("unable to find ourselves");
     let zed_pid = process::id();
-    // TODO: we should be able to get away with using 1 crash-handler process per machine,
-    // but for now we append the PID of the current process which makes it unique per remote
+    // The PID suffix keeps socket names unique per process (including remote server instances)
+    // and avoids collisions when stale sockets linger from previous runs.
+    // A shared handler socket can be revisited after crash-handler lifecycle behavior stabilizes.
+    // for now we append the PID of the current process which makes it unique per remote
     // server or interactive zed instance. This solves an issue where occasionally the socket
     // used by the crash handler isn't destroyed correctly which causes it to stay on the file
     // system and block further attempts to initialize crash handlers with that socket path.
@@ -195,6 +197,15 @@ pub struct CrashPanic {
     pub span: String,
 }
 
+fn compress_minidump(path: &Path) -> io::Result<()> {
+    let original_file = File::open(path)?;
+    let compressed_path = path.with_extension("zstd");
+    let compressed_file = File::create(&compressed_path)?;
+    zstd::stream::copy_encode(original_file, compressed_file, 0)?;
+    fs::rename(&compressed_path, path)?;
+    Ok(())
+}
+
 impl minidumper::ServerHandler for CrashServer {
     fn create_minidump_file(&self) -> Result<(File, PathBuf), io::Error> {
         let err_message = "Missing initialization data";
@@ -215,15 +226,14 @@ impl minidumper::ServerHandler for CrashServer {
         let minidump_error = match result {
             Ok(MinidumpBinary { mut file, path, .. }) => {
                 use io::Write;
-                file.flush().ok();
-                // TODO: clean this up once https://github.com/EmbarkStudios/crash-handling/issues/101 is addressed
-                drop(file);
-                let original_file = File::open(&path).unwrap();
-                let compressed_path = path.with_extension("zstd");
-                let compressed_file = File::create(&compressed_path).unwrap();
-                zstd::stream::copy_encode(original_file, compressed_file, 0).ok();
-                fs::rename(&compressed_path, path).unwrap();
-                None
+                if let Err(error) = file.flush() {
+                    Some(format!("Failed to flush minidump file: {error}"))
+                } else {
+                    drop(file);
+                    compress_minidump(&path)
+                        .err()
+                        .map(|error| format!("Failed to compress minidump: {error}"))
+                }
             }
             Err(e) => Some(format!("{e:?}")),
         };

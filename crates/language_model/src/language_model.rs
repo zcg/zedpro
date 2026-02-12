@@ -772,7 +772,7 @@ pub trait LanguageModel: Send + Sync {
 
     #[cfg(any(test, feature = "test-support"))]
     fn as_fake(&self) -> &fake_provider::FakeLanguageModel {
-        unimplemented!()
+        panic!("as_fake() called on a non-fake language model implementation")
     }
 }
 

@@ -366,8 +366,28 @@ pub struct InsertSnippet {
     pub name: Option<String>,
 
     /// Snippet body, if not using a named snippet
-    // todo(andrew): use `ListOrDirect` or similar for multiline snippet body
+    #[serde(default, deserialize_with = "deserialize_snippet_body")]
     pub snippet: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SnippetBody {
+    Single(String),
+    MultiLine(Vec<String>),
+}
+
+fn deserialize_snippet_body<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let snippet_body = Option::<SnippetBody>::deserialize(deserializer)?;
+    Ok(snippet_body.map(|body| match body {
+        SnippetBody::Single(line) => line,
+        SnippetBody::MultiLine(lines) => lines.join("\n"),
+    }))
 }
 
 actions!(

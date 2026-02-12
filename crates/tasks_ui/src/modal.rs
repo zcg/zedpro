@@ -174,6 +174,7 @@ impl TasksModal {
         used_tasks: Vec<(TaskSourceKind, task::ResolvedTask)>,
         current_resolved_tasks: Vec<(TaskSourceKind, task::ResolvedTask)>,
         add_current_language_tasks: bool,
+        include_lsp_tasks: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -183,7 +184,9 @@ impl TasksModal {
             Some(used_tasks.len() - 1)
         };
         let mut new_candidates = used_tasks;
-        new_candidates.extend(lsp_tasks);
+        new_candidates.extend(lsp_tasks.into_iter().filter(|(task_kind, _)| {
+            include_lsp_tasks || !matches!(task_kind, TaskSourceKind::Lsp { .. })
+        }));
         let hide_vscode = current_resolved_tasks.iter().any(|(kind, _)| match kind {
             TaskSourceKind::Worktree {
                 id: _,
@@ -192,9 +195,6 @@ impl TasksModal {
             } => dir.file_name().is_some_and(|name| name == ".zed"),
             _ => false,
         });
-        // todo(debugger): We're always adding lsp tasks here even if prefer_lsp is false
-        // We should move the filter to new_candidates instead of on current
-        // and add a test for this
         new_candidates.extend(current_resolved_tasks.into_iter().filter(|(task_kind, _)| {
             match task_kind {
                 TaskSourceKind::Worktree {
@@ -202,6 +202,7 @@ impl TasksModal {
                     ..
                 } => !(hide_vscode && dir.file_name().is_some_and(|name| name == ".vscode")),
                 TaskSourceKind::Language { .. } => add_current_language_tasks,
+                TaskSourceKind::Lsp { .. } => include_lsp_tasks,
                 _ => true,
             }
         }));
@@ -325,23 +326,33 @@ impl PickerDelegate for TasksModalDelegate {
                                 let mut new_candidates = used;
                                 let add_current_language_tasks =
                                     !prefer_lsp || lsp_tasks.is_empty();
-                                new_candidates.extend(lsp_tasks.into_iter().flat_map(
-                                    |(kind, tasks_with_locations)| {
-                                        tasks_with_locations
-                                            .into_iter()
-                                            .sorted_by_key(|(location, task)| {
-                                                (location.is_none(), task.resolved_label.clone())
-                                            })
-                                            .map(move |(_, task)| (kind.clone(), task))
-                                    },
-                                ));
-                                // todo(debugger): We're always adding lsp tasks here even if prefer_lsp is false
-                                // We should move the filter to new_candidates instead of on current
-                                // and add a test for this
+                                let include_lsp_tasks = prefer_lsp || lsp_tasks.is_empty();
+                                new_candidates.extend(
+                                    lsp_tasks
+                                        .into_iter()
+                                        .flat_map(|(kind, tasks_with_locations)| {
+                                            tasks_with_locations
+                                                .into_iter()
+                                                .sorted_by_key(|(location, task)| {
+                                                    (
+                                                        location.is_none(),
+                                                        task.resolved_label.clone(),
+                                                    )
+                                                })
+                                                .map(move |(_, task)| (kind.clone(), task))
+                                        })
+                                        .filter(|(task_kind, _)| {
+                                            include_lsp_tasks
+                                                || !matches!(task_kind, TaskSourceKind::Lsp { .. })
+                                        }),
+                                );
                                 new_candidates.extend(current.into_iter().filter(
-                                    |(task_kind, _)| {
-                                        add_current_language_tasks
-                                            || !matches!(task_kind, TaskSourceKind::Language { .. })
+                                    |(task_kind, _)| match task_kind {
+                                        TaskSourceKind::Language { .. } => {
+                                            add_current_language_tasks
+                                        }
+                                        TaskSourceKind::Lsp { .. } => include_lsp_tasks,
+                                        _ => true,
                                     },
                                 ));
                                 let match_candidates = string_match_candidates(&new_candidates);

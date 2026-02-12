@@ -25,7 +25,11 @@ use ui::{
     ContextMenu, ContextMenuEntry, Indicator, PopoverMenu, PopoverMenuHandle, Tooltip, prelude::*,
 };
 
-use util::{ResultExt, paths::PathExt, rel_path::RelPath};
+use util::{
+    ResultExt,
+    paths::{PathExt, SanitizedPath},
+    rel_path::RelPath,
+};
 use workspace::{StatusItemView, Workspace};
 
 use crate::lsp_log_view;
@@ -152,6 +156,7 @@ impl std::fmt::Debug for ActiveEditor {
 
 #[derive(Debug, Default, Clone)]
 struct LanguageServers {
+    known_server_ids: HashSet<LanguageServerId>,
     health_statuses: HashMap<LanguageServerId, LanguageServerHealthStatus>,
     binary_statuses: HashMap<LanguageServerName, LanguageServerBinaryStatus>,
     servers_per_buffer_abs_path: HashMap<PathBuf, ServersForPath>,
@@ -463,8 +468,10 @@ impl LanguageServerState {
 
                                             let worktree = servers.worktree.as_ref()?.upgrade()?;
                                             let worktree_ref = worktree.read(cx);
-                                            let relative_path = abs_path
-                                                .strip_prefix(&worktree_ref.abs_path())
+                                            let relative_path = SanitizedPath::new(abs_path)
+                                                .strip_prefix(SanitizedPath::new(
+                                                    worktree_ref.abs_path().as_ref(),
+                                                ))
                                                 .ok()?;
                                             let relative_path =
                                                 RelPath::new(relative_path, path_style)
@@ -486,8 +493,10 @@ impl LanguageServerState {
                                             .filter_map(|(abs_path, servers)| {
                                                 let worktree =
                                                     servers.worktree.as_ref()?.upgrade()?.read(cx);
-                                                let relative_path = abs_path
-                                                    .strip_prefix(&worktree.abs_path())
+                                                let relative_path = SanitizedPath::new(abs_path)
+                                                    .strip_prefix(SanitizedPath::new(
+                                                        worktree.abs_path().as_ref(),
+                                                    ))
                                                     .ok()?;
                                                 let relative_path =
                                                     RelPath::new(relative_path, path_style)
@@ -638,6 +647,52 @@ impl LanguageServerState {
 }
 
 impl LanguageServers {
+    fn track_server(&mut self, server_id: LanguageServerId, name: Option<&LanguageServerName>) {
+        self.known_server_ids.insert(server_id);
+        if let Some(name) = name {
+            self.binary_statuses
+                .entry(name.clone())
+                .or_insert(LanguageServerBinaryStatus {
+                    status: BinaryStatus::None,
+                    message: None,
+                });
+        }
+    }
+
+    fn is_known_server(&self, server_id: LanguageServerId) -> bool {
+        self.known_server_ids.contains(&server_id)
+    }
+
+    fn remove_server(&mut self, server_id: LanguageServerId) -> bool {
+        if !self.known_server_ids.remove(&server_id) {
+            return false;
+        }
+
+        self.health_statuses.remove(&server_id);
+        for servers_for_path in self.servers_per_buffer_abs_path.values_mut() {
+            servers_for_path.servers.remove(&server_id);
+        }
+        self.servers_per_buffer_abs_path
+            .retain(|_, servers_for_path| !servers_for_path.servers.is_empty());
+
+        let mut names_in_use = HashSet::default();
+        names_in_use.extend(
+            self.health_statuses
+                .values()
+                .map(|status| status.name.clone()),
+        );
+        names_in_use.extend(
+            self.servers_per_buffer_abs_path
+                .values()
+                .flat_map(|servers| servers.servers.values())
+                .flatten()
+                .cloned(),
+        );
+        self.binary_statuses
+            .retain(|server_name, _| names_in_use.contains(server_name));
+        true
+    }
+
     fn update_binary_status(
         &mut self,
         binary_status: BinaryStatus,
@@ -803,14 +858,15 @@ impl LspButton {
 
         let lsp_store = workspace.project().read(cx).lsp_store();
         let mut language_servers = LanguageServers::default();
-        for (_, status) in lsp_store.read(cx).language_server_statuses() {
-            language_servers.binary_statuses.insert(
-                status.name.clone(),
-                LanguageServerBinaryStatus {
-                    status: BinaryStatus::None,
-                    message: None,
-                },
-            );
+        let project = workspace.project();
+        for (server_id, status) in lsp_store.read(cx).language_server_statuses() {
+            let Some(worktree_id) = status.worktree else {
+                continue;
+            };
+            if project.read(cx).worktree_for_id(worktree_id, cx).is_none() {
+                continue;
+            }
+            language_servers.track_server(server_id, Some(&status.name));
         }
 
         let lsp_store_subscription =
@@ -858,14 +914,49 @@ impl LspButton {
         };
         let mut updated = false;
 
-        // TODO `LspStore` is global and reports status from all language servers, even from the other windows.
-        // Also, we do not get "LSP removed" events so LSPs are never removed.
         match e {
+            LspStoreEvent::LanguageServerAdded(language_server_id, name, worktree_id) => {
+                let workspace = self.server_state.read(cx).workspace.clone();
+                let belongs_to_workspace = worktree_id.is_some_and(|worktree_id| {
+                    workspace
+                        .update(cx, |workspace, cx| {
+                            workspace
+                                .project()
+                                .read(cx)
+                                .worktree_for_id(worktree_id, cx)
+                                .is_some()
+                        })
+                        .ok()
+                        .unwrap_or(false)
+                });
+                if belongs_to_workspace {
+                    self.server_state.update(cx, |state, _| {
+                        state
+                            .language_servers
+                            .track_server(*language_server_id, Some(name));
+                    });
+                    updated = true;
+                }
+            }
+            LspStoreEvent::LanguageServerRemoved(language_server_id) => {
+                let removed = self.server_state.update(cx, |state, _| {
+                    state.language_servers.remove_server(*language_server_id)
+                });
+                updated |= removed;
+            }
             LspStoreEvent::LanguageServerUpdate {
                 language_server_id,
                 name,
                 message: proto::update_language_server::Variant::StatusUpdate(status_update),
             } => match &status_update.status {
+                _ if !self
+                    .server_state
+                    .read(cx)
+                    .language_servers
+                    .is_known_server(*language_server_id) =>
+                {
+                    return;
+                }
                 Some(proto::status_update::Status::Binary(binary_status)) => {
                     let Some(name) = name.as_ref() else {
                         return;
@@ -934,6 +1025,9 @@ impl LspButton {
                     }) else {
                         return;
                     };
+                    state
+                        .language_servers
+                        .track_server(*language_server_id, name.as_ref());
                     let entry = state
                         .language_servers
                         .servers_per_buffer_abs_path

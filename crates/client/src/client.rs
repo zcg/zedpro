@@ -19,7 +19,7 @@ use credentials_provider::CredentialsProvider;
 use feature_flags::FeatureFlagAppExt as _;
 use futures::{
     AsyncReadExt, FutureExt, SinkExt, Stream, StreamExt, TryFutureExt as _, TryStreamExt,
-    channel::oneshot, future::BoxFuture,
+    channel::oneshot, future::BoxFuture, lock::Mutex,
 };
 use gpui::{App, AsyncApp, Entity, Global, Task, WeakEntity, actions};
 use http_client::{HttpClient, HttpClientWithUrl, http, read_proxy_from_env};
@@ -78,6 +78,7 @@ pub static ZED_APP_PATH: LazyLock<Option<PathBuf>> =
 
 pub static ZED_ALWAYS_ACTIVE: LazyLock<bool> =
     LazyLock::new(|| std::env::var("ZED_ALWAYS_ACTIVE").is_ok_and(|e| !e.is_empty()));
+static AUTH_WITH_BROWSER_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 pub const INITIAL_RECONNECTION_DELAY: Duration = Duration::from_millis(500);
 pub const MAX_RECONNECTION_DELAY: Duration = Duration::from_secs(30);
@@ -1348,6 +1349,7 @@ impl Client {
         let http = self.http.clone();
         let this = self.clone();
         cx.spawn(async move |cx| {
+            let _auth_guard = AUTH_WITH_BROWSER_LOCK.lock().await;
             let background = cx.background_executor().clone();
 
             let (open_url_tx, open_url_rx) = oneshot::channel::<String>();
@@ -1411,8 +1413,8 @@ impl Client {
                     // Receive the HTTP request from the user's browser. Retrieve the user id and encrypted
                     // access token from the query params.
                     //
-                    // TODO - Avoid ever starting more than one HTTP server. Maybe switch to using a
-                    // custom URL scheme instead of this local HTTP server.
+                    // Browser-auth attempts are serialized with AUTH_WITH_BROWSER_LOCK, so we don't run
+                    // multiple callback HTTP servers concurrently.
                     let (user_id, access_token) = background
                         .spawn(async move {
                             for _ in 0..100 {

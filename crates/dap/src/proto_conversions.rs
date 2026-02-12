@@ -1,7 +1,10 @@
 use anyhow::{Context as _, Result};
 use client::proto::{
     self, DapChecksum, DapChecksumAlgorithm, DapEvaluateContext, DapModule, DapScope,
-    DapScopePresentationHint, DapSource, DapSourcePresentationHint, DapStackFrame, DapVariable,
+    DapScopePresentationHint, DapSource, DapSourcePresentationHint, DapStackFrame,
+    DapStackPresentationHint, DapVariable, DapVariablePresentationHint,
+    DapVariablePresentationHintAttributes, DapVariablePresentationHintKind,
+    DapVariablePresentationHintVisibility,
 };
 use dap_types::{OutputEventCategory, OutputEventGroup, ScopePresentationHint, Source};
 
@@ -81,11 +84,14 @@ impl ProtoConversion for dap_types::Variable {
             name: self.name,
             value: self.value,
             r#type: self.type_,
+            presentation_hint: self.presentation_hint.map(|hint| hint.to_proto()),
             evaluate_name: self.evaluate_name,
             variables_reference: self.variables_reference,
             named_variables: self.named_variables,
             indexed_variables: self.indexed_variables,
             memory_reference: self.memory_reference,
+            declaration_location_reference: self.declaration_location_reference,
+            value_location_reference: self.value_location_reference,
         }
     }
 
@@ -95,13 +101,158 @@ impl ProtoConversion for dap_types::Variable {
             value: payload.value,
             type_: payload.r#type,
             evaluate_name: payload.evaluate_name,
-            presentation_hint: None, // TODO Debugger Collab Add this
+            presentation_hint: payload
+                .presentation_hint
+                .map(dap_types::VariablePresentationHint::from_proto),
             variables_reference: payload.variables_reference,
             named_variables: payload.named_variables,
             indexed_variables: payload.indexed_variables,
             memory_reference: payload.memory_reference,
-            declaration_location_reference: None, // TODO
-            value_location_reference: None,       // TODO
+            declaration_location_reference: payload.declaration_location_reference,
+            value_location_reference: payload.value_location_reference,
+        }
+    }
+}
+
+impl ProtoConversion for dap_types::VariablePresentationHint {
+    type ProtoType = DapVariablePresentationHint;
+    type Output = Self;
+
+    fn to_proto(self) -> Self::ProtoType {
+        DapVariablePresentationHint {
+            kind: self.kind.map(|kind| kind.to_proto().into()),
+            attributes: self
+                .attributes
+                .unwrap_or_default()
+                .into_iter()
+                .map(|attribute| attribute.to_proto().into())
+                .collect(),
+            visibility: self.visibility.map(|visibility| visibility.to_proto().into()),
+            lazy: self.lazy,
+        }
+    }
+
+    fn from_proto(payload: Self::ProtoType) -> Self {
+        let attributes = payload
+            .attributes
+            .into_iter()
+            .filter_map(DapVariablePresentationHintAttributes::from_i32)
+            .map(dap_types::VariablePresentationHintAttributes::from_proto)
+            .collect::<Vec<_>>();
+
+        Self {
+            kind: payload
+                .kind
+                .and_then(DapVariablePresentationHintKind::from_i32)
+                .map(dap_types::VariablePresentationHintKind::from_proto),
+            attributes: (!attributes.is_empty()).then_some(attributes),
+            visibility: payload
+                .visibility
+                .and_then(DapVariablePresentationHintVisibility::from_i32)
+                .map(dap_types::VariablePresentationHintVisibility::from_proto),
+            lazy: payload.lazy,
+        }
+    }
+}
+
+impl ProtoConversion for dap_types::VariablePresentationHintKind {
+    type ProtoType = DapVariablePresentationHintKind;
+    type Output = Self;
+
+    fn to_proto(self) -> Self::ProtoType {
+        match self {
+            Self::Property => Self::ProtoType::VariableProperty,
+            Self::Method => Self::ProtoType::VariableMethod,
+            Self::Class => Self::ProtoType::VariableClass,
+            Self::Data => Self::ProtoType::VariableData,
+            Self::Event => Self::ProtoType::VariableEvent,
+            Self::BaseClass => Self::ProtoType::VariableBaseClass,
+            Self::InnerClass => Self::ProtoType::VariableInnerClass,
+            Self::Interface => Self::ProtoType::VariableInterface,
+            Self::MostDerivedClass => Self::ProtoType::VariableMostDerivedClass,
+            Self::Virtual => Self::ProtoType::VariableVirtual,
+            Self::DataBreakpoint => Self::ProtoType::VariableDataBreakpoint,
+            Self::Unknown => Self::ProtoType::VariableKindUnknown,
+            _ => Self::ProtoType::VariableKindUnknown,
+        }
+    }
+
+    fn from_proto(payload: Self::ProtoType) -> Self {
+        match payload {
+            Self::ProtoType::VariableProperty => Self::Property,
+            Self::ProtoType::VariableMethod => Self::Method,
+            Self::ProtoType::VariableClass => Self::Class,
+            Self::ProtoType::VariableData => Self::Data,
+            Self::ProtoType::VariableEvent => Self::Event,
+            Self::ProtoType::VariableBaseClass => Self::BaseClass,
+            Self::ProtoType::VariableInnerClass => Self::InnerClass,
+            Self::ProtoType::VariableInterface => Self::Interface,
+            Self::ProtoType::VariableMostDerivedClass => Self::MostDerivedClass,
+            Self::ProtoType::VariableVirtual => Self::Virtual,
+            Self::ProtoType::VariableDataBreakpoint => Self::DataBreakpoint,
+            Self::ProtoType::VariableKindUnknown => Self::Unknown,
+        }
+    }
+}
+
+impl ProtoConversion for dap_types::VariablePresentationHintAttributes {
+    type ProtoType = DapVariablePresentationHintAttributes;
+    type Output = Self;
+
+    fn to_proto(self) -> Self::ProtoType {
+        match self {
+            Self::Static => Self::ProtoType::VariableStatic,
+            Self::Constant => Self::ProtoType::VariableConstant,
+            Self::ReadOnly => Self::ProtoType::VariableReadOnly,
+            Self::RawString => Self::ProtoType::VariableRawString,
+            Self::HasObjectId => Self::ProtoType::VariableHasObjectId,
+            Self::CanHaveObjectId => Self::ProtoType::VariableCanHaveObjectId,
+            Self::HasSideEffects => Self::ProtoType::VariableHasSideEffects,
+            Self::HasDataBreakpoint => Self::ProtoType::VariableHasDataBreakpoint,
+            Self::Unknown => Self::ProtoType::VariableAttributeUnknown,
+            _ => Self::ProtoType::VariableAttributeUnknown,
+        }
+    }
+
+    fn from_proto(payload: Self::ProtoType) -> Self {
+        match payload {
+            Self::ProtoType::VariableStatic => Self::Static,
+            Self::ProtoType::VariableConstant => Self::Constant,
+            Self::ProtoType::VariableReadOnly => Self::ReadOnly,
+            Self::ProtoType::VariableRawString => Self::RawString,
+            Self::ProtoType::VariableHasObjectId => Self::HasObjectId,
+            Self::ProtoType::VariableCanHaveObjectId => Self::CanHaveObjectId,
+            Self::ProtoType::VariableHasSideEffects => Self::HasSideEffects,
+            Self::ProtoType::VariableHasDataBreakpoint => Self::HasDataBreakpoint,
+            Self::ProtoType::VariableAttributeUnknown => Self::Unknown,
+        }
+    }
+}
+
+impl ProtoConversion for dap_types::VariablePresentationHintVisibility {
+    type ProtoType = DapVariablePresentationHintVisibility;
+    type Output = Self;
+
+    fn to_proto(self) -> Self::ProtoType {
+        match self {
+            Self::Public => Self::ProtoType::VariablePublic,
+            Self::Private => Self::ProtoType::VariablePrivate,
+            Self::Protected => Self::ProtoType::VariableProtected,
+            Self::Internal => Self::ProtoType::VariableInternal,
+            Self::Final => Self::ProtoType::VariableFinal,
+            Self::Unknown => Self::ProtoType::VariableVisibilityUnknown,
+            _ => Self::ProtoType::VariableVisibilityUnknown,
+        }
+    }
+
+    fn from_proto(payload: Self::ProtoType) -> Self {
+        match payload {
+            Self::ProtoType::VariablePublic => Self::Public,
+            Self::ProtoType::VariablePrivate => Self::Private,
+            Self::ProtoType::VariableProtected => Self::Protected,
+            Self::ProtoType::VariableInternal => Self::Internal,
+            Self::ProtoType::VariableFinal => Self::Final,
+            Self::ProtoType::VariableVisibilityUnknown => Self::Unknown,
         }
     }
 }
@@ -210,7 +361,9 @@ impl ProtoConversion for dap_types::Source {
             presentation_hint: self.presentation_hint.map(|hint| hint.to_proto().into()),
             origin: self.origin,
             sources: self.sources.map(|src| src.to_proto()).unwrap_or_default(),
-            adapter_data: Default::default(), // TODO Debugger Collab
+            adapter_data: self
+                .adapter_data
+                .and_then(|data| serde_json::to_vec(&data).ok()),
             checksums: self.checksums.map(|c| c.to_proto()).unwrap_or_default(),
         }
     }
@@ -227,7 +380,9 @@ impl ProtoConversion for dap_types::Source {
             origin: payload.origin,
             sources: Some(Vec::<dap_types::Source>::from_proto(payload.sources)),
             checksums: Some(Vec::<dap_types::Checksum>::from_proto(payload.checksums)),
-            adapter_data: None, // TODO Debugger Collab
+            adapter_data: payload
+                .adapter_data
+                .and_then(|value| serde_json::from_slice(&value).ok()),
         }
     }
 }
@@ -247,8 +402,10 @@ impl ProtoConversion for dap_types::StackFrame {
             end_column: self.end_column,
             can_restart: self.can_restart,
             instruction_pointer_reference: self.instruction_pointer_reference,
-            module_id: None,         // TODO Debugger Collab
-            presentation_hint: None, // TODO Debugger Collab
+            module_id: self.module_id.map(|module_id| proto::DapModuleId {
+                id: Some(module_id.to_proto()),
+            }),
+            presentation_hint: self.presentation_hint.map(|hint| hint.to_proto().into()),
         }
     }
 
@@ -263,8 +420,38 @@ impl ProtoConversion for dap_types::StackFrame {
             end_column: payload.end_column,
             can_restart: payload.can_restart,
             instruction_pointer_reference: payload.instruction_pointer_reference,
-            module_id: None,         // TODO Debugger Collab
-            presentation_hint: None, // TODO Debugger Collab
+            module_id: payload
+                .module_id
+                .and_then(|module_id| module_id.id)
+                .map(dap_types::ModuleId::from_proto),
+            presentation_hint: payload
+                .presentation_hint
+                .and_then(DapStackPresentationHint::from_i32)
+                .map(dap_types::StackFramePresentationHint::from_proto),
+        }
+    }
+}
+
+impl ProtoConversion for dap_types::StackFramePresentationHint {
+    type ProtoType = DapStackPresentationHint;
+    type Output = Self;
+
+    fn to_proto(self) -> Self::ProtoType {
+        match self {
+            Self::Normal => Self::ProtoType::StackNormal,
+            Self::Label => Self::ProtoType::Label,
+            Self::Subtle => Self::ProtoType::Subtle,
+            Self::Deemphasize => Self::ProtoType::Subtle,
+            Self::Unknown => Self::ProtoType::StackUnknown,
+        }
+    }
+
+    fn from_proto(payload: Self::ProtoType) -> Self {
+        match payload {
+            Self::ProtoType::StackNormal => Self::Normal,
+            Self::ProtoType::Label => Self::Label,
+            Self::ProtoType::Subtle => Self::Subtle,
+            Self::ProtoType::StackUnknown => Self::Unknown,
         }
     }
 }
@@ -461,14 +648,17 @@ impl ProtoConversion for dap_types::CompletionItem {
     }
 
     fn from_proto(payload: Self::ProtoType) -> Self {
-        let typ = payload.typ(); // todo(debugger): This might be a potential issue/bug because it defaults to a type when it's None
+        let completion_type = payload
+            .typ
+            .and_then(proto::DapCompletionItemType::from_i32)
+            .map(dap_types::CompletionItemType::from_proto);
 
         Self {
             label: payload.label,
             detail: payload.detail,
             sort_text: payload.sort_text,
             text: payload.text.clone(),
-            type_: Some(dap_types::CompletionItemType::from_proto(typ)),
+            type_: completion_type,
             start: payload.start,
             length: payload.length,
             selection_start: payload.selection_start,

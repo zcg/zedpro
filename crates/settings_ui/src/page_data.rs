@@ -15,6 +15,8 @@ const DEFAULT_STRING: String = String::new();
 /// A default empty string reference. Useful in `pick` functions for cases either in dynamic item fields, or when dealing with `settings::Maybe`
 /// to avoid the "NO DEFAULT" case.
 const DEFAULT_EMPTY_STRING: Option<&String> = Some(&DEFAULT_STRING);
+const TRUE_BOOL: bool = true;
+const FALSE_BOOL: bool = false;
 
 macro_rules! concat_sections {
     (@vec, $($arr:expr),+ $(,)?) => {{
@@ -1187,28 +1189,27 @@ fn appearance_page() -> SettingsPage {
                 metadata: None,
                 files: USER | PROJECT,
             }),
-            // todo(settings_ui): This needs a custom component
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Wrap Guides",
                 description: "Character counts at which to show wrap guides.",
-                field: Box::new(
-                    SettingField {
-                        json_path: Some("wrap_guides"),
-                        pick: |settings_content| {
-                            settings_content
-                                .project
-                                .all_languages
-                                .defaults
-                                .wrap_guides
-                                .as_ref()
-                        },
-                        write: |settings_content, value| {
-                            settings_content.project.all_languages.defaults.wrap_guides = value;
-                        },
-                    }
-                    .unimplemented(),
-                ),
-                metadata: None,
+                field: Box::new(SettingField {
+                    json_path: Some("wrap_guides"),
+                    pick: |settings_content| {
+                        settings_content
+                            .project
+                            .all_languages
+                            .defaults
+                            .wrap_guides
+                            .as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content.project.all_languages.defaults.wrap_guides = value;
+                    },
+                }),
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    placeholder: Some("80, 100, 120"),
+                    ..Default::default()
+                })),
                 files: USER | PROJECT,
             }),
         ]
@@ -1281,8 +1282,6 @@ fn keymap_page() -> SettingsPage {
     fn modal_editing_section() -> [SettingsPageItem; 3] {
         [
             SettingsPageItem::SectionHeader("Modal Editing"),
-            // todo(settings_ui): Vim/Helix Mode should be apart of one type because it's undefined
-            // behavior to have them both enabled at the same time
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Vim Mode",
                 description: "Enable Vim mode and key bindings.",
@@ -1291,6 +1290,9 @@ fn keymap_page() -> SettingsPage {
                     pick: |settings_content| settings_content.vim_mode.as_ref(),
                     write: |settings_content, value| {
                         settings_content.vim_mode = value;
+                        if value == Some(true) {
+                            settings_content.helix_mode = Some(false);
+                        }
                     },
                 }),
                 metadata: None,
@@ -1304,6 +1306,9 @@ fn keymap_page() -> SettingsPage {
                     pick: |settings_content| settings_content.helix_mode.as_ref(),
                     write: |settings_content, value| {
                         settings_content.helix_mode = value;
+                        if value == Some(true) {
+                            settings_content.vim_mode = Some(false);
+                        }
                     },
                 }),
                 metadata: None,
@@ -1717,12 +1722,11 @@ fn editor_page() -> SettingsPage {
                 metadata: None,
                 files: USER,
             }),
-            // todo(settings ui): add units to this number input
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Delay",
                 description: "Time to wait in milliseconds before showing the informational hover box.",
                 field: Box::new(SettingField {
-                    json_path: Some("hover_popover_enabled"),
+                    json_path: Some("hover_popover_delay"),
                     pick: |settings_content| settings_content.editor.hover_popover_delay.as_ref(),
                     write: |settings_content, value| {
                         settings_content.editor.hover_popover_delay = value;
@@ -2874,10 +2878,9 @@ fn languages_and_tools_page(cx: &App) -> SettingsPage {
                 metadata: None,
                 files: USER,
             }),
-            // todo(settings_ui): Needs unit
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Debounce",
-                description: "Minimum time to wait before pulling diagnostics from the language server(s).",
+                description: "Minimum time in milliseconds to wait before pulling diagnostics from the language server(s).",
                 field: Box::new(SettingField {
                     json_path: Some("diagnostics.lsp_pull_diagnostics.debounce_ms"),
                     pick: |settings_content| {
@@ -2926,8 +2929,6 @@ fn languages_and_tools_page(cx: &App) -> SettingsPage {
     }
 
     fn languages_list_section(cx: &App) -> Box<[SettingsPageItem]> {
-        // todo(settings_ui): Refresh on extension (un)/installed
-        // Note that `crates/json_schema_store` solves the same problem, there is probably a way to unify the two
         std::iter::once(SettingsPageItem::SectionHeader("Languages"))
             .chain(all_language_names(cx).into_iter().map(|language_name| {
                 let link = format!("languages.{language_name}");
@@ -3132,7 +3133,6 @@ fn search_and_files_page() -> SettingsPage {
     fn file_finder_section() -> [SettingsPageItem; 6] {
         [
             SettingsPageItem::SectionHeader("File Finder"),
-            // todo: null by default
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Include Ignored in Search",
                 description: "Use gitignored files when searching.",
@@ -3146,6 +3146,8 @@ fn search_and_files_page() -> SettingsPage {
                             .as_ref()
                     },
                     write: |settings_content, value| {
+                        let value = value
+                            .filter(|value| *value != settings::IncludeIgnoredContent::Smart);
                         settings_content
                             .file_finder
                             .get_or_insert_default()
@@ -3704,18 +3706,13 @@ fn window_and_layout_page() -> SettingsPage {
                 files: USER,
                 title: "Maximum Tabs",
                 description: "Maximum open tabs in a pane. Will not close an unsaved tab.",
-                // todo(settings_ui): The default for this value is null and it's use in code
-                // is complex, so I'm going to come back to this later
-                field: Box::new(
-                    SettingField {
-                        json_path: Some("max_tabs"),
-                        pick: |settings_content| settings_content.workspace.max_tabs.as_ref(),
-                        write: |settings_content, value| {
-                            settings_content.workspace.max_tabs = value;
-                        },
-                    }
-                    .unimplemented(),
-                ),
+                field: Box::new(SettingField {
+                    json_path: Some("max_tabs"),
+                    pick: |settings_content| settings_content.workspace.max_tabs.as_ref(),
+                    write: |settings_content, value| {
+                        settings_content.workspace.max_tabs = value;
+                    },
+                }),
                 metadata: None,
             }),
             SettingsPageItem::SettingItem(SettingItem {
@@ -4070,39 +4067,40 @@ fn window_and_layout_page() -> SettingsPage {
         ]
     }
 
-    fn window_section() -> [SettingsPageItem; 3] {
-        [
-            SettingsPageItem::SectionHeader("Window"),
-            // todo(settings_ui): Should we filter by platform.as_ref()?
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Window Group Tabs",
-                description: "(macOS and Windows) group native windows into a shared tab strip.",
-                field: Box::new(SettingField {
-                    json_path: Some("use_system_window_tabs"),
-                    pick: |settings_content| {
-                        settings_content.workspace.use_system_window_tabs.as_ref()
-                    },
-                    write: |settings_content, value| {
-                        settings_content.workspace.use_system_window_tabs = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
+    fn window_section() -> Box<[SettingsPageItem]> {
+        let mut items = vec![SettingsPageItem::SectionHeader("Window")];
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        items.push(SettingsPageItem::SettingItem(SettingItem {
+            title: "Window Group Tabs",
+            description: "(macOS and Windows) group native windows into a shared tab strip.",
+            field: Box::new(SettingField {
+                json_path: Some("use_system_window_tabs"),
+                pick: |settings_content| settings_content.workspace.use_system_window_tabs.as_ref(),
+                write: |settings_content, value| {
+                    settings_content.workspace.use_system_window_tabs = value;
+                },
             }),
-            SettingsPageItem::SettingItem(SettingItem {
-                title: "Window Decorations",
-                description: "(Linux only) whether Zed or your compositor should draw window decorations.",
-                field: Box::new(SettingField {
-                    json_path: Some("window_decorations"),
-                    pick: |settings_content| settings_content.workspace.window_decorations.as_ref(),
-                    write: |settings_content, value| {
-                        settings_content.workspace.window_decorations = value;
-                    },
-                }),
-                metadata: None,
-                files: USER,
+            metadata: None,
+            files: USER,
+        }));
+
+        #[cfg(target_os = "linux")]
+        items.push(SettingsPageItem::SettingItem(SettingItem {
+            title: "Window Decorations",
+            description: "(Linux only) whether Zed or your compositor should draw window decorations.",
+            field: Box::new(SettingField {
+                json_path: Some("window_decorations"),
+                pick: |settings_content| settings_content.workspace.window_decorations.as_ref(),
+                write: |settings_content, value| {
+                    settings_content.workspace.window_decorations = value;
+                },
             }),
-        ]
+            metadata: None,
+            files: USER,
+        }));
+
+        items.into_boxed_slice()
     }
 
     fn pane_modifiers_section() -> [SettingsPageItem; 4] {
@@ -4992,7 +4990,7 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
-    fn git_panel_section() -> [SettingsPageItem; 10] {
+    fn git_panel_section() -> [SettingsPageItem; 11] {
         [
             SettingsPageItem::SectionHeader("Git Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -5129,6 +5127,24 @@ fn panels_page() -> SettingsPage {
                     },
                     write: |settings_content, value| {
                         settings_content.git_panel.get_or_insert_default().tree_view = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Tree Indent Size",
+                description: "Amount of indentation in pixels for nested items in tree view.",
+                field: Box::new(SettingField {
+                    json_path: Some("git_panel.indent_size"),
+                    pick: |settings_content| {
+                        settings_content.git_panel.as_ref()?.indent_size.as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .git_panel
+                            .get_or_insert_default()
+                            .indent_size = value;
                     },
                 }),
                 metadata: None,
@@ -6447,7 +6463,6 @@ fn version_control_page() -> SettingsPage {
                 metadata: None,
                 files: USER,
             }),
-            // todo(settings_ui): Figure out the right default for this value in default.json
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Debounce",
                 description: "Debounce threshold in milliseconds after which changes are reflected in the Git gutter.",
@@ -7289,7 +7304,7 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                 title: "Tab Size",
                 description: "How many columns a tab should occupy.",
                 field: Box::new(SettingField {
-                    json_path: Some("languages.$(language).tab_size"), // TODO(cameron): not JQ syntax because not URL-safe
+                    json_path: Some("languages.$(language).tab_size"),
                     pick: |settings_content| {
                         language_settings_field(settings_content, |language| {
                             language.tab_size.as_ref()
@@ -7599,26 +7614,25 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Format On Save",
                 description: "Whether or not to perform a buffer format before saving.",
-                field: Box::new(
-                    // TODO(settings_ui): this setting should just be a bool
-                    SettingField {
-                        json_path: Some("languages.$(language).format_on_save"),
-                        pick: |settings_content| {
-                            language_settings_field(settings_content, |language| {
-                                language.format_on_save.as_ref()
+                field: Box::new(SettingField {
+                    json_path: Some("languages.$(language).format_on_save"),
+                    pick: |settings_content| {
+                        language_settings_field(settings_content, |language| {
+                            Some(match language.format_on_save.as_ref()? {
+                                settings::FormatOnSave::On => &TRUE_BOOL,
+                                settings::FormatOnSave::Off => &FALSE_BOOL,
                             })
-                        },
-                        write: |settings_content, value| {
-                            language_settings_field_mut(
-                                settings_content,
-                                value,
-                                |language, value| {
-                                    language.format_on_save = value;
-                                },
-                            )
-                        },
+                        })
                     },
-                ),
+                    write: |settings_content, value| {
+                        language_settings_field_mut(settings_content, value, |language, value| {
+                            language.format_on_save = value.map(|enabled| match enabled {
+                                true => settings::FormatOnSave::On,
+                                false => settings::FormatOnSave::Off,
+                            });
+                        })
+                    },
+                }),
                 metadata: None,
                 files: USER | PROJECT,
             }),
@@ -7799,7 +7813,6 @@ fn language_settings_data() -> Box<[SettingsPageItem]> {
                 description: "Whether to automatically close JSX tags.",
                 field: Box::new(SettingField {
                     json_path: Some("languages.$(language).jsx_tag_auto_close"),
-                    // TODO(settings_ui): this setting should just be a bool
                     pick: |settings_content| {
                         language_settings_field(settings_content, |language| {
                             language.jsx_tag_auto_close.as_ref()?.enabled.as_ref()

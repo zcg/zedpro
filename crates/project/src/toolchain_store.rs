@@ -255,11 +255,10 @@ impl ToolchainStore {
             let Some(toolchain) = envelope.payload.toolchain else {
                 bail!("Missing `toolchain` in payload");
             };
+            let toolchain_path = PathBuf::from(toolchain.path);
             let toolchain = Toolchain {
                 name: toolchain.name.into(),
-                // todo(windows)
-                // Do we need to convert path to native string?
-                path: toolchain.path.into(),
+                path: toolchain_path.to_string_lossy().into_owned().into(),
                 as_json: serde_json::Value::from_str(&toolchain.raw_json)?,
                 language_name,
             };

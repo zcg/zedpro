@@ -1,4 +1,5 @@
-// todo("windows"): remove
+// On Windows, some Scene internals are conditionally unused across renderer paths.
+// Keep this targeted lint allowance until backend cleanup fully converges.
 #![cfg_attr(windows, allow(dead_code))]
 
 use schemars::JsonSchema;

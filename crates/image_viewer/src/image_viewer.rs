@@ -562,11 +562,9 @@ impl Item for ImageView {
         let text = breadcrumbs_text_for_image(self.project.read(cx), self.image_item.read(cx), cx);
         let settings = ThemeSettings::get_global(cx);
 
-        Some(vec![BreadcrumbText {
-            text,
-            highlights: None,
-            font: Some(settings.buffer_font.clone()),
-        }])
+        Some(vec![
+            BreadcrumbText::plain(text).with_font(Some(settings.buffer_font.clone())),
+        ])
     }
 
     fn can_split(&self) -> bool {

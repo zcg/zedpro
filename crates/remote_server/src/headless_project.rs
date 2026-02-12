@@ -1044,10 +1044,7 @@ impl HeadlessProject {
     ) -> Result<proto::Ack> {
         cx.spawn(async move |cx| {
             cx.update(|cx| {
-                // TODO: This is a hack, because in a headless project, shutdown isn't executed
-                // when calling quit, but it should be.
-                cx.shutdown();
-                cx.quit();
+                cx.shutdown_and_quit();
             })
         })
         .detach();

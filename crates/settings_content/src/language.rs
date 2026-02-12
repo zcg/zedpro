@@ -810,7 +810,6 @@ pub struct PrettierSettingsContent {
     pub options: Option<HashMap<String, serde_json::Value>>,
 }
 
-/// TODO: this should just be a bool
 /// Controls the behavior of formatting files when they are saved.
 #[derive(
     Debug,
@@ -825,12 +824,48 @@ pub struct PrettierSettingsContent {
     strum::VariantArray,
     strum::VariantNames,
 )]
-#[serde(rename_all = "lowercase")]
+#[serde(try_from = "FormatOnSaveValue", into = "FormatOnSaveValue")]
 pub enum FormatOnSave {
     /// Files should be formatted on save.
     On,
     /// Files should not be formatted on save.
     Off,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(untagged)]
+enum FormatOnSaveValue {
+    Bool(bool),
+    Text(String),
+}
+
+impl TryFrom<FormatOnSaveValue> for FormatOnSave {
+    type Error = String;
+
+    fn try_from(value: FormatOnSaveValue) -> Result<Self, Self::Error> {
+        match value {
+            FormatOnSaveValue::Bool(true) => Ok(Self::On),
+            FormatOnSaveValue::Bool(false) => Ok(Self::Off),
+            FormatOnSaveValue::Text(value) => match value.as_str() {
+                "on" => Ok(Self::On),
+                "off" => Ok(Self::Off),
+                "true" => Ok(Self::On),
+                "false" => Ok(Self::Off),
+                other => Err(format!(
+                    "invalid format_on_save value `{other}`; expected `on`, `off`, `true`, or `false`"
+                )),
+            },
+        }
+    }
+}
+
+impl From<FormatOnSave> for FormatOnSaveValue {
+    fn from(value: FormatOnSave) -> Self {
+        match value {
+            FormatOnSave::On => Self::Bool(true),
+            FormatOnSave::Off => Self::Bool(false),
+        }
+    }
 }
 
 /// Controls which formatters should be used when formatting code.

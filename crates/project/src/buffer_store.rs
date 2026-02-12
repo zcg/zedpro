@@ -86,11 +86,6 @@ enum OpenBuffer {
 
 pub enum BufferStoreEvent {
     BufferAdded(Entity<Buffer>),
-    // TODO(jk): this event seems unused
-    BufferOpened {
-        buffer: Entity<Buffer>,
-        project_path: ProjectPath,
-    },
     SharedBufferClosed(proto::PeerId, BufferId),
     BufferDropped(BufferId),
     BufferChangedFilePath {
@@ -853,11 +848,6 @@ impl BufferStore {
         cx: &mut Context<Self>,
     ) -> Task<Result<Entity<Buffer>>> {
         if let Some(buffer) = self.get_by_path(&project_path) {
-            cx.emit(BufferStoreEvent::BufferOpened {
-                buffer: buffer.clone(),
-                project_path,
-            });
-
             return Task::ready(Ok(buffer));
         }
 
@@ -879,21 +869,17 @@ impl BufferStore {
 
                 entry
                     .insert(
-                        // todo(lw): hot foreground spawn
                         cx.spawn(async move |this, cx| {
-                            let load_result = load_buffer.await;
-                            this.update(cx, |this, cx| {
+                            let load_result = cx
+                                .background_spawn(
+                                    async move { load_buffer.await.map_err(Arc::new) },
+                                )
+                                .await;
+                            this.update(cx, |this, _cx| {
                                 // Record the fact that the buffer is no longer loading.
                                 this.loading_buffers.remove(&project_path);
-
-                                let buffer = load_result.map_err(Arc::new)?;
-                                cx.emit(BufferStoreEvent::BufferOpened {
-                                    buffer: buffer.clone(),
-                                    project_path,
-                                });
-
-                                Ok(buffer)
-                            })?
+                            })?;
+                            load_result
                         })
                         .shared(),
                     )
@@ -1271,15 +1257,6 @@ impl BufferStore {
                         })
                         .log_err();
                 }
-
-                // TODO(max): do something
-                // client
-                //     .send(proto::UpdateStagedText {
-                //         project_id,
-                //         buffer_id: buffer_id.into(),
-                //         diff_base: buffer.diff_base().map(ToString::to_string),
-                //     })
-                //     .log_err();
 
                 client
                     .send(proto::BufferReloaded {

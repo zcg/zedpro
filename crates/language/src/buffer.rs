@@ -5813,7 +5813,13 @@ impl File for TestFile {
     }
 
     fn disk_state(&self) -> DiskState {
-        unimplemented!()
+        if self.local_root.is_some() {
+            DiskState::Present {
+                mtime: MTime::from_seconds_and_nanos(0, 0),
+            }
+        } else {
+            DiskState::New
+        }
     }
 
     fn file_name<'a>(&'a self, _: &'a gpui::App) -> &'a str {
@@ -5825,7 +5831,15 @@ impl File for TestFile {
     }
 
     fn to_proto(&self, _: &App) -> rpc::proto::File {
-        unimplemented!()
+        let disk_state = self.disk_state();
+        rpc::proto::File {
+            worktree_id: WorktreeId::from_usize(0).to_proto(),
+            entry_id: None,
+            path: self.path.as_ref().to_proto(),
+            mtime: disk_state.mtime().map(|time| time.into()),
+            is_deleted: disk_state.is_deleted(),
+            is_historic: matches!(disk_state, DiskState::Historic { .. }),
+        }
     }
 
     fn is_private(&self) -> bool {
@@ -5846,11 +5860,13 @@ impl LocalFile for TestFile {
     }
 
     fn load(&self, _cx: &App) -> Task<Result<String>> {
-        unimplemented!()
+        let abs_path = self.abs_path(_cx);
+        _cx.background_spawn(async move { Ok(std::fs::read_to_string(abs_path)?) })
     }
 
     fn load_bytes(&self, _cx: &App) -> Task<Result<Vec<u8>>> {
-        unimplemented!()
+        let abs_path = self.abs_path(_cx);
+        _cx.background_spawn(async move { Ok(std::fs::read(abs_path)?) })
     }
 }
 

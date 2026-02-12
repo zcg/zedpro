@@ -624,67 +624,64 @@ impl Focusable for DebugTerminal {
     }
 }
 
+fn for_each_json_string_mut(
+    config: &mut serde_json::Value,
+    map_string: &mut impl FnMut(&mut String),
+) {
+    match config {
+        serde_json::Value::Object(object) => {
+            object
+                .values_mut()
+                .for_each(|value| for_each_json_string_mut(value, map_string));
+        }
+        serde_json::Value::Array(array) => {
+            array
+                .iter_mut()
+                .for_each(|value| for_each_json_string_mut(value, map_string));
+        }
+        serde_json::Value::String(value) => map_string(value),
+        _ => {}
+    }
+}
+
+fn any_json_string(
+    config: &serde_json::Value,
+    predicate: &mut impl FnMut(&str) -> bool,
+) -> bool {
+    match config {
+        serde_json::Value::Object(object) => object.values().any(|value| any_json_string(value, predicate)),
+        serde_json::Value::Array(array) => array.iter().any(|value| any_json_string(value, predicate)),
+        serde_json::Value::String(value) => predicate(value),
+        _ => false,
+    }
+}
+
 impl RunningState {
-    // todo(debugger) move this to util and make it so you pass a closure to it that converts a string
     pub(crate) fn substitute_variables_in_config(
         config: &mut serde_json::Value,
         context: &TaskContext,
     ) {
-        match config {
-            serde_json::Value::Object(obj) => {
-                obj.values_mut()
-                    .for_each(|value| Self::substitute_variables_in_config(value, context));
+        for_each_json_string_mut(config, &mut |value| {
+            if value.starts_with("\"$ZED_") && value.ends_with('"') {
+                *value = value[1..value.len() - 1].to_string();
             }
-            serde_json::Value::Array(array) => {
-                array
-                    .iter_mut()
-                    .for_each(|value| Self::substitute_variables_in_config(value, context));
+
+            if let Some(substituted) = substitute_variables_in_str(value, context) {
+                *value = substituted;
             }
-            serde_json::Value::String(s) => {
-                // Some built-in zed tasks wrap their arguments in quotes as they might contain spaces.
-                if s.starts_with("\"$ZED_") && s.ends_with('"') {
-                    *s = s[1..s.len() - 1].to_string();
-                }
-                if let Some(substituted) = substitute_variables_in_str(s, context) {
-                    *s = substituted;
-                }
-            }
-            _ => {}
-        }
+        });
     }
 
     pub(crate) fn contains_substring(config: &serde_json::Value, substring: &str) -> bool {
-        match config {
-            serde_json::Value::Object(obj) => obj
-                .values()
-                .any(|value| Self::contains_substring(value, substring)),
-            serde_json::Value::Array(array) => array
-                .iter()
-                .any(|value| Self::contains_substring(value, substring)),
-            serde_json::Value::String(s) => s.contains(substring),
-            _ => false,
-        }
+        any_json_string(config, &mut |value| value.contains(substring))
     }
 
     pub(crate) fn substitute_process_id_in_config(config: &mut serde_json::Value, process_id: i32) {
-        match config {
-            serde_json::Value::Object(obj) => {
-                obj.values_mut().for_each(|value| {
-                    Self::substitute_process_id_in_config(value, process_id);
-                });
+        for_each_json_string_mut(config, &mut |value| {
+            if value.contains(PROCESS_ID_PLACEHOLDER.as_str()) {
+                *value = value.replace(PROCESS_ID_PLACEHOLDER.as_str(), &process_id.to_string());
             }
-            serde_json::Value::Array(array) => {
-                array.iter_mut().for_each(|value| {
-                    Self::substitute_process_id_in_config(value, process_id);
-                });
-            }
-            serde_json::Value::String(s) => {
-                if s.contains(PROCESS_ID_PLACEHOLDER.as_str()) {
-                    *s = s.replace(PROCESS_ID_PLACEHOLDER.as_str(), &process_id.to_string());
-                }
-            }
-            _ => {}
-        }
+        });
     }
 
     pub(crate) fn relativize_paths(
@@ -822,7 +819,7 @@ impl RunningState {
                     }
                     SessionEvent::Threads => {
                         let threads = this.session.update(cx, |this, cx| this.threads(cx));
-                        this.select_current_thread(&threads, window, cx);
+                        this.select_current_thread(threads.as_ref(), window, cx);
                     }
                     SessionEvent::CapabilitiesLoaded => {
                         let capabilities = this.capabilities(cx);
@@ -1573,7 +1570,7 @@ impl RunningState {
 
     pub fn select_current_thread(
         &mut self,
-        threads: &Vec<(Thread, ThreadStatus)>,
+        threads: &[(Thread, ThreadStatus)],
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {

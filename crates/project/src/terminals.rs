@@ -25,6 +25,27 @@ pub struct Terminals {
     pub(crate) local_handles: Vec<WeakEntity<terminal::Terminal>>,
 }
 
+fn interactive_shell_reentry_command(shell: &str, shell_kind: ShellKind) -> String {
+    let prefixed_shell = shell_kind.prepend_command_prefix(shell);
+    let shell = shell_kind
+        .try_quote_prefix_aware(prefixed_shell.as_ref())
+        .map(|quoted| quoted.into_owned())
+        .unwrap_or_else(|| prefixed_shell.into_owned());
+
+    match shell_kind {
+        ShellKind::Cmd => format!("call {shell}"),
+        ShellKind::PowerShell | ShellKind::Pwsh => format!("{shell} -NoExit"),
+        ShellKind::Posix
+        | ShellKind::Csh
+        | ShellKind::Tcsh
+        | ShellKind::Rc
+        | ShellKind::Fish
+        | ShellKind::Nushell
+        | ShellKind::Xonsh
+        | ShellKind::Elvish => format!("exec {shell} -l"),
+    }
+}
+
 impl Project {
     pub fn active_entry_directory(&self, cx: &App) -> Option<PathBuf> {
         let entry_id = self.active_entry()?;
@@ -165,8 +186,7 @@ impl Project {
 
                             command.into_iter().chain(args).join(" ")
                         } else {
-                            // todo: this breaks for remotes to windows
-                            format!("exec {shell} -l")
+                            interactive_shell_reentry_command(&shell, shell_kind)
                         }
                     };
 

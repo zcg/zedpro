@@ -493,15 +493,33 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
                 return;
             };
             let path_style = worktree.read(cx).path_style();
-            let Ok(project_path) =
-                RelPath::new(Path::new(&action.filename), path_style).map(|path| ProjectPath {
+            let file_path = Path::new(&action.filename);
+            let project_path = if let Ok(path) = RelPath::new(file_path, path_style) {
+                ProjectPath {
                     worktree_id: worktree.read(cx).id(),
                     path: path.into_arc(),
-                })
-            else {
-                // TODO implement save_as with absolute path
+                }
+            } else if file_path.is_absolute() {
+                let Some(project_path) = project
+                    .read(cx)
+                    .project_path_for_absolute_path(file_path, cx)
+                else {
+                    Task::ready(Err::<(), _>(anyhow!(
+                        "Cannot save buffer with absolute path outside the project"
+                    )))
+                    .detach_and_prompt_err(
+                        "Failed to save",
+                        window,
+                        cx,
+                        |_, _, _| None,
+                    );
+                    return;
+                };
+                project_path
+            } else {
                 Task::ready(Err::<(), _>(anyhow!(
-                    "Cannot save buffer with absolute path"
+                    "Cannot save buffer: invalid path {}",
+                    action.filename
                 )))
                 .detach_and_prompt_err(
                     "Failed to save",
@@ -511,6 +529,11 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
                 );
                 return;
             };
+            let path_style = project
+                .read(cx)
+                .worktree_for_id(project_path.worktree_id, cx)
+                .map(|worktree| worktree.read(cx).path_style())
+                .unwrap_or(path_style);
 
             if project.read(cx).entry_for_path(&project_path, cx).is_some()
                 && action.save_intent != Some(SaveIntent::Overwrite)
@@ -1213,7 +1236,6 @@ impl VimCommand {
         }
     }
 
-    // TODO: ranges with search queries
     fn parse_range(query: &str) -> (Option<CommandRange>, String) {
         let mut chars = query.chars().peekable();
 
@@ -1299,6 +1321,33 @@ impl VimCommand {
                     offset: Self::parse_offset(chars),
                 })
             }
+            '/' | '?' => {
+                let delimiter = chars.next()?;
+                let mut query = String::new();
+                let mut escaped = false;
+
+                for c in chars.by_ref() {
+                    if escaped {
+                        query.push(c);
+                        escaped = false;
+                        continue;
+                    }
+                    if c == '\\' {
+                        escaped = true;
+                        continue;
+                    }
+                    if c == delimiter {
+                        break;
+                    }
+                    query.push(c);
+                }
+
+                Some(Position::Search {
+                    query,
+                    backwards: delimiter == '?',
+                    offset: Self::parse_offset(chars),
+                })
+            }
             _ => None,
         }
     }
@@ -1330,10 +1379,25 @@ impl VimCommand {
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq)]
 enum Position {
-    Line { row: u32, offset: i32 },
-    Mark { name: char, offset: i32 },
-    LastLine { offset: i32 },
-    CurrentLine { offset: i32 },
+    Line {
+        row: u32,
+        offset: i32,
+    },
+    Mark {
+        name: char,
+        offset: i32,
+    },
+    LastLine {
+        offset: i32,
+    },
+    CurrentLine {
+        offset: i32,
+    },
+    Search {
+        query: String,
+        backwards: bool,
+        offset: i32,
+    },
 }
 
 impl Position {
@@ -1387,6 +1451,55 @@ impl Position {
                 .to_point(&snapshot.buffer_snapshot())
                 .row
                 .saturating_add_signed(*offset),
+            Position::Search {
+                query,
+                backwards,
+                offset,
+            } => {
+                let buffer_snapshot = snapshot.buffer_snapshot();
+                let max_row = buffer_snapshot.max_row().0;
+                let current_row = editor
+                    .selections
+                    .newest_anchor()
+                    .head()
+                    .to_point(&buffer_snapshot)
+                    .row;
+
+                let regex =
+                    Regex::new(query).map_err(|error| anyhow!("invalid search query: {error}"))?;
+                let row_matches = |row: u32| {
+                    let start = Point::new(row, 0);
+                    let end = if row < max_row {
+                        Point::new(row + 1, 0)
+                    } else {
+                        buffer_snapshot.max_point()
+                    };
+                    let line = buffer_snapshot
+                        .text_for_range(start..end)
+                        .collect::<String>();
+                    regex.is_match(&line)
+                };
+
+                let matched_row = if *backwards {
+                    (0..=current_row)
+                        .rev()
+                        .find(|row| row_matches(*row))
+                        .or_else(|| {
+                            ((current_row + 1)..=max_row)
+                                .rev()
+                                .find(|row| row_matches(*row))
+                        })
+                } else {
+                    (current_row..=max_row)
+                        .find(|row| row_matches(*row))
+                        .or_else(|| (0..current_row).find(|row| row_matches(*row)))
+                };
+
+                let Some(matched_row) = matched_row else {
+                    anyhow::bail!("search query /{query}/ did not match");
+                };
+                matched_row.saturating_add_signed(*offset)
+            }
         };
 
         Ok(MultiBufferRow(target).min(snapshot.buffer_snapshot().max_row()))
@@ -2630,6 +2743,7 @@ impl ShellExec {
 mod test {
     use std::path::{Path, PathBuf};
 
+    use super::{CommandRange, Position, VimCommand};
     use crate::{
         VimAddon,
         state::Mode,
@@ -2732,6 +2846,24 @@ mod test {
                 b
                 a
                 c"});
+    }
+
+    #[test]
+    fn test_parse_range_search_query() {
+        let (range, query) = VimCommand::parse_range("/foo/,+2d");
+        assert_eq!(query, "d");
+
+        assert_eq!(
+            range,
+            Some(CommandRange {
+                start: Position::Search {
+                    query: "foo".to_string(),
+                    backwards: false,
+                    offset: 0,
+                },
+                end: Some(Position::CurrentLine { offset: 2 }),
+            })
+        );
     }
 
     #[gpui::test]

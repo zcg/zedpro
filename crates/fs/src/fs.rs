@@ -674,7 +674,6 @@ impl Fs for RealFs {
         if let Ok(Some(metadata)) = self.metadata(path).await
             && metadata.is_symlink
         {
-            // TODO: trash_file does not support trashing symlinks yet - https://github.com/bilelmoussaoui/ashpd/issues/255
             return self.remove_file(path, RemoveOptions::default()).await;
         }
         let file = smol::fs::File::open(path).await?;
@@ -696,14 +695,15 @@ impl Fs for RealFs {
             Storage::{StorageDeleteOption, StorageFile},
             core::HSTRING,
         };
-        // todo(windows)
-        // When new version of `windows-rs` release, make this operation `async`
         let path = path.canonicalize()?;
         let path = SanitizedPath::new(&path);
         let path_string = path.to_string();
-        let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path_string))?.get()?;
-        file.DeleteAsync(StorageDeleteOption::Default)?.get()?;
-        Ok(())
+        smol::unblock(move || {
+            let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(path_string))?.get()?;
+            file.DeleteAsync(StorageDeleteOption::Default)?.get()?;
+            Ok(())
+        })
+        .await
     }
 
     #[cfg(target_os = "macos")]
@@ -724,14 +724,16 @@ impl Fs for RealFs {
             core::HSTRING,
         };
 
-        // todo(windows)
-        // When new version of `windows-rs` release, make this operation `async`
         let path = path.canonicalize()?;
         let path = SanitizedPath::new(&path);
         let path_string = path.to_string();
-        let folder = StorageFolder::GetFolderFromPathAsync(&HSTRING::from(path_string))?.get()?;
-        folder.DeleteAsync(StorageDeleteOption::Default)?.get()?;
-        Ok(())
+        smol::unblock(move || {
+            let folder =
+                StorageFolder::GetFolderFromPathAsync(&HSTRING::from(path_string))?.get()?;
+            folder.DeleteAsync(StorageDeleteOption::Default)?.get()?;
+            Ok(())
+        })
+        .await
     }
 
     async fn open_sync(&self, path: &Path) -> Result<Box<dyn io::Read + Send + Sync>> {

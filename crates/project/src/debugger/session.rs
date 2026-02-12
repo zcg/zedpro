@@ -42,9 +42,9 @@ use gpui::{
 };
 use http_client::HttpClient;
 use node_runtime::NodeRuntime;
-use remote::RemoteClient;
+use remote::{RemoteClient, RemoteConnectionOptions};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use smol::net::{TcpListener, TcpStream};
 use std::any::TypeId;
 use std::collections::{BTreeMap, VecDeque};
@@ -65,7 +65,7 @@ use task::SharedTaskContext;
 use text::{PointUtf16, ToPointUtf16};
 use url::Url;
 use util::command::new_smol_command;
-use util::{ResultExt, debug_panic, maybe};
+use util::{ResultExt, debug_panic, maybe, paths::SanitizedPath};
 use worktree::Worktree;
 
 const MAX_TRACKED_OUTPUT_EVENTS: usize = 5000;
@@ -124,15 +124,25 @@ pub struct Thread {
     stack_frames: Vec<StackFrame>,
     stack_frames_error: Option<SharedString>,
     _has_stopped: bool,
+    incarnation: u64,
 }
 
 impl From<dap::Thread> for Thread {
     fn from(dap: dap::Thread) -> Self {
+        Self::with_incarnation(dap, 0)
+    }
+}
+
+pub type ThreadSnapshotEntry = (dap::Thread, ThreadStatus);
+
+impl Thread {
+    fn with_incarnation(dap: dap::Thread, incarnation: u64) -> Self {
         Self {
             dap,
             stack_frames: Default::default(),
             stack_frames_error: None,
             _has_stopped: false,
+            incarnation,
         }
     }
 }
@@ -150,6 +160,13 @@ pub struct DataBreakpointState {
     pub dap: dap::DataBreakpoint,
     pub is_enabled: bool,
     pub context: Arc<DataBreakpointContext>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExceptionBreakpointState {
+    pub filter: ExceptionBreakpointsFilter,
+    pub is_enabled: bool,
+    pub condition: Option<String>,
 }
 
 pub enum SessionState {
@@ -320,23 +337,14 @@ impl RunningMode {
 
     fn send_exception_breakpoints(
         &self,
-        filters: Vec<ExceptionBreakpointsFilter>,
+        filters: Vec<ExceptionFilterOptions>,
         supports_filter_options: bool,
     ) -> Task<Result<Vec<dap::Breakpoint>>> {
         let arg = if supports_filter_options {
-            SetExceptionBreakpoints::WithOptions {
-                filters: filters
-                    .into_iter()
-                    .map(|filter| ExceptionFilterOptions {
-                        filter_id: filter.filter,
-                        condition: None,
-                        mode: None,
-                    })
-                    .collect(),
-            }
+            SetExceptionBreakpoints::WithOptions { filters }
         } else {
             SetExceptionBreakpoints::Plain {
-                filters: filters.into_iter().map(|filter| filter.filter).collect(),
+                filters: filters.into_iter().map(|filter| filter.filter_id).collect(),
             }
         };
         self.request(arg)
@@ -478,8 +486,8 @@ impl RunningMode {
                     }
 
                     if let Some(failed_path) = errors_by_path.keys().next() {
-                        let failed_path = failed_path
-                            .strip_prefix(worktree.read(cx).abs_path())
+                        let failed_path = SanitizedPath::new(failed_path)
+                            .strip_prefix(SanitizedPath::new(worktree.read(cx).abs_path().as_ref()))
                             .unwrap_or(failed_path)
                             .display();
                         let message = format!(
@@ -496,25 +504,45 @@ impl RunningMode {
                 })?;
 
                 if should_send_exception_breakpoints {
+                    let mut exception_filter_options = Vec::new();
                     _ = session.update(cx, |this, _| {
                         filters.retain(|filter| {
-                            let is_enabled = if let Some(defaults) = adapter_defaults.as_ref() {
-                                defaults
-                                    .exception_breakpoints
-                                    .get(&filter.filter)
-                                    .map(|options| options.enabled)
-                                    .unwrap_or_else(|| filter.default.unwrap_or_default())
-                            } else {
-                                filter.default.unwrap_or_default()
-                            };
-                            this.exception_breakpoints
+                            let persisted =
+                                adapter_defaults.as_ref().and_then(|defaults| {
+                                    defaults.exception_breakpoints.get(&filter.filter)
+                                });
+                            let is_enabled = persisted
+                                .map(|options| options.enabled)
+                                .unwrap_or_else(|| filter.default.unwrap_or_default());
+                            let default_condition =
+                                persisted.and_then(|options| options.condition.clone());
+
+                            let state = this
+                                .exception_breakpoints
                                 .entry(filter.filter.clone())
-                                .or_insert_with(|| (filter.clone(), is_enabled));
+                                .or_insert_with(|| ExceptionBreakpointState {
+                                    filter: filter.clone(),
+                                    is_enabled,
+                                    condition: default_condition.clone(),
+                                });
+                            state.filter = filter.clone();
+
+                            if is_enabled {
+                                exception_filter_options.push(ExceptionFilterOptions {
+                                    filter_id: filter.filter.clone(),
+                                    condition: state.condition.clone(),
+                                    mode: None,
+                                });
+                            }
+
                             is_enabled
                         });
                     });
 
-                    this.send_exception_breakpoints(filters, supports_exception_filters)
+                    this.send_exception_breakpoints(
+                        exception_filter_options,
+                        supports_exception_filters,
+                    )
                         .await
                         .ok();
                 }
@@ -672,19 +700,43 @@ impl ThreadStates {
     }
 }
 
-// TODO(debugger): Wrap dap types with reference counting so the UI doesn't have to clone them on refresh
 #[derive(Default)]
 pub struct SessionSnapshot {
     threads: IndexMap<ThreadId, Thread>,
+    thread_entries: Arc<[ThreadSnapshotEntry]>,
     thread_states: ThreadStates,
     variables: HashMap<VariableReference, Vec<dap::Variable>>,
     stack_frames: IndexMap<StackFrameId, StackFrame>,
     locations: HashMap<u64, dap::LocationsResponse>,
-    modules: Vec<dap::Module>,
-    loaded_sources: Vec<dap::Source>,
+    modules: Arc<[dap::Module]>,
+    loaded_sources: Arc<[dap::Source]>,
 }
 
-type IsEnabled = bool;
+impl SessionSnapshot {
+    fn invalidate_thread_entries(&mut self) {
+        self.thread_entries = Arc::default();
+    }
+
+    fn rebuild_thread_entries(&mut self) {
+        self.thread_entries = self
+            .threads
+            .values()
+            .map(|thread| {
+                (
+                    thread.dap.clone(),
+                    self.thread_states.thread_status(ThreadId(thread.dap.id)),
+                )
+            })
+            .collect();
+    }
+
+    fn thread_entries(&mut self) -> Arc<[ThreadSnapshotEntry]> {
+        if self.thread_entries.len() != self.threads.len() {
+            self.rebuild_thread_entries();
+        }
+        self.thread_entries.clone()
+    }
+}
 
 #[derive(Copy, Clone, Default, Debug, PartialEq, PartialOrd, Eq, Ord)]
 pub struct OutputToken(pub usize);
@@ -707,7 +759,7 @@ pub struct Session {
     requests: HashMap<TypeId, HashMap<RequestSlot, Shared<Task<Option<()>>>>>,
     pub(crate) breakpoint_store: Entity<BreakpointStore>,
     ignore_breakpoints: bool,
-    exception_breakpoints: BTreeMap<String, (ExceptionBreakpointsFilter, IsEnabled)>,
+    exception_breakpoints: BTreeMap<String, ExceptionBreakpointState>,
     data_breakpoints: BTreeMap<String, DataBreakpointState>,
     background_tasks: Vec<Task<()>>,
     restart_task: Option<Task<()>>,
@@ -718,6 +770,7 @@ pub struct Session {
     node_runtime: Option<NodeRuntime>,
     http_client: Option<Arc<dyn HttpClient>>,
     companion_port: Option<u16>,
+    next_thread_incarnation: u64,
 }
 
 trait CacheableCommand: Any + Send + Sync {
@@ -893,8 +946,15 @@ impl Session {
                 node_runtime,
                 http_client,
                 companion_port: None,
+                next_thread_incarnation: 1,
             }
         })
+    }
+
+    fn thread_from_dap(&mut self, thread: dap::Thread) -> Thread {
+        let incarnation = self.next_thread_incarnation;
+        self.next_thread_incarnation = self.next_thread_incarnation.wrapping_add(1).max(1);
+        Thread::with_incarnation(thread, incarnation)
     }
 
     pub fn task_context(&self) -> &SharedTaskContext {
@@ -1422,6 +1482,16 @@ impl Session {
             .unwrap_or_else(|| &self.active_snapshot)
     }
 
+    fn session_state_mut(&mut self) -> &mut SessionSnapshot {
+        if let Some(ix) = self.selected_snapshot_index {
+            self.snapshots
+                .get_mut(ix)
+                .expect("selected snapshot index validated before assignment")
+        } else {
+            &mut self.active_snapshot
+        }
+    }
+
     fn push_to_history(&mut self) {
         if !self.has_ever_stopped() {
             return;
@@ -1465,13 +1535,17 @@ impl Session {
         self.push_to_history();
 
         self.state.stopped();
-        // todo(debugger): Find a clean way to get around the clone
-        let breakpoint_store = self.breakpoint_store.clone();
-        if let Some((local, path)) = self.as_running_mut().and_then(|local| {
-            let breakpoint = local.tmp_breakpoint.take()?;
-            let path = breakpoint.path;
-            Some((local, path))
-        }) {
+        let tmp_breakpoint_path = self.as_running_mut().and_then(|local| {
+            local
+                .tmp_breakpoint
+                .take()
+                .map(|breakpoint| breakpoint.path)
+        });
+        if let Some(path) = tmp_breakpoint_path {
+            let breakpoint_store = self.breakpoint_store.clone();
+            let Some(local) = self.as_running_mut() else {
+                return;
+            };
             local
                 .send_breakpoints_from_path(
                     path,
@@ -1480,10 +1554,11 @@ impl Session {
                     cx,
                 )
                 .detach();
-        };
+        }
 
         if event.all_threads_stopped.unwrap_or_default() || event.thread_id.is_none() {
             self.active_snapshot.thread_states.stop_all_threads();
+            self.active_snapshot.invalidate_thread_entries();
             self.invalidate_command_type::<StackTraceCommand>();
         }
 
@@ -1493,6 +1568,7 @@ impl Session {
             self.active_snapshot
                 .thread_states
                 .stop_thread(ThreadId(thread_id));
+            self.active_snapshot.invalidate_thread_entries();
 
             self.invalidate_state(
                 &StackTraceCommand {
@@ -1506,6 +1582,7 @@ impl Session {
 
         self.invalidate_generic();
         self.active_snapshot.threads.clear();
+        self.active_snapshot.invalidate_thread_entries();
         self.active_snapshot.variables.clear();
         cx.emit(SessionEvent::Stopped(
             event
@@ -1529,16 +1606,18 @@ impl Session {
             Events::Continued(event) => {
                 if event.all_threads_continued.unwrap_or_default() {
                     self.active_snapshot.thread_states.continue_all_threads();
+                    self.active_snapshot.invalidate_thread_entries();
                     self.breakpoint_store.update(cx, |store, cx| {
                         store.remove_active_position(Some(self.session_id()), cx)
                     });
+                    self.invalidate_generic();
                 } else {
                     self.active_snapshot
                         .thread_states
                         .continue_thread(ThreadId(event.thread_id));
+                    self.active_snapshot.invalidate_thread_entries();
+                    self.invalidate_command_type::<StackTraceCommand>();
                 }
-                // todo(debugger): We should be able to get away with only invalidating generic if all threads were continued
-                self.invalidate_generic();
             }
             Events::Exited(_event) => {
                 self.clear_active_debug_line(cx);
@@ -1554,9 +1633,11 @@ impl Session {
                         self.active_snapshot
                             .thread_states
                             .continue_thread(thread_id);
+                        self.active_snapshot.invalidate_thread_entries();
                     }
                     dap::ThreadEventReason::Exited => {
                         self.active_snapshot.thread_states.exit_thread(thread_id);
+                        self.active_snapshot.invalidate_thread_entries();
                     }
                     reason => {
                         log::error!("Unhandled thread event reason {:?}", reason);
@@ -1581,29 +1662,26 @@ impl Session {
                 store.update_session_breakpoint(self.session_id(), event.reason, event.breakpoint);
             }),
             Events::Module(event) => {
+                let mut modules = self.active_snapshot.modules.to_vec();
                 match event.reason {
                     dap::ModuleEventReason::New => {
-                        self.active_snapshot.modules.push(event.module);
+                        modules.push(event.module);
                     }
                     dap::ModuleEventReason::Changed => {
-                        if let Some(module) = self
-                            .active_snapshot
-                            .modules
-                            .iter_mut()
-                            .find(|other| event.module.id == other.id)
+                        if let Some(module) =
+                            modules.iter_mut().find(|other| event.module.id == other.id)
                         {
                             *module = event.module;
                         }
                     }
                     dap::ModuleEventReason::Removed => {
-                        self.active_snapshot
-                            .modules
-                            .retain(|other| event.module.id != other.id);
+                        modules.retain(|other| event.module.id != other.id);
                     }
                 }
+                self.active_snapshot.modules = modules.into();
 
-                // todo(debugger): We should only send the invalidate command to downstream clients.
-                // self.invalidate_state(&ModulesCommand.into());
+                cx.emit(SessionEvent::Modules);
+                cx.notify();
             }
             Events::LoadedSource(_) => {
                 self.invalidate_state(&LoadedSourcesCommand.into());
@@ -1621,9 +1699,15 @@ impl Session {
                     .collect::<BTreeMap<_, _>>();
                 for filter in recent_filters.values() {
                     let default = filter.default.unwrap_or_default();
-                    self.exception_breakpoints
+                    let state = self
+                        .exception_breakpoints
                         .entry(filter.filter.clone())
-                        .or_insert_with(|| (filter.clone(), default));
+                        .or_insert_with(|| ExceptionBreakpointState {
+                            filter: filter.clone(),
+                            is_enabled: default,
+                            condition: None,
+                        });
+                    state.filter = filter.clone();
                 }
                 self.exception_breakpoints
                     .retain(|k, _| recent_filters.contains_key(k));
@@ -1723,7 +1807,7 @@ impl Session {
         + 'static,
         cx: &mut Context<Self>,
     ) -> Task<Option<T::Response>> {
-        if !T::is_supported(capabilities) {
+        if !request.supports(capabilities) {
             log::warn!(
                 "Attempted to send a DAP request that isn't supported: {:?}",
                 request
@@ -1798,7 +1882,7 @@ impl Session {
         self.active_snapshot.thread_states.thread_status(thread_id)
     }
 
-    pub fn threads(&mut self, cx: &mut Context<Self>) -> Vec<(dap::Thread, ThreadStatus)> {
+    pub fn threads(&mut self, cx: &mut Context<Self>) -> Arc<[ThreadSnapshotEntry]> {
         self.fetch(
             dap_command::ThreadsCommand,
             |this, result, cx| {
@@ -1806,32 +1890,28 @@ impl Session {
                     return;
                 };
 
-                this.active_snapshot.threads = result
-                    .into_iter()
-                    .map(|thread| (ThreadId(thread.id), Thread::from(thread)))
-                    .collect();
+                let mut threads = IndexMap::default();
+                threads.reserve(result.len());
+                for thread in result {
+                    threads.insert(ThreadId(thread.id), this.thread_from_dap(thread));
+                }
+                this.active_snapshot.threads = threads;
+                this.active_snapshot.invalidate_thread_entries();
+                this.active_snapshot.stack_frames.clear();
 
                 this.invalidate_command_type::<StackTraceCommand>();
+                this.invalidate_command_type::<ScopesCommand>();
+                this.invalidate_command_type::<VariablesCommand>();
                 cx.emit(SessionEvent::Threads);
                 cx.notify();
             },
             cx,
         );
 
-        let state = self.session_state();
-        state
-            .threads
-            .values()
-            .map(|thread| {
-                (
-                    thread.dap.clone(),
-                    state.thread_states.thread_status(ThreadId(thread.dap.id)),
-                )
-            })
-            .collect()
+        self.session_state_mut().thread_entries()
     }
 
-    pub fn modules(&mut self, cx: &mut Context<Self>) -> &[Module] {
+    pub fn modules(&mut self, cx: &mut Context<Self>) -> Arc<[Module]> {
         self.fetch(
             dap_command::ModulesCommand,
             |this, result, cx| {
@@ -1839,14 +1919,14 @@ impl Session {
                     return;
                 };
 
-                this.active_snapshot.modules = result;
+                this.active_snapshot.modules = result.into();
                 cx.emit(SessionEvent::Modules);
                 cx.notify();
             },
             cx,
         );
 
-        &self.session_state().modules
+        self.session_state().modules.clone()
     }
 
     // CodeLLDB returns the size of a pointed-to-memory, which we can use to make the experience of go-to-memory better.
@@ -2005,8 +2085,10 @@ impl Session {
         if let Some(local) = self.as_running() {
             local.send_source_breakpoints(ignore, &self.breakpoint_store, cx)
         } else {
-            // todo(debugger): We need to propagate this change to downstream sessions and send a message to upstream sessions
-            unimplemented!()
+            log::warn!(
+                "Ignoring breakpoint toggle propagation for non-running session: not implemented yet"
+            );
+            Task::ready(HashMap::default())
         }
     }
 
@@ -2016,13 +2098,27 @@ impl Session {
 
     pub fn exception_breakpoints(
         &self,
-    ) -> impl Iterator<Item = &(ExceptionBreakpointsFilter, IsEnabled)> {
+    ) -> impl Iterator<Item = &ExceptionBreakpointState> {
         self.exception_breakpoints.values()
     }
 
     pub fn toggle_exception_breakpoint(&mut self, id: &str, cx: &App) {
-        if let Some((_, is_enabled)) = self.exception_breakpoints.get_mut(id) {
-            *is_enabled = !*is_enabled;
+        if let Some(state) = self.exception_breakpoints.get_mut(id) {
+            state.is_enabled = !state.is_enabled;
+            self.send_exception_breakpoints(cx);
+        }
+    }
+
+    pub fn set_exception_breakpoint_condition(
+        &mut self,
+        id: &str,
+        condition: Option<String>,
+        cx: &App,
+    ) {
+        if let Some(state) = self.exception_breakpoints.get_mut(id)
+            && state.condition != condition
+        {
+            state.condition = condition;
             self.send_exception_breakpoints(cx);
         }
     }
@@ -2032,7 +2128,13 @@ impl Session {
             let exception_filters = self
                 .exception_breakpoints
                 .values()
-                .filter_map(|(filter, is_enabled)| is_enabled.then(|| filter.clone()))
+                .filter_map(|state| {
+                    state.is_enabled.then(|| ExceptionFilterOptions {
+                        filter_id: state.filter.filter.clone(),
+                        condition: state.condition.clone(),
+                        mode: None,
+                    })
+                })
                 .collect();
 
             let supports_exception_filters = self
@@ -2050,7 +2152,35 @@ impl Session {
     pub fn toggle_data_breakpoint(&mut self, id: &str, cx: &mut Context<'_, Session>) {
         if let Some(state) = self.data_breakpoints.get_mut(id) {
             state.is_enabled = !state.is_enabled;
-            self.send_exception_breakpoints(cx);
+            self.send_data_breakpoints(cx);
+        }
+    }
+
+    pub fn set_data_breakpoint_condition(
+        &mut self,
+        id: &str,
+        condition: Option<String>,
+        cx: &mut Context<'_, Session>,
+    ) {
+        if let Some(state) = self.data_breakpoints.get_mut(id)
+            && state.dap.condition != condition
+        {
+            state.dap.condition = condition;
+            self.send_data_breakpoints(cx);
+        }
+    }
+
+    pub fn set_data_breakpoint_hit_condition(
+        &mut self,
+        id: &str,
+        hit_condition: Option<String>,
+        cx: &mut Context<'_, Session>,
+    ) {
+        if let Some(state) = self.data_breakpoints.get_mut(id)
+            && state.dap.hit_condition != hit_condition
+        {
+            state.dap.hit_condition = hit_condition;
+            self.send_data_breakpoints(cx);
         }
     }
 
@@ -2090,20 +2220,20 @@ impl Session {
         self.ignore_breakpoints
     }
 
-    pub fn loaded_sources(&mut self, cx: &mut Context<Self>) -> &[Source] {
+    pub fn loaded_sources(&mut self, cx: &mut Context<Self>) -> Arc<[Source]> {
         self.fetch(
             dap_command::LoadedSourcesCommand,
             |this, result, cx| {
                 let Some(result) = result.log_err() else {
                     return;
                 };
-                this.active_snapshot.loaded_sources = result;
+                this.active_snapshot.loaded_sources = result.into();
                 cx.emit(SessionEvent::LoadedSources);
                 cx.notify();
             },
             cx,
         );
-        &self.session_state().loaded_sources
+        self.session_state().loaded_sources.clone()
     }
 
     fn fallback_to_manual_restart(
@@ -2136,6 +2266,7 @@ impl Session {
             }
             None => {
                 this.active_snapshot.thread_states.stop_thread(thread_id);
+                this.active_snapshot.invalidate_thread_entries();
                 cx.notify();
                 None
             }
@@ -2212,6 +2343,7 @@ impl Session {
 
         self.is_session_terminated = true;
         self.active_snapshot.thread_states.exit_all_threads();
+        self.active_snapshot.invalidate_thread_entries();
         cx.notify();
 
         let task = match &mut self.state {
@@ -2282,6 +2414,7 @@ impl Session {
         self.active_snapshot
             .thread_states
             .continue_thread(thread_id);
+        self.active_snapshot.invalidate_thread_entries();
         self.request(
             ContinueCommand {
                 args: ContinueArguments {
@@ -2330,6 +2463,7 @@ impl Session {
         };
 
         self.active_snapshot.thread_states.process_step(thread_id);
+        self.active_snapshot.invalidate_thread_entries();
         self.request(
             command,
             Self::on_step_response::<NextCommand>(thread_id),
@@ -2362,6 +2496,7 @@ impl Session {
         };
 
         self.active_snapshot.thread_states.process_step(thread_id);
+        self.active_snapshot.invalidate_thread_entries();
         self.request(
             command,
             Self::on_step_response::<StepInCommand>(thread_id),
@@ -2394,6 +2529,7 @@ impl Session {
         };
 
         self.active_snapshot.thread_states.process_step(thread_id);
+        self.active_snapshot.invalidate_thread_entries();
         self.request(
             command,
             Self::on_step_response::<StepOutCommand>(thread_id),
@@ -2426,6 +2562,7 @@ impl Session {
         };
 
         self.active_snapshot.thread_states.process_step(thread_id);
+        self.active_snapshot.invalidate_thread_entries();
 
         self.request(
             command,
@@ -2440,14 +2577,16 @@ impl Session {
         thread_id: ThreadId,
         cx: &mut Context<Self>,
     ) -> Result<Vec<StackFrame>> {
+        let expected_thread_incarnation = self
+            .active_snapshot
+            .threads
+            .get(&thread_id)
+            .map(|thread| thread.incarnation);
         if self.active_snapshot.thread_states.thread_status(thread_id) == ThreadStatus::Stopped
             && self.requests.contains_key(&ThreadsCommand.type_id())
-            && self.active_snapshot.threads.contains_key(&thread_id)
-        // ^ todo(debugger): We need a better way to check that we're not querying stale data
-        // We could still be using an old thread id and have sent a new thread's request
-        // This isn't the biggest concern right now because it hasn't caused any issues outside of tests
-        // But it very well could cause a minor bug in the future that is hard to track down
+            && expected_thread_incarnation.is_some()
         {
+            let expected_thread_incarnation = expected_thread_incarnation.unwrap_or_default();
             self.fetch(
                 super::dap_command::StackTraceCommand {
                     thread_id: thread_id.0,
@@ -2455,28 +2594,33 @@ impl Session {
                     levels: None,
                 },
                 move |this, stack_frames, cx| {
-                    let entry =
-                        this.active_snapshot
-                            .threads
-                            .entry(thread_id)
-                            .and_modify(|thread| match &stack_frames {
-                                Ok(stack_frames) => {
-                                    thread.stack_frames = stack_frames
-                                        .iter()
-                                        .cloned()
-                                        .map(StackFrame::from)
-                                        .collect();
-                                    thread.stack_frames_error = None;
-                                }
-                                Err(error) => {
-                                    thread.stack_frames.clear();
-                                    thread.stack_frames_error = Some(error.to_string().into());
-                                }
-                            });
-                    debug_assert!(
-                        matches!(entry, indexmap::map::Entry::Occupied(_)),
-                        "Sent request for thread_id that doesn't exist"
-                    );
+                    let Some(thread) = this.active_snapshot.threads.get_mut(&thread_id) else {
+                        return;
+                    };
+                    if thread.incarnation != expected_thread_incarnation {
+                        log::debug!(
+                            "Ignoring stale StackTrace response for thread {:?} (expected incarnation {}, found {})",
+                            thread_id,
+                            expected_thread_incarnation,
+                            thread.incarnation
+                        );
+                        return;
+                    }
+
+                    match &stack_frames {
+                        Ok(stack_frames) => {
+                            thread.stack_frames = stack_frames
+                                .iter()
+                                .cloned()
+                                .map(StackFrame::from)
+                                .collect();
+                            thread.stack_frames_error = None;
+                        }
+                        Err(error) => {
+                            thread.stack_frames.clear();
+                            thread.stack_frames_error = Some(error.to_string().into());
+                        }
+                    }
                     if let Ok(stack_frames) = stack_frames {
                         this.active_snapshot.stack_frames.extend(
                             stack_frames
@@ -2965,7 +3109,17 @@ impl Session {
                 }));
             }
 
-            // TODO pass wslInfo as needed
+            if let RemoteConnectionOptions::Wsl(wsl) =
+                remote_client.read_with(cx, |client, _| client.connection_options())
+            {
+                request.other.insert(
+                    "wslInfo".into(),
+                    json!({
+                        "distroName": wsl.distro_name,
+                        "user": wsl.user,
+                    }),
+                );
+            }
 
             let companion_address = format!("127.0.0.1:{companion_port}");
             let mut companion_started = false;

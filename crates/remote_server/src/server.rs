@@ -333,10 +333,7 @@ fn start_server(
                 _ = futures::FutureExt::fuse(cx.background_executor().timer(IDLE_TIMEOUT)) => {
                     log::warn!("timed out waiting for new connections after {:?}. exiting.", IDLE_TIMEOUT);
                     cx.update(|cx| {
-                        // TODO: This is a hack, because in a headless project, shutdown isn't executed
-                        // when calling quit, but it should be.
-                        cx.shutdown();
-                        cx.quit();
+                        cx.shutdown_and_quit();
                     });
                     break;
                 }
@@ -1083,8 +1080,7 @@ fn initialize_settings(
             log::info!("Got new node settings: {new_node_settings:?}");
             let options = NodeBinaryOptions {
                 allow_path_lookup: !new_node_settings.ignore_system_version,
-                // TODO: Implement this setting
-                allow_binary_download: true,
+                allow_binary_download: new_node_settings.allow_binary_download,
                 use_paths: new_node_settings.path.as_ref().map(|node_path| {
                     let node_path = PathBuf::from(shellexpand::tilde(node_path).as_ref());
                     let npm_path = new_node_settings
