@@ -40,7 +40,7 @@ use theme::ActiveTheme;
 use title_bar_settings::TitleBarSettings;
 use ui::{
     Avatar, ButtonLike, Chip, ContextMenu, IconWithIndicator, Indicator, PopoverMenu,
-    PopoverMenuHandle, TintColor, Tooltip, prelude::*, utils::platform_title_bar_height,
+    PopoverMenuHandle, TintColor, Tooltip, prelude::*,
 };
 use update_version::UpdateVersion;
 use util::ResultExt;
@@ -186,14 +186,13 @@ impl Render for TitleBar {
                         || title_bar_settings.show_project_items;
                     title_bar
                         .children(self.render_workspace_sidebar_toggle(window, cx))
-                        .when_some(
-                            self.application_menu.clone().filter(|_| !show_menus),
-                            |title_bar, menu| {
+                        .when_some(self.application_menu.clone(), |title_bar, menu| {
+                            if !show_menus {
                                 render_project_items &=
                                     !menu.update(cx, |menu, cx| menu.all_menus_shown(cx));
-                                title_bar.child(menu)
-                            },
-                        )
+                            }
+                            title_bar.child(menu)
+                        })
                         .children(self.render_restricted_mode(cx))
                         .when(render_project_items, |title_bar| {
                             title_bar
@@ -247,39 +246,10 @@ impl Render for TitleBar {
                 .into_any_element(),
         );
 
-        if show_menus {
-            self.platform_titlebar.update(cx, |this, _| {
-                this.set_children(
-                    self.application_menu
-                        .clone()
-                        .map(|menu| menu.into_any_element()),
-                );
-            });
-
-            let height = platform_title_bar_height(window);
-            let title_bar_color = self.platform_titlebar.update(cx, |platform_titlebar, cx| {
-                platform_titlebar.title_bar_color(window, cx)
-            });
-
-            v_flex()
-                .w_full()
-                .child(self.platform_titlebar.clone().into_any_element())
-                .child(
-                    h_flex()
-                        .bg(title_bar_color)
-                        .h(height)
-                        .pl_2()
-                        .justify_between()
-                        .w_full()
-                        .children(children),
-                )
-                .into_any_element()
-        } else {
-            self.platform_titlebar.update(cx, |this, _| {
-                this.set_children(children);
-            });
-            self.platform_titlebar.clone().into_any_element()
-        }
+        self.platform_titlebar.update(cx, |this, _| {
+            this.set_children(children);
+        });
+        self.platform_titlebar.clone().into_any_element()
     }
 }
 

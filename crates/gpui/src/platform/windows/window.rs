@@ -589,8 +589,10 @@ impl Drop for WindowsWindow {
             .spawn(async move {
                 let handle = this.hwnd;
                 unsafe {
-                    RevokeDragDrop(handle).log_err();
-                    DestroyWindow(handle).log_err();
+                    if IsWindow(Some(handle)).as_bool() {
+                        let _ = RevokeDragDrop(handle);
+                        let _ = DestroyWindow(handle);
+                    }
                 }
                 // Clear the tabbing identifier after `DestroyWindow` so the WM_DESTROY handler
                 // can still see it and coordinate showing the next tab if needed.

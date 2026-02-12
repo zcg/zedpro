@@ -541,6 +541,8 @@ impl SelectionsCollection {
         );
         if cfg!(debug_assertions) {
             let can_resolve_anchors = !snapshot.buffer_snapshot().is_empty();
+            let can_skip_resolve_check =
+                |anchor: &Anchor| anchor.is_min() || anchor.is_max();
             mutable_collection.disjoint.iter().for_each(|selection| {
                 assert!(
                      selection.start.cmp(&selection.end, &snapshot).is_le(),
@@ -549,12 +551,13 @@ impl SelectionsCollection {
                 );
                 if can_resolve_anchors {
                     assert!(
-                        snapshot.can_resolve(&selection.start),
+                        can_skip_resolve_check(&selection.start)
+                            || snapshot.can_resolve(&selection.start),
                         "disjoint selection start is not resolvable for the given snapshot:\n{selection:?}, {excerpt:?}",
                         excerpt = snapshot.buffer_for_excerpt(selection.start.excerpt_id).map(|snapshot| snapshot.remote_id()),
                     );
                     assert!(
-                        snapshot.can_resolve(&selection.end),
+                        can_skip_resolve_check(&selection.end) || snapshot.can_resolve(&selection.end),
                         "disjoint selection end is not resolvable for the given snapshot: {selection:?}, {excerpt:?}",
                         excerpt = snapshot.buffer_for_excerpt(selection.end.excerpt_id).map(|snapshot| snapshot.remote_id()),
                     );
@@ -576,14 +579,15 @@ impl SelectionsCollection {
                 );
                 if can_resolve_anchors {
                     assert!(
-                        snapshot.can_resolve(&selection.start),
+                        can_skip_resolve_check(&selection.start)
+                            || snapshot.can_resolve(&selection.start),
                         "pending selection start is not resolvable for the given snapshot: {pending:?}, {excerpt:?}",
                         excerpt = snapshot
                             .buffer_for_excerpt(selection.start.excerpt_id)
                             .map(|snapshot| snapshot.remote_id()),
                     );
                     assert!(
-                        snapshot.can_resolve(&selection.end),
+                        can_skip_resolve_check(&selection.end) || snapshot.can_resolve(&selection.end),
                         "pending selection end is not resolvable for the given snapshot: {pending:?}, {excerpt:?}",
                         excerpt = snapshot
                             .buffer_for_excerpt(selection.end.excerpt_id)
