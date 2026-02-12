@@ -37,7 +37,7 @@ use util::ResultExt;
 use util::paths::SanitizedPath;
 use util::rel_path::RelPath;
 use workspace::searchable::Direction;
-use workspace::{Workspace, WorkspaceDb, WorkspaceId};
+use workspace::{MultiWorkspace, Workspace, WorkspaceDb, WorkspaceId};
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Mode {
@@ -734,12 +734,16 @@ impl VimGlobals {
                 });
                 GlobalCommandPaletteInterceptor::set(cx, command_interceptor);
                 for window in cx.windows() {
-                    if let Some(workspace) = window.downcast::<Workspace>() {
-                        workspace
-                            .update(cx, |workspace, _, cx| {
-                                Vim::update_globals(cx, |globals, cx| {
-                                    globals.register_workspace(workspace, cx)
-                                });
+                    if let Some(multi_workspace) = window.downcast::<MultiWorkspace>() {
+                        multi_workspace
+                            .update(cx, |multi_workspace, _, cx| {
+                                for workspace in multi_workspace.workspaces() {
+                                    workspace.update(cx, |workspace, cx| {
+                                        Vim::update_globals(cx, |globals, cx| {
+                                            globals.register_workspace(workspace, cx)
+                                        });
+                                    });
+                                }
                             })
                             .ok();
                     }
