@@ -3159,8 +3159,8 @@ fn search_and_files_page() -> SettingsPage {
                             .as_ref()
                     },
                     write: |settings_content, value| {
-                        let value = value
-                            .filter(|value| *value != settings::IncludeIgnoredContent::Smart);
+                        let value =
+                            value.filter(|value| *value != settings::IncludeIgnoredContent::Smart);
                         settings_content
                             .file_finder
                             .get_or_insert_default()
@@ -4084,18 +4084,47 @@ fn window_and_layout_page() -> SettingsPage {
         let mut items = vec![SettingsPageItem::SectionHeader("Window")];
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        items.push(SettingsPageItem::SettingItem(SettingItem {
-            title: "Window Group Tabs",
-            description: "(macOS and Windows) group native windows into a shared tab strip.",
-            field: Box::new(SettingField {
-                json_path: Some("use_system_window_tabs"),
-                pick: |settings_content| settings_content.workspace.use_system_window_tabs.as_ref(),
-                write: |settings_content, value| {
-                    settings_content.workspace.use_system_window_tabs = value;
-                },
-            }),
-            metadata: None,
-            files: USER,
+        items.push(SettingsPageItem::DynamicItem(DynamicItem {
+            discriminant: SettingItem {
+                title: "Window Group Tabs",
+                description: "(macOS and Windows) group native windows into a shared tab strip.",
+                field: Box::new(SettingField {
+                    json_path: Some("use_system_window_tabs"),
+                    pick: |settings_content| {
+                        settings_content.workspace.use_system_window_tabs.as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content.workspace.use_system_window_tabs = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            },
+            pick_discriminant: |settings_content| {
+                let enabled = settings_content
+                    .workspace
+                    .use_system_window_tabs
+                    .unwrap_or(false);
+                Some(if enabled { 1 } else { 0 })
+            },
+            fields: vec![
+                vec![],
+                vec![SettingItem {
+                    title: "Window Tabs Link Mode",
+                    description: "How next/previous switching actions interact with native window tab groups.",
+                    field: Box::new(SettingField {
+                        json_path: Some("window_tab_link_mode"),
+                        pick: |settings_content| {
+                            settings_content.workspace.window_tab_link_mode.as_ref()
+                        },
+                        write: |settings_content, value| {
+                            settings_content.workspace.window_tab_link_mode = value;
+                        },
+                    }),
+                    metadata: None,
+                    files: USER,
+                }],
+            ],
         }));
 
         #[cfg(target_os = "linux")]

@@ -107,6 +107,10 @@ pub struct WorkspaceSettingsContent {
     ///
     /// Default: false
     pub use_system_window_tabs: Option<bool>,
+    /// How next/previous switching actions interact with native window tab groups.
+    ///
+    /// Default: independent
+    pub window_tab_link_mode: Option<WindowTabLinkMode>,
     /// Whether to show padding for zoomed panels.
     /// When enabled, zoomed bottom panels will have some top padding,
     /// while zoomed left/right panels will have padding to the right/left (respectively).
@@ -334,6 +338,28 @@ pub enum WindowDecorations {
     Client,
     /// Show system's window titlebar (server-side decoration; not supported by GNOME Wayland)
     Server,
+}
+
+#[derive(
+    Copy,
+    Clone,
+    Default,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowTabLinkMode {
+    /// Keep internal tab/workspace switching independent from native window tab groups.
+    #[default]
+    Independent,
+    /// Route next/previous switching actions to native window tabs/windows.
+    Linked,
 }
 
 #[derive(

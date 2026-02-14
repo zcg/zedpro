@@ -127,7 +127,9 @@ impl ProtoConversion for dap_types::VariablePresentationHint {
                 .into_iter()
                 .map(|attribute| attribute.to_proto().into())
                 .collect(),
-            visibility: self.visibility.map(|visibility| visibility.to_proto().into()),
+            visibility: self
+                .visibility
+                .map(|visibility| visibility.to_proto().into()),
             lazy: self.lazy,
         }
     }

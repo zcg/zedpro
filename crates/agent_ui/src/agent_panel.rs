@@ -1035,12 +1035,11 @@ impl AgentPanel {
         match self.selected_agent.as_external_agent() {
             None => Some(HistoryKind::TextThreads),
             Some(ExternalAgent::NativeAgent) => Some(HistoryKind::AgentThreads),
-            Some(_) => {
-                self.acp_history
-                    .read(cx)
-                    .has_session_list()
-                    .then_some(HistoryKind::AgentThreads)
-            }
+            Some(_) => self
+                .acp_history
+                .read(cx)
+                .has_session_list()
+                .then_some(HistoryKind::AgentThreads),
         }
     }
 

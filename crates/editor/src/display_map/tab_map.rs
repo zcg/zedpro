@@ -466,17 +466,22 @@ pub struct TabPointCursor<'this> {
 }
 
 impl<'this> TabPointCursor<'this> {
-    fn map_from_previous(&self, previous_input: FoldPoint, previous_output: TabPoint, input: FoldPoint) -> TabPoint {
+    fn map_from_previous(
+        &self,
+        previous_input: FoldPoint,
+        previous_output: TabPoint,
+        input: FoldPoint,
+    ) -> TabPoint {
         let mut expanded_column = previous_output.column();
         let mut input_column = previous_input.column();
 
         let input_start = previous_input.to_offset(&self.this.fold_snapshot);
         let input_end = input.to_offset(&self.this.fold_snapshot);
 
-        for chunk in self
-            .this
-            .fold_snapshot
-            .chunks(input_start..input_end, false, Highlights::default())
+        for chunk in
+            self.this
+                .fold_snapshot
+                .chunks(input_start..input_end, false, Highlights::default())
         {
             for character in chunk.text.chars() {
                 if character == '\t' {

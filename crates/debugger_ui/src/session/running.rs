@@ -644,13 +644,14 @@ fn for_each_json_string_mut(
     }
 }
 
-fn any_json_string(
-    config: &serde_json::Value,
-    predicate: &mut impl FnMut(&str) -> bool,
-) -> bool {
+fn any_json_string(config: &serde_json::Value, predicate: &mut impl FnMut(&str) -> bool) -> bool {
     match config {
-        serde_json::Value::Object(object) => object.values().any(|value| any_json_string(value, predicate)),
-        serde_json::Value::Array(array) => array.iter().any(|value| any_json_string(value, predicate)),
+        serde_json::Value::Object(object) => object
+            .values()
+            .any(|value| any_json_string(value, predicate)),
+        serde_json::Value::Array(array) => {
+            array.iter().any(|value| any_json_string(value, predicate))
+        }
         serde_json::Value::String(value) => predicate(value),
         _ => false,
     }

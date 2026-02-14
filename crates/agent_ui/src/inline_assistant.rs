@@ -1493,9 +1493,7 @@ impl InlineAssistant {
                     .unwrap();
 
                 if start_buffer_id.remote_id() != end_buffer_id.remote_id() {
-                    log::warn!(
-                        "Skipping deleted-line excerpt spanning multiple snapshots/buffers"
-                    );
+                    log::warn!("Skipping deleted-line excerpt spanning multiple snapshots/buffers");
                     continue;
                 }
 

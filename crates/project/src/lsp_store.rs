@@ -2237,8 +2237,12 @@ impl LocalLspStore {
                 let local = _this
                     .as_local_mut()
                     .context("Range formatting via LSP requires a local LSP store")?;
-                let snapshot =
-                    local.snapshot_for_range_formatting(buffer_handle, abs_path, language_server, cx)?;
+                let snapshot = local.snapshot_for_range_formatting(
+                    buffer_handle,
+                    abs_path,
+                    language_server,
+                    cx,
+                )?;
                 for range in ranges {
                     lsp_ranges.push(range_to_lsp(range.to_point_utf16(&snapshot))?);
                 }
@@ -2314,9 +2318,7 @@ impl LocalLspStore {
             let Some(LanguageServerState::Running { adapter, .. }) =
                 self.language_servers.get(&server_id)
             else {
-                anyhow::bail!(
-                    "Cannot format ranges: language server {server_id} is not running"
-                );
+                anyhow::bail!("Cannot format ranges: language server {server_id} is not running");
             };
             let adapter_language_id = adapter.language_id(&language_name);
 
@@ -2332,8 +2334,7 @@ impl LocalLspStore {
                     snapshot: snapshot.clone(),
                 });
             }
-            self
-                .buffers_opened_in_servers
+            self.buffers_opened_in_servers
                 .entry(buffer_id)
                 .or_default()
                 .insert(server_id);
@@ -8036,7 +8037,9 @@ impl LspStore {
 
                             match states {
                                 LanguageServerState::Starting { .. } => None,
-                                LanguageServerState::Running { adapter, server, .. } => {
+                                LanguageServerState::Running {
+                                    adapter, server, ..
+                                } => {
                                     let adapter = adapter.clone();
                                     refreshed_servers.insert(server.name());
                                     let toolchain = seed.toolchain.clone();
@@ -8055,7 +8058,8 @@ impl LspStore {
                                         let live_server = lsp_store_weak
                                             .update(cx, |this, _| {
                                                 let local = this.as_local()?;
-                                                let state = local.language_servers.get(&server_id)?;
+                                                let state =
+                                                    local.language_servers.get(&server_id)?;
                                                 match state {
                                                     LanguageServerState::Running {
                                                         server, ..

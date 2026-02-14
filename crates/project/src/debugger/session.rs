@@ -507,10 +507,9 @@ impl RunningMode {
                     let mut exception_filter_options = Vec::new();
                     _ = session.update(cx, |this, _| {
                         filters.retain(|filter| {
-                            let persisted =
-                                adapter_defaults.as_ref().and_then(|defaults| {
-                                    defaults.exception_breakpoints.get(&filter.filter)
-                                });
+                            let persisted = adapter_defaults.as_ref().and_then(|defaults| {
+                                defaults.exception_breakpoints.get(&filter.filter)
+                            });
                             let is_enabled = persisted
                                 .map(|options| options.enabled)
                                 .unwrap_or_else(|| filter.default.unwrap_or_default());
@@ -543,8 +542,8 @@ impl RunningMode {
                         exception_filter_options,
                         supports_exception_filters,
                     )
-                        .await
-                        .ok();
+                    .await
+                    .ok();
                 }
 
                 if configuration_done_supported {
@@ -2096,9 +2095,7 @@ impl Session {
         self.data_breakpoints.values()
     }
 
-    pub fn exception_breakpoints(
-        &self,
-    ) -> impl Iterator<Item = &ExceptionBreakpointState> {
+    pub fn exception_breakpoints(&self) -> impl Iterator<Item = &ExceptionBreakpointState> {
         self.exception_breakpoints.values()
     }
 

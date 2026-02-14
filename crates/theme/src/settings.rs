@@ -4,9 +4,7 @@ use crate::{
 };
 use collections::HashMap;
 use derive_more::{Deref, DerefMut};
-use gpui::{
-    App, Context, Font, FontFallbacks, FontStyle, Global, Pixels, Subscription, px,
-};
+use gpui::{App, Context, Font, FontFallbacks, FontStyle, Global, Pixels, Subscription, px};
 use refineable::Refineable;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

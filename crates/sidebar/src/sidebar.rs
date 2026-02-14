@@ -5,7 +5,7 @@ use fs::Fs;
 use fuzzy::StringMatchCandidate;
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Render, SharedString,
-    Subscription, Task, Window, px,
+    Subscription, Task, Window, WindowId, px,
 };
 use picker::{Picker, PickerDelegate};
 use project::Event as ProjectEvent;
@@ -22,7 +22,7 @@ use ui_input::ErasedEditor;
 use util::ResultExt as _;
 use workspace::{
     FocusWorkspaceSidebar, MultiWorkspace, NewWorkspaceInWindow, Sidebar as WorkspaceSidebar,
-    SidebarEvent, ToggleWorkspaceSidebar, Workspace,
+    SidebarEvent, SidebarWorkspaceEntry, ToggleWorkspaceSidebar, Workspace,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,15 +47,16 @@ const MAX_MATCHES: usize = 100;
 #[derive(Clone)]
 struct WorkspaceThreadEntry {
     index: usize,
+    workspace: Option<Entity<Workspace>>,
     worktree_label: SharedString,
     full_path: SharedString,
     thread_info: Option<AgentThreadInfo>,
 }
 
 impl WorkspaceThreadEntry {
-    fn new(
+    fn from_workspace(
         index: usize,
-        workspace: &Entity<Workspace>,
+        workspace: Entity<Workspace>,
         persisted_titles: &HashMap<String, String>,
         cx: &App,
     ) -> Self {
@@ -88,7 +89,7 @@ impl WorkspaceThreadEntry {
             .join("\n")
             .into();
 
-        let thread_info = Self::thread_info(workspace, cx).or_else(|| {
+        let thread_info = Self::thread_info(&workspace, cx).or_else(|| {
             if worktrees.is_empty() {
                 return None;
             }
@@ -102,9 +103,26 @@ impl WorkspaceThreadEntry {
 
         Self {
             index,
+            workspace: Some(workspace),
             worktree_label,
             full_path,
             thread_info,
+        }
+    }
+
+    fn from_tab(index: usize, tab_title: SharedString) -> Self {
+        let worktree_label: SharedString = if tab_title.is_empty() {
+            format!("Workspace {}", index + 1).into()
+        } else {
+            tab_title
+        };
+
+        Self {
+            index,
+            workspace: None,
+            full_path: worktree_label.clone(),
+            worktree_label,
+            thread_info: None,
         }
     }
 
@@ -146,6 +164,7 @@ struct SidebarMatch {
 
 struct WorkspacePickerDelegate {
     multi_workspace: Entity<MultiWorkspace>,
+    current_window_id: Option<WindowId>,
     entries: Vec<SidebarEntry>,
     active_workspace_index: usize,
     workspace_thread_count: usize,
@@ -164,6 +183,7 @@ impl WorkspacePickerDelegate {
     fn new(multi_workspace: Entity<MultiWorkspace>) -> Self {
         Self {
             multi_workspace,
+            current_window_id: None,
             entries: Vec::new(),
             active_workspace_index: 0,
             workspace_thread_count: 0,
@@ -250,9 +270,19 @@ impl WorkspacePickerDelegate {
     }
 
     fn open_workspace_path_sets(&self, cx: &App) -> Vec<Vec<Arc<Path>>> {
-        self.multi_workspace
-            .read(cx)
-            .workspaces()
+        let workspaces = self
+            .current_window_id
+            .map(|window_id| {
+                self.multi_workspace
+                    .read(cx)
+                    .sidebar_workspace_entries(window_id, cx)
+                    .into_iter()
+                    .filter_map(|entry| entry.workspace)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        workspaces
             .iter()
             .map(|workspace| {
                 let mut paths = workspace.read(cx).root_paths(cx);
@@ -495,7 +525,7 @@ impl PickerDelegate for WorkspacePickerDelegate {
             SidebarEntry::WorkspaceThread(thread_entry) => {
                 let target_index = thread_entry.index;
                 self.multi_workspace.update(cx, |multi_workspace, cx| {
-                    multi_workspace.activate_index(target_index, window, cx);
+                    multi_workspace.activate_index_with_link_mode(target_index, window, cx);
                 });
             }
             SidebarEntry::RecentProject(project_entry) => {
@@ -539,7 +569,7 @@ impl PickerDelegate for WorkspacePickerDelegate {
                 let thread_info = thread_entry.thread_info.clone();
                 let workspace_index = thread_entry.index;
                 let multi_workspace = self.multi_workspace.clone();
-                let workspace_count = self.multi_workspace.read(cx).workspaces().len();
+                let workspace_count = self.workspace_thread_count;
                 let is_hovered = self.hovered_thread_item == Some(workspace_index);
 
                 let remove_btn = IconButton::new(
@@ -553,13 +583,16 @@ impl PickerDelegate for WorkspacePickerDelegate {
                     let multi_workspace = multi_workspace;
                     move |_, window, cx| {
                         multi_workspace.update(cx, |mw, cx| {
-                            mw.remove_workspace(workspace_index, window, cx);
+                            mw.remove_sidebar_entry(workspace_index, window, cx);
                         });
                     }
                 });
 
                 let has_notification = self.notified_workspaces.contains(&workspace_index);
-                let thread_subtitle = thread_info.as_ref().map(|info| info.title.clone());
+                let thread_subtitle = thread_info
+                    .as_ref()
+                    .map(|info| info.title.clone())
+                    .filter(|title| !title.is_empty());
                 let running = matches!(
                     thread_info,
                     Some(AgentThreadInfo {
@@ -571,14 +604,14 @@ impl PickerDelegate for WorkspacePickerDelegate {
                 Some(
                     ThreadItem::new(
                         ("workspace-item", thread_entry.index),
-                        thread_subtitle.unwrap_or("New Thread".into()),
+                        worktree_label.clone(),
                     )
                     .icon(IconName::Folder)
                     .running(running)
                     .generation_done(has_notification)
                     .selected(selected)
-                    .worktree(worktree_label.clone())
-                    .worktree_highlight_positions(positions.clone())
+                    .highlight_positions(positions.clone())
+                    .when_some(thread_subtitle, |item, subtitle| item.worktree(subtitle))
                     .when(workspace_count > 1, |item| item.action_slot(remove_btn))
                     .hovered(is_hovered)
                     .on_hover(cx.listener(move |picker, is_hovered, _window, cx| {
@@ -652,6 +685,7 @@ pub struct Sidebar {
     width: Pixels,
     picker: Entity<Picker<WorkspacePickerDelegate>>,
     _subscription: Subscription,
+    _window_activation_subscription: Subscription,
     _project_subscriptions: Vec<Subscription>,
     _agent_panel_subscriptions: Vec<Subscription>,
     _thread_subscriptions: Vec<Subscription>,
@@ -685,6 +719,12 @@ impl Sidebar {
                 this.queue_refresh(multi_workspace, window, cx);
             },
         );
+        let window_activation_subscription =
+            cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() {
+                    this.sync_entries_if_stale(window, cx);
+                }
+            });
 
         let fetch_recent_projects = {
             let picker = picker.downgrade();
@@ -710,6 +750,7 @@ impl Sidebar {
             width: DEFAULT_WIDTH,
             picker,
             _subscription: subscription,
+            _window_activation_subscription: window_activation_subscription,
             _project_subscriptions: Vec::new(),
             _agent_panel_subscriptions: Vec::new(),
             _thread_subscriptions: Vec::new(),
@@ -758,19 +799,30 @@ impl Sidebar {
     fn build_workspace_thread_entries(
         &self,
         multi_workspace: &MultiWorkspace,
+        current_window_id: WindowId,
         cx: &App,
     ) -> (Vec<WorkspaceThreadEntry>, usize) {
         let persisted_titles = read_thread_title_map().unwrap_or_default();
 
         #[allow(unused_mut)]
         let mut entries: Vec<WorkspaceThreadEntry> = multi_workspace
-            .workspaces()
-            .iter()
-            .enumerate()
-            .map(|(index, workspace)| {
-                WorkspaceThreadEntry::new(index, workspace, &persisted_titles, cx)
+            .sidebar_workspace_entries(current_window_id, cx)
+            .into_iter()
+            .map(|entry: SidebarWorkspaceEntry| {
+                if let Some(workspace) = entry.workspace {
+                    WorkspaceThreadEntry::from_workspace(
+                        entry.index,
+                        workspace,
+                        &persisted_titles,
+                        cx,
+                    )
+                } else {
+                    WorkspaceThreadEntry::from_tab(entry.index, entry.tab_title)
+                }
             })
             .collect();
+
+        let active_index = multi_workspace.sidebar_active_index(current_window_id, cx);
 
         #[cfg(any(test, feature = "test-support"))]
         for (index, info) in &self.test_thread_infos {
@@ -779,7 +831,7 @@ impl Sidebar {
             }
         }
 
-        (entries, multi_workspace.active_workspace_index())
+        (entries, active_index)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -869,17 +921,14 @@ impl Sidebar {
             .collect()
     }
 
-    fn persist_thread_titles(
-        &self,
-        entries: &[WorkspaceThreadEntry],
-        multi_workspace: &Entity<MultiWorkspace>,
-        cx: &mut Context<Self>,
-    ) {
+    fn persist_thread_titles(&self, entries: &[WorkspaceThreadEntry], cx: &mut Context<Self>) {
         let mut map = read_thread_title_map().unwrap_or_default();
-        let workspaces = multi_workspace.read(cx).workspaces().to_vec();
         let mut changed = false;
 
-        for (workspace, entry) in workspaces.iter().zip(entries.iter()) {
+        for entry in entries {
+            let Some(workspace) = &entry.workspace else {
+                continue;
+            };
             if let Some(ref info) = entry.thread_info {
                 let paths: Vec<_> = workspace
                     .read(cx)
@@ -917,18 +966,20 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let current_window_id = window.window_handle().window_id();
         cx.defer_in(window, move |this, window, cx| {
             this._project_subscriptions = this.subscribe_to_projects(window, cx);
             this._agent_panel_subscriptions = this.subscribe_to_agent_panels(window, cx);
             this._thread_subscriptions = this.subscribe_to_threads(window, cx);
             let (entries, active_index) = multi_workspace.read_with(cx, |multi_workspace, cx| {
-                this.build_workspace_thread_entries(multi_workspace, cx)
+                this.build_workspace_thread_entries(multi_workspace, current_window_id, cx)
             });
 
-            this.persist_thread_titles(&entries, &multi_workspace, cx);
+            this.persist_thread_titles(&entries, cx);
 
             let had_notifications = !this.picker.read(cx).delegate.notified_workspaces.is_empty();
             this.picker.update(cx, |picker, cx| {
+                picker.delegate.current_window_id = Some(current_window_id);
                 picker.delegate.set_entries(entries, active_index, cx);
                 let query = picker.query(cx);
                 picker.update_matches(query, window, cx);
@@ -938,6 +989,35 @@ impl Sidebar {
                 multi_workspace.update(cx, |_, cx| cx.notify());
             }
         });
+    }
+
+    fn sync_entries_if_stale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current_window_id = window.window_handle().window_id();
+        let (expected_count, expected_active_index) =
+            self.multi_workspace.read_with(cx, |multi_workspace, cx| {
+                (
+                    multi_workspace
+                        .sidebar_workspace_entries(current_window_id, cx)
+                        .len(),
+                    multi_workspace.sidebar_active_index(current_window_id, cx),
+                )
+            });
+
+        let (current_window, current_count, current_active) = {
+            let picker = self.picker.read(cx);
+            (
+                picker.delegate.current_window_id,
+                picker.delegate.workspace_thread_count,
+                picker.delegate.active_workspace_index,
+            )
+        };
+
+        if current_window != Some(current_window_id)
+            || current_count != expected_count
+            || current_active != expected_active_index
+        {
+            self.queue_refresh(self.multi_workspace.clone(), window, cx);
+        }
     }
 }
 

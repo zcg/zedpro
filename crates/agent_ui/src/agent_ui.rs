@@ -25,7 +25,7 @@ mod ui;
 use std::rc::Rc;
 use std::sync::Arc;
 
-// Another comment
+use ::ui::IconName;
 use agent_settings::{AgentProfileId, AgentSettings};
 use assistant_slash_command::SlashCommandRegistry;
 use client::Client;
@@ -46,7 +46,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use settings::{LanguageModelSelection, Settings as _, SettingsStore};
 use std::any::TypeId;
-use ::ui::IconName;
 use workspace::Workspace;
 
 use crate::agent_configuration::{ConfigureContextServerModal, ManageProfilesModal};

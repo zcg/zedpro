@@ -435,6 +435,10 @@
   },
   // Whether to group native windows into a shared tab strip (macOS and Windows).
   "use_system_window_tabs": false,
+  // How next/previous switching actions interact with native window tab groups.
+  // independent: use internal tab/workspace switching behavior
+  // linked: route next/previous switching to native window tabs/windows
+  "window_tab_link_mode": "independent",
   // Titlebar related settings
   "title_bar": {
     // Whether to show the branch icon beside branch switcher in the titlebar.
@@ -2445,12 +2449,19 @@
   // Configures agent servers available in the agent panel.
   "agent_servers": {},
   "debugger": {
+    // Default stepping granularity used by stepping actions.
     "stepping_granularity": "line",
+    // Whether to persist breakpoints between sessions.
     "save_breakpoints": true,
+    // Timeout (ms) for debugger requests that expect a response.
     "timeout": 2000,
+    // Dock position for the debugger panel: left, right, or bottom.
     "dock": "bottom",
+    // Whether to log raw DAP request/response payloads.
     "log_dap_communications": true,
+    // Whether to pretty-format DAP log messages for readability.
     "format_dap_log_messages": true,
+    // Whether to show the debugger button in the status bar.
     "button": true,
   },
   // Configures any number of settings profiles that are temporarily applied on

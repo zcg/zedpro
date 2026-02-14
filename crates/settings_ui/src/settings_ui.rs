@@ -539,6 +539,7 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::EditPredictionsMode>(render_dropdown)
         .add_basic_renderer::<settings::RelativeLineNumbers>(render_dropdown)
         .add_basic_renderer::<settings::WindowDecorations>(render_dropdown)
+        .add_basic_renderer::<settings::WindowTabLinkMode>(render_dropdown)
         .add_basic_renderer::<settings::FontSize>(render_editable_number_field)
         .add_basic_renderer::<settings::OllamaModelName>(render_ollama_model_picker)
         .add_basic_renderer::<settings::SemanticTokens>(render_dropdown)
@@ -4100,10 +4101,7 @@ fn render_optional_f32_field(
     cx: &mut App,
 ) -> AnyElement {
     let (_, value) = SettingsStore::global(cx).get_value_from_file(file.to_settings(), field.pick);
-    let initial_text = value
-        .copied()
-        .flatten()
-        .map(|value| value.to_string());
+    let initial_text = value.copied().flatten().map(|value| value.to_string());
 
     SettingsInputField::new()
         .tab_index(0)
@@ -4115,17 +4113,29 @@ fn render_optional_f32_field(
         .on_confirm({
             move |new_text, window, cx| {
                 let Some(new_text) = new_text else {
-                    let _ = update_settings_file(file.clone(), field.json_path, window, cx, move |settings, _cx| {
-                        (field.write)(settings, None);
-                    });
+                    let _ = update_settings_file(
+                        file.clone(),
+                        field.json_path,
+                        window,
+                        cx,
+                        move |settings, _cx| {
+                            (field.write)(settings, None);
+                        },
+                    );
                     return;
                 };
 
                 let new_text = new_text.trim();
                 if new_text.is_empty() {
-                    let _ = update_settings_file(file.clone(), field.json_path, window, cx, move |settings, _cx| {
-                        (field.write)(settings, None);
-                    });
+                    let _ = update_settings_file(
+                        file.clone(),
+                        field.json_path,
+                        window,
+                        cx,
+                        move |settings, _cx| {
+                            (field.write)(settings, None);
+                        },
+                    );
                     return;
                 }
 
@@ -4133,9 +4143,15 @@ fn render_optional_f32_field(
                     return;
                 };
 
-                let _ = update_settings_file(file.clone(), field.json_path, window, cx, move |settings, _cx| {
-                    (field.write)(settings, Some(Some(value)));
-                });
+                let _ = update_settings_file(
+                    file.clone(),
+                    field.json_path,
+                    window,
+                    cx,
+                    move |settings, _cx| {
+                        (field.write)(settings, Some(Some(value)));
+                    },
+                );
             }
         })
         .into_any_element()

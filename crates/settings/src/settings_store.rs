@@ -571,7 +571,11 @@ impl SettingsStore {
             .rev()
             .cloned()
             .map(SettingsFile::Project)
-            .chain(self.server_settings.is_some().then_some(SettingsFile::Server))
+            .chain(
+                self.server_settings
+                    .is_some()
+                    .then_some(SettingsFile::Server),
+            )
             .chain(self.user_settings.is_some().then_some(SettingsFile::User))
             .chain(std::iter::once(SettingsFile::Default))
     }

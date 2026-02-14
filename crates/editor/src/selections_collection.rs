@@ -541,8 +541,7 @@ impl SelectionsCollection {
         );
         if cfg!(debug_assertions) {
             let can_resolve_anchors = !snapshot.buffer_snapshot().is_empty();
-            let can_skip_resolve_check =
-                |anchor: &Anchor| anchor.is_min() || anchor.is_max();
+            let can_skip_resolve_check = |anchor: &Anchor| anchor.is_min() || anchor.is_max();
             mutable_collection.disjoint.iter().for_each(|selection| {
                 assert!(
                      selection.start.cmp(&selection.end, &snapshot).is_le(),
@@ -587,7 +586,8 @@ impl SelectionsCollection {
                             .map(|snapshot| snapshot.remote_id()),
                     );
                     assert!(
-                        can_skip_resolve_check(&selection.end) || snapshot.can_resolve(&selection.end),
+                        can_skip_resolve_check(&selection.end)
+                            || snapshot.can_resolve(&selection.end),
                         "pending selection end is not resolvable for the given snapshot: {pending:?}, {excerpt:?}",
                         excerpt = snapshot
                             .buffer_for_excerpt(selection.end.excerpt_id)
@@ -1290,11 +1290,9 @@ where
         }
     });
     let (to_convert, selections) = coalesce_selections(wrapped_points).tee();
-    let mut converted_endpoints =
-        map.buffer_snapshot()
-            .dimensions_from_points::<D>(to_convert.flat_map(|s| {
-                [s.start, s.end]
-            }));
+    let mut converted_endpoints = map
+        .buffer_snapshot()
+        .dimensions_from_points::<D>(to_convert.flat_map(|s| [s.start, s.end]));
     selections.map(move |s| {
         let start = converted_endpoints.next().unwrap();
         let end = converted_endpoints.next().unwrap();

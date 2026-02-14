@@ -32,6 +32,9 @@ pub struct WorkspaceSettings {
     pub resize_all_panels_in_dock: Vec<DockPosition>,
     pub close_on_file_delete: bool,
     pub use_system_window_tabs: bool,
+    /// Controls how next/previous switching actions interact with native window tab groups.
+    /// See `settings::WindowTabLinkMode` for supported values.
+    pub window_tab_link_mode: settings::WindowTabLinkMode,
     pub zoomed_padding: bool,
     pub window_decorations: settings::WindowDecorations,
 }
@@ -112,6 +115,7 @@ impl Settings for WorkspaceSettings {
                 .collect(),
             close_on_file_delete: workspace.close_on_file_delete.unwrap(),
             use_system_window_tabs: workspace.use_system_window_tabs.unwrap(),
+            window_tab_link_mode: workspace.window_tab_link_mode.unwrap(),
             zoomed_padding: workspace.zoomed_padding.unwrap(),
             window_decorations: workspace.window_decorations.unwrap(),
         }

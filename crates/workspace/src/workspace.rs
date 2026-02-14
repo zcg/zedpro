@@ -26,7 +26,7 @@ pub use dock::Panel;
 pub use multi_workspace::{
     DraggedSidebar, FocusWorkspaceSidebar, MultiWorkspace, NewWorkspaceInWindow,
     NextWorkspaceInWindow, PreviousWorkspaceInWindow, Sidebar, SidebarEvent, SidebarHandle,
-    ToggleWorkspaceSidebar,
+    SidebarWorkspaceEntry, ToggleWorkspaceSidebar,
 };
 pub use path_list::PathList;
 pub use toast_layer::{ToastAction, ToastLayer, ToastView};
@@ -3174,8 +3174,11 @@ impl Workspace {
         match path {
             ResolvedPath::ProjectPath { project_path, .. } => {
                 if !keep_old_preview
-                    && let Some(old_item_id) =
-                        self.active_pane.read(cx).active_item().map(|item| item.item_id())
+                    && let Some(old_item_id) = self
+                        .active_pane
+                        .read(cx)
+                        .active_item()
+                        .map(|item| item.item_id())
                 {
                     self.active_pane
                         .update(cx, |pane, _| pane.unpreview_item_if_preview(old_item_id));
@@ -5072,6 +5075,11 @@ impl Workspace {
         self.update_window_title(window, cx);
     }
 
+    pub fn refresh_window_chrome(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_window_title(window, cx);
+        self.update_window_edited(window, cx);
+    }
+
     fn update_window_title(&mut self, window: &mut Window, cx: &mut App) {
         let project = self.project().read(cx);
         let mut title = String::new();
@@ -5121,8 +5129,10 @@ impl Workspace {
             title.push_str(" ↗");
         }
 
+        let platform_window_title = window.window_title();
         if let Some(last_title) = self.last_window_title.as_ref()
             && &title == last_title
+            && platform_window_title == title
         {
             return;
         }
@@ -5733,6 +5743,7 @@ impl Workspace {
 
     pub fn on_window_activation_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if window.is_window_active() {
+            self.refresh_window_chrome(window, cx);
             self.update_active_view_for_followers(window, cx);
 
             if let Some(database_id) = self.database_id {
@@ -6499,6 +6510,11 @@ impl Workspace {
             .on_action(cx.listener(Workspace::toggle_centered_layout))
             .on_action(cx.listener(
                 |workspace: &mut Workspace, _action: &pane::ActivateNextItem, window, cx| {
+                    if Workspace::should_use_linked_window_tab_navigation(cx) {
+                        workspace.activate_next_window(cx);
+                        return;
+                    }
+
                     if let Some(active_dock) = workspace.active_dock(window, cx) {
                         let dock = active_dock.read(cx);
                         if let Some(active_panel) = dock.active_panel() {
@@ -6540,6 +6556,11 @@ impl Workspace {
             ))
             .on_action(cx.listener(
                 |workspace: &mut Workspace, _action: &pane::ActivatePreviousItem, window, cx| {
+                    if Workspace::should_use_linked_window_tab_navigation(cx) {
+                        workspace.activate_previous_window(cx);
+                        return;
+                    }
+
                     if let Some(active_dock) = workspace.active_dock(window, cx) {
                         let dock = active_dock.read(cx);
                         if let Some(active_panel) = dock.active_panel() {
@@ -6794,6 +6815,12 @@ impl Workspace {
                 .update(cx, |_, window, _| window.activate_window())
                 .ok();
         }
+    }
+
+    fn should_use_linked_window_tab_navigation(cx: &App) -> bool {
+        let settings = WorkspaceSettings::get_global(cx);
+        settings.use_system_window_tabs
+            && settings.window_tab_link_mode == settings::WindowTabLinkMode::Linked
     }
 
     pub fn activate_previous_window(&mut self, cx: &mut Context<Self>) {

@@ -617,9 +617,7 @@ impl RemoteImageStore {
                             true
                         };
 
-                    if should_add_to_store
-                        && let Some(image_store) = self.image_store.upgrade()
-                    {
+                    if should_add_to_store && let Some(image_store) = self.image_store.upgrade() {
                         image_store.update(cx, |image_store, cx| {
                             image_store.add_image(entity, cx).ok();
                         });
@@ -666,33 +664,31 @@ impl RemoteImageStore {
             .collect::<HashSet<_>>();
         let worktree = worktree.clone();
 
-        let images_to_reload = image_store
-            .update(cx, |image_store, cx| {
-                image_store
-                    .images()
-                    .filter_map(|image| {
-                        let file = &image.read(cx).file;
-                        let matches_worktree = file.worktree == worktree;
-                        let matches_entry = file
-                            .entry_id
-                            .is_some_and(|entry_id| changed_entries.contains(&entry_id));
-                        let matches_path = changed_paths.contains(file.path.as_ref());
-                        (matches_worktree && (matches_entry || matches_path)).then_some(image)
-                    })
-                    .collect::<Vec<_>>()
-            });
+        let images_to_reload = image_store.update(cx, |image_store, cx| {
+            image_store
+                .images()
+                .filter_map(|image| {
+                    let file = &image.read(cx).file;
+                    let matches_worktree = file.worktree == worktree;
+                    let matches_entry = file
+                        .entry_id
+                        .is_some_and(|entry_id| changed_entries.contains(&entry_id));
+                    let matches_path = changed_paths.contains(file.path.as_ref());
+                    (matches_worktree && (matches_entry || matches_path)).then_some(image)
+                })
+                .collect::<Vec<_>>()
+        });
 
         if images_to_reload.is_empty() {
             return;
         }
 
         if let Some(image_store) = self.image_store.upgrade() {
-            image_store
-                .update(cx, |image_store, cx| {
-                    image_store
-                        .reload_images(images_to_reload.into_iter().collect(), cx)
-                        .detach_and_log_err(cx);
-                });
+            image_store.update(cx, |image_store, cx| {
+                image_store
+                    .reload_images(images_to_reload.into_iter().collect(), cx)
+                    .detach_and_log_err(cx);
+            });
         }
     }
 }
