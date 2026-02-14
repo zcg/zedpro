@@ -494,7 +494,7 @@ impl MultiWorkspace {
     fn focus_active_workspace(&self, window: &mut Window, cx: &mut App) {
         let workspace = self.workspace().clone();
         workspace.update(cx, |workspace, cx| {
-            workspace.refresh_window_chrome(window, cx);
+            workspace.refresh_window_title_and_edited_state(window, cx);
         });
 
         let focus_handle = {

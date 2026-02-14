@@ -5122,7 +5122,11 @@ impl Workspace {
         self.update_window_title(window, cx);
     }
 
-    pub fn refresh_window_chrome(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn refresh_window_title_and_edited_state(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.update_window_title(window, cx);
         self.update_window_edited(window, cx);
     }
@@ -5790,7 +5794,7 @@ impl Workspace {
 
     pub fn on_window_activation_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if window.is_window_active() {
-            self.refresh_window_chrome(window, cx);
+            self.refresh_window_title_and_edited_state(window, cx);
             self.update_active_view_for_followers(window, cx);
 
             if let Some(database_id) = self.database_id {

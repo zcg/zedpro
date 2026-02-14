@@ -50,6 +50,7 @@ struct WorkspaceThreadEntry {
     workspace: Option<Entity<Workspace>>,
     worktree_label: SharedString,
     full_path: SharedString,
+    tab_title: SharedString,
     thread_info: Option<AgentThreadInfo>,
 }
 
@@ -57,6 +58,7 @@ impl WorkspaceThreadEntry {
     fn from_workspace(
         index: usize,
         workspace: Entity<Workspace>,
+        tab_title: SharedString,
         persisted_titles: &HashMap<String, String>,
         cx: &App,
     ) -> Self {
@@ -106,6 +108,7 @@ impl WorkspaceThreadEntry {
             workspace: Some(workspace),
             worktree_label,
             full_path,
+            tab_title,
             thread_info,
         }
     }
@@ -114,7 +117,7 @@ impl WorkspaceThreadEntry {
         let worktree_label: SharedString = if tab_title.is_empty() {
             format!("Workspace {}", index + 1).into()
         } else {
-            tab_title
+            tab_title.clone()
         };
 
         Self {
@@ -122,6 +125,7 @@ impl WorkspaceThreadEntry {
             workspace: None,
             full_path: worktree_label.clone(),
             worktree_label,
+            tab_title,
             thread_info: None,
         }
     }
@@ -584,10 +588,11 @@ impl PickerDelegate for WorkspacePickerDelegate {
                 });
 
                 let has_notification = self.notified_workspaces.contains(&workspace_index);
-                let thread_subtitle = thread_info
-                    .as_ref()
-                    .map(|info| info.title.clone())
-                    .filter(|title| !title.is_empty());
+                let thread_subtitle = if thread_entry.tab_title.is_empty() {
+                    Some(worktree_label.clone())
+                } else {
+                    Some(thread_entry.tab_title.clone())
+                };
                 let running = matches!(
                     thread_info,
                     Some(AgentThreadInfo {
@@ -717,7 +722,7 @@ impl Sidebar {
         let window_activation_subscription =
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
-                    this.sync_entries_if_stale(window, cx);
+                    this.queue_refresh(this.multi_workspace.clone(), window, cx);
                 }
             });
 
@@ -808,6 +813,7 @@ impl Sidebar {
                     WorkspaceThreadEntry::from_workspace(
                         entry.index,
                         workspace,
+                        entry.tab_title,
                         &persisted_titles,
                         cx,
                     )
@@ -986,34 +992,6 @@ impl Sidebar {
         });
     }
 
-    fn sync_entries_if_stale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let current_window_id = window.window_handle().window_id();
-        let (expected_count, expected_active_index) =
-            self.multi_workspace.read_with(cx, |multi_workspace, cx| {
-                (
-                    multi_workspace
-                        .sidebar_workspace_entries(current_window_id, cx)
-                        .len(),
-                    multi_workspace.sidebar_active_index(current_window_id, cx),
-                )
-            });
-
-        let (current_window, current_count, current_active) = {
-            let picker = self.picker.read(cx);
-            (
-                picker.delegate.current_window_id,
-                picker.delegate.workspace_thread_count,
-                picker.delegate.active_workspace_index,
-            )
-        };
-
-        if current_window != Some(current_window_id)
-            || current_count != expected_count
-            || current_active != expected_active_index
-        {
-            self.queue_refresh(self.multi_workspace.clone(), window, cx);
-        }
-    }
 }
 
 impl WorkspaceSidebar for Sidebar {
