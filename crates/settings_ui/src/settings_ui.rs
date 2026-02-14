@@ -51,6 +51,7 @@ use crate::components::{
     SettingsSectionHeader, font_picker, icon_theme_picker, render_ollama_model_picker,
     theme_picker,
 };
+use crate::pages::{render_input_audio_device_dropdown, render_output_audio_device_dropdown};
 
 const NAVBAR_CONTAINER_TAB_INDEX: isize = 0;
 const NAVBAR_GROUP_TAB_INDEX: isize = 1;
@@ -396,7 +397,7 @@ pub fn init(cx: &mut App) {
                         .window_handle()
                         .downcast::<MultiWorkspace>()
                         .expect("Workspaces are root Windows");
-                    open_settings_editor(workspace, Some(&path), false, window_handle, cx);
+                    open_settings_editor(workspace, Some(&path), None, window_handle, cx);
                 },
             )
             .register_action(|workspace, _: &OpenSettings, window, cx| {
@@ -404,14 +405,24 @@ pub fn init(cx: &mut App) {
                     .window_handle()
                     .downcast::<MultiWorkspace>()
                     .expect("Workspaces are root Windows");
-                open_settings_editor(workspace, None, false, window_handle, cx);
+                open_settings_editor(workspace, None, None, window_handle, cx);
             })
             .register_action(|workspace, _: &OpenProjectSettings, window, cx| {
                 let window_handle = window
                     .window_handle()
                     .downcast::<MultiWorkspace>()
                     .expect("Workspaces are root Windows");
-                open_settings_editor(workspace, None, true, window_handle, cx);
+                let target_worktree_id = workspace
+                    .project()
+                    .read(cx)
+                    .visible_worktrees(cx)
+                    .find_map(|tree| {
+                        tree.read(cx)
+                            .root_entry()?
+                            .is_dir()
+                            .then_some(tree.read(cx).id())
+                    });
+                open_settings_editor(workspace, None, target_worktree_id, window_handle, cx);
             });
     })
     .detach();
@@ -545,6 +556,8 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::SemanticTokens>(render_dropdown)
         .add_basic_renderer::<settings::DocumentFoldingRanges>(render_dropdown)
         .add_basic_renderer::<settings::DocumentSymbols>(render_dropdown)
+        .add_basic_renderer::<settings::AudioInputDeviceName>(render_input_audio_device_dropdown)
+        .add_basic_renderer::<settings::AudioOutputDeviceName>(render_output_audio_device_dropdown)
         // please semicolon stay on next line
         ;
 }
@@ -552,7 +565,7 @@ fn init_renderers(cx: &mut App) {
 pub fn open_settings_editor(
     _workspace: &mut Workspace,
     path: Option<&str>,
-    open_project_settings: bool,
+    target_worktree_id: Option<WorktreeId>,
     workspace_handle: WindowHandle<MultiWorkspace>,
     cx: &mut App,
 ) {
@@ -561,8 +574,6 @@ pub fn open_settings_editor(
     /// Assumes a settings GUI window is already open
     fn open_path(
         path: &str,
-        // Note: This option is unsupported right now
-        _open_project_settings: bool,
         settings_window: &mut SettingsWindow,
         window: &mut Window,
         cx: &mut Context<SettingsWindow>,
@@ -615,16 +626,14 @@ pub fn open_settings_editor(
                 settings_window.original_window = Some(workspace_handle);
                 window.activate_window();
                 if let Some(path) = path {
-                    open_path(path, open_project_settings, settings_window, window, cx);
-                } else if open_project_settings {
-                    if let Some(file_index) = settings_window
+                    open_path(path, settings_window, window, cx);
+                } else if let Some(target_id) = target_worktree_id
+                    && let Some(file_index) = settings_window
                         .files
                         .iter()
-                        .position(|(file, _)| file.worktree_id().is_some())
-                    {
-                        settings_window.change_file(file_index, window, cx);
-                    }
-
+                        .position(|(file, _)| file.worktree_id() == Some(target_id))
+                {
+                    settings_window.change_file(file_index, window, cx);
                     cx.notify();
                 }
             })
@@ -678,17 +687,14 @@ pub fn open_settings_editor(
                     cx.new(|cx| SettingsWindow::new(Some(workspace_handle), window, cx));
                 settings_window.update(cx, |settings_window, cx| {
                     if let Some(path) = path {
-                        open_path(&path, open_project_settings, settings_window, window, cx);
-                    } else if open_project_settings {
-                        if let Some(file_index) = settings_window
+                        open_path(&path, settings_window, window, cx);
+                    } else if let Some(target_id) = target_worktree_id
+                        && let Some(file_index) = settings_window
                             .files
                             .iter()
-                            .position(|(file, _)| file.worktree_id().is_some())
-                        {
-                            settings_window.change_file(file_index, window, cx);
-                        }
-
-                        settings_window.fetch_files(window, cx);
+                            .position(|(file, _)| file.worktree_id() == Some(target_id))
+                    {
+                        settings_window.change_file(file_index, window, cx);
                     }
                 });
 
@@ -1375,6 +1381,7 @@ struct ActionLink {
     description: Option<SharedString>,
     button_text: SharedString,
     on_click: Arc<dyn Fn(&mut SettingsWindow, &mut Window, &mut App) + Send + Sync>,
+    files: FileMask,
 }
 
 impl PartialEq for ActionLink {
@@ -1823,8 +1830,12 @@ impl SettingsWindow {
                             any_found_since_last_header = true;
                         }
                     }
-                    SettingsPageItem::ActionLink(_) => {
-                        any_found_since_last_header = true;
+                    SettingsPageItem::ActionLink(ActionLink { files, .. }) => {
+                        if !files.contains(current_file) {
+                            page_filter[index] = false;
+                        } else {
+                            any_found_since_last_header = true;
+                        }
                     }
                 }
             }

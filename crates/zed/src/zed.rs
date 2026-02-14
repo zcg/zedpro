@@ -14,7 +14,6 @@ pub mod visual_tests;
 pub(crate) mod windows_only_instance;
 
 use agent_ui::{AgentDiffToolbar, AgentPanelDelegate};
-use agent_ui_v2::agents_panel::AgentsPanel;
 use anyhow::Context as _;
 pub use app_menus::*;
 use assets::Assets;
@@ -87,7 +86,7 @@ use vim_mode_setting::VimModeSetting;
 use workspace::notifications::{
     NotificationId, SuppressEvent, dismiss_app_notification, show_app_notification,
 };
-use workspace::utility_pane::utility_slot_for_dock_position;
+
 use workspace::{
     AppState, MultiWorkspace, NewFile, NewWindow, OpenLog, Panel, Toast, Workspace,
     WorkspaceSettings, create_and_open_local_file,
@@ -802,8 +801,7 @@ fn initialize_panels(
             add_panel_when_ready(channels_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(notification_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(debug_panel, workspace_handle.clone(), cx.clone()),
-            initialize_agent_panel(workspace_handle.clone(), prompt_builder, cx.clone()).map(|r| r.log_err()),
-            initialize_agents_panel(workspace_handle, cx.clone()).map(|r| r.log_err())
+            initialize_agent_panel(workspace_handle, prompt_builder, cx.clone()).map(|r| r.log_err()),
         );
 
         anyhow::Ok(())
@@ -888,31 +886,6 @@ async fn initialize_agent_panel(
                 .register_action(agent_ui::AgentPanel::toggle_focus)
                 .register_action(agent_ui::InlineAssistant::inline_assist);
         }
-    })?;
-
-    anyhow::Ok(())
-}
-
-async fn initialize_agents_panel(
-    workspace_handle: WeakEntity<Workspace>,
-    mut cx: AsyncWindowContext,
-) -> anyhow::Result<()> {
-    workspace_handle
-        .update_in(&mut cx, |workspace, window, cx| {
-            setup_or_teardown_ai_panel(workspace, window, cx, |workspace, cx| {
-                AgentsPanel::load(workspace, cx)
-            })
-        })?
-        .await?;
-
-    workspace_handle.update_in(&mut cx, |_workspace, window, cx| {
-        cx.observe_global_in::<SettingsStore>(window, move |workspace, window, cx| {
-            setup_or_teardown_ai_panel(workspace, window, cx, |workspace, cx| {
-                AgentsPanel::load(workspace, cx)
-            })
-            .detach_and_log_err(cx);
-        })
-        .detach();
     })?;
 
     anyhow::Ok(())
@@ -1210,18 +1183,6 @@ fn register_actions(
              window: &mut Window,
              cx: &mut Context<Workspace>| {
                 workspace.toggle_panel_focus::<TerminalPanel>(window, cx);
-            },
-        )
-        .register_action(
-            |workspace: &mut Workspace,
-             _: &zed_actions::agent::ToggleAgentPane,
-             window: &mut Window,
-             cx: &mut Context<Workspace>| {
-                if let Some(panel) = workspace.panel::<AgentsPanel>(cx) {
-                    let position = panel.read(cx).position(window, cx);
-                    let slot = utility_slot_for_dock_position(position);
-                    workspace.toggle_utility_pane(slot, window, cx);
-                }
             },
         )
         .register_action({
@@ -2246,39 +2207,40 @@ fn open_settings_file(
     cx: &mut Context<Workspace>,
 ) {
     cx.spawn_in(window, async move |workspace, cx| {
-        let (worktree_creation_task, settings_open_task) = workspace
+        let settings_open_task = workspace
             .update_in(cx, |workspace, window, cx| {
-                workspace.with_local_or_wsl_workspace(window, cx, move |workspace, window, cx| {
-                    let project = workspace.project().clone();
+                workspace.with_local_workspace(window, cx, move |_workspace, window, cx| {
+                    cx.spawn_in(window, async move |workspace, cx| {
+                        let worktree_creation_task =
+                            workspace.update_in(cx, |workspace, _window, cx| {
+                                workspace.project().update(cx, |project, cx| {
+                                    // Set up a dedicated worktree for settings, since
+                                    // otherwise we're dropping and re-starting LSP servers
+                                    // for each file inside on every settings file
+                                    // close/open
 
-                    let worktree_creation_task = cx.spawn_in(window, async move |_, cx| {
-                        let config_dir = project
-                            .update(cx, |project, cx| {
-                                project.try_windows_path_to_wsl(paths::config_dir().as_path(), cx)
-                            })
-                            .await?;
-                        // Set up a dedicated worktree for settings, since
-                        // otherwise we're dropping and re-starting LSP servers
-                        // for each file inside on every settings file
-                        // close/open
-
-                        // TODO: Do note that all other external files (e.g.
-                        // drag and drop from OS) still have their worktrees
-                        // released on file close, causing LSP servers'
-                        // restarts.
-                        project
-                            .update(cx, |project, cx| {
-                                project.find_or_create_worktree(&config_dir, false, cx)
-                            })
-                            .await
-                    });
-                    let settings_open_task =
-                        create_and_open_local_file(abs_path, window, cx, default_content);
-                    (worktree_creation_task, settings_open_task)
+                                    // TODO: Do note that all other external files (e.g.
+                                    // drag and drop from OS) still have their worktrees
+                                    // released on file close, causing LSP servers'
+                                    // restarts.
+                                    project.find_or_create_worktree(
+                                        paths::config_dir().as_path(),
+                                        false,
+                                        cx,
+                                    )
+                                })
+                            })?;
+                        let _ = worktree_creation_task.await?;
+                        let settings_open_task =
+                            workspace.update_in(cx, |_workspace, window, cx| {
+                                create_and_open_local_file(abs_path, window, cx, default_content)
+                            })?;
+                        let _ = settings_open_task.await?;
+                        anyhow::Ok(())
+                    })
                 })
             })?
             .await?;
-        let _ = worktree_creation_task.await?;
         let _ = settings_open_task.await?;
         anyhow::Ok(())
     })
@@ -4971,7 +4933,6 @@ mod tests {
                 "action",
                 "activity_indicator",
                 "agent",
-                "agents",
                 "app_menu",
                 "assistant",
                 "assistant2",
@@ -5027,11 +4988,11 @@ mod tests {
                 "pane",
                 "panel",
                 "picker",
-                "project_dropdown",
                 "project_panel",
                 "project_search",
                 "project_symbols",
                 "projects",
+                "recent_projects",
                 "remote_debug",
                 "repl",
                 "rules_library",
@@ -5203,7 +5164,11 @@ mod tests {
             git_graph::init(cx);
             web_search_providers::init(app_state.client.clone(), cx);
             let prompt_builder = PromptBuilder::load(app_state.fs.clone(), false, cx);
-            project::AgentRegistryStore::init_global(cx);
+            project::AgentRegistryStore::init_global(
+                cx,
+                app_state.fs.clone(),
+                app_state.client.http_client(),
+            );
             agent_ui::init(
                 app_state.fs.clone(),
                 app_state.client.clone(),
@@ -5212,7 +5177,7 @@ mod tests {
                 false,
                 cx,
             );
-            agent_ui_v2::agents_panel::init(cx);
+
             repl::init(app_state.fs.clone(), cx);
             repl::notebook::init(cx);
             tasks_ui::init(cx);
@@ -5402,7 +5367,7 @@ mod tests {
         cx.update(|cx| {
             SettingsStore::update_global(cx, |settings_store, cx| {
                 settings_store.update_user_settings(cx, |settings| {
-                    settings.disable_ai = Some(SaturatingBool(true));
+                    settings.project.disable_ai = Some(SaturatingBool(true));
                 });
             });
         });

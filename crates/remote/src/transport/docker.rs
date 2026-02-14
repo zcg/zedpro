@@ -4,14 +4,13 @@ use collections::HashMap;
 use parking_lot::Mutex;
 use release_channel::{AppCommitSha, AppVersion, ReleaseChannel};
 use semver::Version as SemanticVersion;
-use smol::process::Command;
 use std::time::Instant;
 use std::{
     path::{Path, PathBuf},
-    process::Stdio,
     sync::Arc,
 };
 use util::ResultExt;
+use util::command::{Command, Stdio};
 use util::shell::ShellKind;
 use util::{
     paths::{PathStyle, RemotePathBuf},
@@ -146,7 +145,7 @@ async fn docker_cp_source_path(
 }
 
 fn command_from_template(template: CommandTemplate) -> Command {
-    let mut command = util::command::new_smol_command(template.program);
+    let mut command = util::command::new_command(template.program);
     command.args(template.args).envs(template.env);
     command
 }
@@ -894,7 +893,7 @@ echo "/tmp"
             }
             #[cfg(not(target_os = "windows"))]
             {
-                if util::command::new_smol_command("kill")
+                if util::command::new_command("kill")
                     .arg(pid.to_string())
                     .spawn()
                     .is_ok()

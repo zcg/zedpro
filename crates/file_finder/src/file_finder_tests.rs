@@ -1261,6 +1261,93 @@ async fn test_create_file_for_multiple_worktrees(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_create_file_focused_file_does_not_belong_to_available_worktrees(
+    cx: &mut TestAppContext,
+) {
+    let app_state = init_test(cx);
+    app_state
+        .fs
+        .as_fake()
+        .insert_tree(path!("/roota"), json!({ "the-parent-dira": { "filea": ""}}))
+        .await;
+
+    app_state
+        .fs
+        .as_fake()
+        .insert_tree(path!("/rootb"), json!({"the-parent-dirb":{ "fileb": ""}}))
+        .await;
+
+    let project = Project::test(
+        app_state.fs.clone(),
+        [path!("/roota").as_ref(), path!("/rootb").as_ref()],
+        cx,
+    )
+    .await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+    let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+    let (worktree_id_a, worktree_id_b) = cx.read(|cx| {
+        let worktrees = workspace.read(cx).worktrees(cx).collect::<Vec<_>>();
+        (worktrees[0].read(cx).id(), worktrees[1].read(cx).id())
+    });
+    workspace
+        .update_in(cx, |workspace, window, cx| {
+            workspace.open_abs_path(
+                PathBuf::from(path!("/external/external-file.txt")),
+                OpenOptions {
+                    visible: Some(OpenVisible::None),
+                    ..OpenOptions::default()
+                },
+                window,
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+
+    cx.run_until_parked();
+    let finder = open_file_picker(&workspace, cx);
+
+    finder
+        .update_in(cx, |f, window, cx| {
+            f.delegate
+                .spawn_search(test_path_position("new-file.txt"), window, cx)
+        })
+        .await;
+
+    cx.run_until_parked();
+    finder.update_in(cx, |f, window, cx| {
+        assert_eq!(f.delegate.matches.len(), 1);
+        f.delegate.confirm(false, window, cx); // ✓ works
+    });
+    cx.run_until_parked();
+
+    cx.read(|cx| {
+        let active_editor = workspace.read(cx).active_item_as::<Editor>(cx).unwrap();
+
+        let project_path = active_editor.read(cx).project_path(cx);
+
+        assert!(
+            project_path.is_some(),
+            "Active editor should have a project path"
+        );
+
+        let project_path = project_path.unwrap();
+
+        assert!(
+            project_path.worktree_id == worktree_id_a || project_path.worktree_id == worktree_id_b,
+            "New file should be created in one of the available worktrees (A or B), \
+                not in a directory derived from the external file. Got worktree_id: {:?}",
+            project_path.worktree_id
+        );
+
+        assert_eq!(project_path.path.as_ref(), rel_path("new-file.txt"));
+    });
+}
+
+#[gpui::test]
 async fn test_create_file_no_focused_with_multiple_worktrees(cx: &mut TestAppContext) {
     let app_state = init_test(cx);
     app_state
@@ -1612,6 +1699,269 @@ async fn test_history_match_positions(cx: &mut gpui::TestAppContext) {
             format!("test{}", PathStyle::local().primary_separator())
         );
         assert_eq!(path_label.highlight_indices(), &[] as &[usize]);
+    });
+}
+
+#[gpui::test]
+async fn test_history_labels_do_not_include_worktree_root_name(cx: &mut gpui::TestAppContext) {
+    let app_state = init_test(cx);
+
+    cx.update(|cx| {
+        let settings = *ProjectPanelSettings::get_global(cx);
+        ProjectPanelSettings::override_global(
+            ProjectPanelSettings {
+                hide_root: true,
+                ..settings
+            },
+            cx,
+        );
+    });
+
+    app_state
+        .fs
+        .as_fake()
+        .insert_tree(
+            path!("/my_project"),
+            json!({
+                "src": {
+                    "first.rs": "// First Rust file",
+                    "second.rs": "// Second Rust file",
+                }
+            }),
+        )
+        .await;
+
+    let project = Project::test(app_state.fs.clone(), [path!("/my_project").as_ref()], cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+    let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+    open_close_queried_buffer("fir", 1, "first.rs", &workspace, cx).await;
+    open_close_queried_buffer("sec", 1, "second.rs", &workspace, cx).await;
+
+    let picker = open_file_picker(&workspace, cx);
+    picker.update_in(cx, |finder, window, cx| {
+        let matches = &finder.delegate.matches.matches;
+        assert!(matches.len() >= 2);
+
+        for m in matches.iter() {
+            if let Match::History { panel_match, .. } = m {
+                assert!(
+                    panel_match.is_none(),
+                    "History items with no query should not have a panel match"
+                );
+            }
+        }
+
+        let separator = PathStyle::local().primary_separator();
+
+        let (file_label, path_label) = finder.delegate.labels_for_match(&matches[0], window, cx);
+        assert_eq!(file_label.text(), "second.rs");
+        assert_eq!(
+            path_label.text(),
+            format!("src{separator}"),
+            "History path label must not contain root name 'my_project'"
+        );
+
+        let (file_label, path_label) = finder.delegate.labels_for_match(&matches[1], window, cx);
+        assert_eq!(file_label.text(), "first.rs");
+        assert_eq!(
+            path_label.text(),
+            format!("src{separator}"),
+            "History path label must not contain root name 'my_project'"
+        );
+    });
+
+    // Now type a query so history items get panel_match populated,
+    // and verify labels stay consistent with the no-query case.
+    let picker = active_file_picker(&workspace, cx);
+    picker
+        .update_in(cx, |finder, window, cx| {
+            finder
+                .delegate
+                .update_matches("first".to_string(), window, cx)
+        })
+        .await;
+    picker.update_in(cx, |finder, window, cx| {
+        let matches = &finder.delegate.matches.matches;
+        let history_match = matches
+            .iter()
+            .find(|m| matches!(m, Match::History { .. }))
+            .expect("Should have a history match for 'first'");
+
+        let (file_label, path_label) = finder.delegate.labels_for_match(history_match, window, cx);
+        assert_eq!(file_label.text(), "first.rs");
+        let separator = PathStyle::local().primary_separator();
+        assert_eq!(
+            path_label.text(),
+            format!("src{separator}"),
+            "Queried history path label must not contain root name 'my_project'"
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_history_labels_include_worktree_root_name_when_hide_root_false(
+    cx: &mut gpui::TestAppContext,
+) {
+    let app_state = init_test(cx);
+
+    cx.update(|cx| {
+        let settings = *ProjectPanelSettings::get_global(cx);
+        ProjectPanelSettings::override_global(
+            ProjectPanelSettings {
+                hide_root: false,
+                ..settings
+            },
+            cx,
+        );
+    });
+
+    app_state
+        .fs
+        .as_fake()
+        .insert_tree(
+            path!("/my_project"),
+            json!({
+                "src": {
+                    "first.rs": "// First Rust file",
+                    "second.rs": "// Second Rust file",
+                }
+            }),
+        )
+        .await;
+
+    let project = Project::test(app_state.fs.clone(), [path!("/my_project").as_ref()], cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+    let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+    open_close_queried_buffer("fir", 1, "first.rs", &workspace, cx).await;
+    open_close_queried_buffer("sec", 1, "second.rs", &workspace, cx).await;
+
+    let picker = open_file_picker(&workspace, cx);
+    picker.update_in(cx, |finder, window, cx| {
+        let matches = &finder.delegate.matches.matches;
+        let separator = PathStyle::local().primary_separator();
+
+        let (_file_label, path_label) = finder.delegate.labels_for_match(&matches[0], window, cx);
+        assert_eq!(
+            path_label.text(),
+            format!("my_project{separator}src{separator}"),
+            "With hide_root=false, history path label should include root name 'my_project'"
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_history_labels_include_worktree_root_name_when_hide_root_true_and_multiple_folders(
+    cx: &mut gpui::TestAppContext,
+) {
+    let app_state = init_test(cx);
+
+    cx.update(|cx| {
+        let settings = *ProjectPanelSettings::get_global(cx);
+        ProjectPanelSettings::override_global(
+            ProjectPanelSettings {
+                hide_root: true,
+                ..settings
+            },
+            cx,
+        );
+    });
+
+    app_state
+        .fs
+        .as_fake()
+        .insert_tree(
+            path!("/my_project"),
+            json!({
+                "src": {
+                    "first.rs": "// First Rust file",
+                    "second.rs": "// Second Rust file",
+                }
+            }),
+        )
+        .await;
+
+    app_state
+        .fs
+        .as_fake()
+        .insert_tree(
+            path!("/my_second_project"),
+            json!({
+                "src": {
+                    "third.rs": "// Third Rust file",
+                    "fourth.rs": "// Fourth Rust file",
+                }
+            }),
+        )
+        .await;
+
+    let project = Project::test(
+        app_state.fs.clone(),
+        [
+            path!("/my_project").as_ref(),
+            path!("/my_second_project").as_ref(),
+        ],
+        cx,
+    )
+    .await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+    let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+
+    open_close_queried_buffer("fir", 1, "first.rs", &workspace, cx).await;
+    open_close_queried_buffer("thi", 1, "third.rs", &workspace, cx).await;
+
+    let picker = open_file_picker(&workspace, cx);
+    picker.update_in(cx, |finder, window, cx| {
+        let matches = &finder.delegate.matches.matches;
+        assert!(matches.len() >= 2, "Should have at least 2 history matches");
+
+        let separator = PathStyle::local().primary_separator();
+
+        let first_match = matches
+            .iter()
+            .find(|m| {
+                if let Match::History { path, .. } = m {
+                    path.project.path.file_name()
+                        .map(|n| n.to_string())
+                        .map_or(false, |name| name == "first.rs")
+                } else {
+                    false
+                }
+            })
+            .expect("Should have history match for first.rs");
+
+        let third_match = matches
+            .iter()
+            .find(|m| {
+                if let Match::History { path, .. } = m {
+                    path.project.path.file_name()
+                        .map(|n| n.to_string())
+                        .map_or(false, |name| name == "third.rs")
+                } else {
+                    false
+                }
+            })
+            .expect("Should have history match for third.rs");
+
+        let (_file_label, path_label) =
+            finder.delegate.labels_for_match(first_match, window, cx);
+        assert_eq!(
+            path_label.text(),
+            format!("my_project{separator}src{separator}"),
+            "With hide_root=true and multiple folders, history path label should include root name 'my_project'"
+        );
+
+        let (_file_label, path_label) =
+            finder.delegate.labels_for_match(third_match, window, cx);
+        assert_eq!(
+            path_label.text(),
+            format!("my_second_project{separator}src{separator}"),
+            "With hide_root=true and multiple folders, history path label should include root name 'my_second_project'"
+        );
     });
 }
 

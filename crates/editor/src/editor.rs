@@ -7755,14 +7755,14 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<()> {
-        if DisableAiSettings::get_global(cx).disable_ai {
-            return None;
-        }
-
         let provider = self.edit_prediction_provider()?;
         let cursor = self.selections.newest_anchor().head();
         let (buffer, cursor_buffer_position) =
             self.buffer.read(cx).text_anchor_for_position(cursor, cx)?;
+
+        if DisableAiSettings::is_ai_disabled_for_buffer(Some(&buffer), cx) {
+            return None;
+        }
 
         if !self.edit_predictions_enabled_in_buffer(&buffer, cursor_buffer_position, cx) {
             self.discard_edit_prediction(EditPredictionDiscardReason::Ignored, cx);
@@ -7809,19 +7809,25 @@ impl Editor {
     }
 
     pub fn update_edit_prediction_settings(&mut self, cx: &mut Context<Self>) {
-        if self.edit_prediction_provider.is_none() || DisableAiSettings::get_global(cx).disable_ai {
+        if self.edit_prediction_provider.is_none() {
             self.edit_prediction_settings = EditPredictionSettings::Disabled;
             self.discard_edit_prediction(EditPredictionDiscardReason::Ignored, cx);
-        } else {
-            let selection = self.selections.newest_anchor();
-            let cursor = selection.head();
+            return;
+        }
 
-            if let Some((buffer, cursor_buffer_position)) =
-                self.buffer.read(cx).text_anchor_for_position(cursor, cx)
-            {
-                self.edit_prediction_settings =
-                    self.edit_prediction_settings_at_position(&buffer, cursor_buffer_position, cx);
+        let selection = self.selections.newest_anchor();
+        let cursor = selection.head();
+
+        if let Some((buffer, cursor_buffer_position)) =
+            self.buffer.read(cx).text_anchor_for_position(cursor, cx)
+        {
+            if DisableAiSettings::is_ai_disabled_for_buffer(Some(&buffer), cx) {
+                self.edit_prediction_settings = EditPredictionSettings::Disabled;
+                self.discard_edit_prediction(EditPredictionDiscardReason::Ignored, cx);
+                return;
             }
+            self.edit_prediction_settings =
+                self.edit_prediction_settings_at_position(&buffer, cursor_buffer_position, cx);
         }
     }
 
@@ -8041,10 +8047,6 @@ impl Editor {
 
                 match granularity {
                     EditPredictionGranularity::Full => {
-                        if let Some(provider) = self.edit_prediction_provider() {
-                            provider.accept(cx);
-                        }
-
                         let transaction_id_prev = self.buffer.read(cx).last_transaction_id(cx);
 
                         // Compute fallback cursor position BEFORE applying the edit,
@@ -8057,6 +8059,10 @@ impl Editor {
                         self.buffer.update(cx, |buffer, cx| {
                             buffer.edit(edits.iter().cloned(), None, cx)
                         });
+
+                        if let Some(provider) = self.edit_prediction_provider() {
+                            provider.accept(cx);
+                        }
 
                         // Resolve cursor position after the edit is applied
                         let cursor_target = if let Some((anchor, offset)) = cursor_position {
@@ -8462,10 +8468,6 @@ impl Editor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<()> {
-        if DisableAiSettings::get_global(cx).disable_ai {
-            return None;
-        }
-
         if self.ime_transaction.is_some() {
             self.discard_edit_prediction(EditPredictionDiscardReason::Ignored, cx);
             return None;
@@ -8474,6 +8476,13 @@ impl Editor {
         let selection = self.selections.newest_anchor();
         let cursor = selection.head();
         let multibuffer = self.buffer.read(cx).snapshot(cx);
+
+        // Check project-level disable_ai setting for the current buffer
+        if let Some((buffer, _)) = self.buffer.read(cx).text_anchor_for_position(cursor, cx) {
+            if DisableAiSettings::is_ai_disabled_for_buffer(Some(&buffer), cx) {
+                return None;
+            }
+        }
         let offset_selection = selection.map(|endpoint| endpoint.to_offset(&multibuffer));
         let excerpt_id = cursor.excerpt_id;
 
@@ -24325,10 +24334,10 @@ impl Editor {
                 .global_lsp_settings
                 .semantic_token_rules
                 .clone();
-            if self
+            let semantic_token_rules_changed = self
                 .semantic_token_state
-                .update_rules(new_semantic_token_rules)
-            {
+                .update_rules(new_semantic_token_rules);
+            if language_settings_changed || semantic_token_rules_changed {
                 self.invalidate_semantic_tokens(None);
                 self.refresh_semantic_tokens(None, None, cx);
             }

@@ -39,6 +39,7 @@ use std::{
     ops::{Not, Range},
     pin::pin,
     sync::Arc,
+    time::Duration,
 };
 use ui::{
     CommonAnimationExt, IconButtonShape, KeyBinding, Toggleable, Tooltip, prelude::*,
@@ -70,6 +71,32 @@ actions!(
         ToggleAllSearchResults
     ]
 );
+
+fn split_glob_patterns(text: &str) -> Vec<&str> {
+    let mut patterns = Vec::new();
+    let mut pattern_start = 0;
+    let mut brace_depth: usize = 0;
+    let mut escaped = false;
+
+    for (index, character) in text.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => escaped = true,
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            ',' if brace_depth == 0 => {
+                patterns.push(&text[pattern_start..index]);
+                pattern_start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    patterns.push(&text[pattern_start..]);
+    patterns
+}
 
 #[derive(Default)]
 struct ActiveSettings(HashMap<WeakEntity<Project>, ProjectSearchSettings>);
@@ -244,6 +271,7 @@ pub struct ProjectSearchView {
     included_opened_only: bool,
     regex_language: Option<Arc<Language>>,
     results_collapsed: bool,
+    current_search_on_input: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -843,15 +871,43 @@ impl ProjectSearchView {
         // Subscribe to query_editor in order to reraise editor events for workspace item activation purposes
         subscriptions.push(
             cx.subscribe(&query_editor, |this, _, event: &EditorEvent, cx| {
-                if let EditorEvent::Edited { .. } = event
-                    && EditorSettings::get_global(cx).use_smartcase_search
-                {
-                    let query = this.search_query_text(cx);
-                    if !query.is_empty()
-                        && this.search_options.contains(SearchOptions::CASE_SENSITIVE)
-                            != contains_uppercase(&query)
-                    {
-                        this.toggle_search_option(SearchOptions::CASE_SENSITIVE, cx);
+                if let EditorEvent::Edited { .. } = event {
+                    if EditorSettings::get_global(cx).use_smartcase_search {
+                        let query = this.search_query_text(cx);
+                        if !query.is_empty()
+                            && this.search_options.contains(SearchOptions::CASE_SENSITIVE)
+                                != contains_uppercase(&query)
+                        {
+                            this.toggle_search_option(SearchOptions::CASE_SENSITIVE, cx);
+                        }
+                    }
+
+                    let search_settings = &EditorSettings::get_global(cx).search;
+                    if search_settings.search_on_input {
+                        if this.query_editor.read(cx).is_empty(cx) {
+                            this.current_search_on_input = Task::ready(());
+                            this.entity.update(cx, |model, cx| {
+                                model.pending_search = None;
+                                model.match_ranges.clear();
+                                model.excerpts.update(cx, |excerpts, cx| excerpts.clear(cx));
+                                model.no_results = None;
+                                model.limit_reached = false;
+                                cx.notify();
+                            });
+                        } else {
+                            let debounce = search_settings.search_on_input_debounce_ms;
+                            this.current_search_on_input = cx.spawn(async move |this, cx| {
+                                if debounce > 0 {
+                                    cx.background_executor()
+                                        .timer(Duration::from_millis(debounce))
+                                        .await;
+                                }
+                                this.update(cx, |this, cx| {
+                                    this.search(cx);
+                                })
+                                .ok();
+                            });
+                        }
                     }
                 }
                 cx.emit(ViewEvent::EditorEvent(event.clone()))
@@ -972,6 +1028,7 @@ impl ProjectSearchView {
             included_opened_only: false,
             regex_language: None,
             results_collapsed: false,
+            current_search_on_input: Task::ready(()),
             _subscriptions: subscriptions,
         };
 
@@ -1381,8 +1438,8 @@ impl ProjectSearchView {
 
     fn parse_path_matches(&self, text: String, cx: &App) -> anyhow::Result<PathMatcher> {
         let path_style = self.entity.read(cx).project.read(cx).path_style(cx);
-        let queries = text
-            .split(',')
+        let queries = split_glob_patterns(&text)
+            .into_iter()
             .map(str::trim)
             .filter(|maybe_glob_str| !maybe_glob_str.is_empty())
             .map(str::to_owned)
@@ -1503,7 +1560,11 @@ impl ProjectSearchView {
                     editor.scroll(Point::default(), Some(Axis::Vertical), window, cx);
                 }
             });
-            if is_new_search && self.query_editor.focus_handle(cx).is_focused(window) {
+            let should_auto_focus = !EditorSettings::get_global(cx).search.search_on_input;
+            if is_new_search
+                && self.query_editor.focus_handle(cx).is_focused(window)
+                && should_auto_focus
+            {
                 self.focus_results_editor(window, cx);
             }
         }
@@ -1566,9 +1627,13 @@ impl ProjectSearchView {
         v_flex()
             .gap_1()
             .child(
-                Label::new("Hit enter to search. For more options:")
-                    .color(Color::Muted)
-                    .mb_2(),
+                Label::new(if EditorSettings::get_global(cx).search.search_on_input {
+                    "Start typing to search. For more options:"
+                } else {
+                    "Hit enter to search. For more options:"
+                })
+                .color(Color::Muted)
+                .mb_2(),
             )
             .child(
                 Button::new("filter-paths", "Include/exclude specific paths")
@@ -2511,11 +2576,35 @@ pub mod tests {
     use project::FakeFs;
     use serde_json::json;
     use settings::{
-        InlayHintSettingsContent, SettingsStore, ThemeColorsContent, ThemeStyleContent,
+        InlayHintSettingsContent, SearchSettingsContent, SettingsStore, ThemeColorsContent,
+        ThemeStyleContent,
     };
     use util::{path, paths::PathStyle, rel_path::rel_path};
     use util_macros::perf;
     use workspace::{DeploySearch, MultiWorkspace};
+
+    #[test]
+    fn test_split_glob_patterns() {
+        assert_eq!(split_glob_patterns("a,b,c"), vec!["a", "b", "c"]);
+        assert_eq!(split_glob_patterns("a, b, c"), vec!["a", " b", " c"]);
+        assert_eq!(
+            split_glob_patterns("src/{a,b}/**/*.rs"),
+            vec!["src/{a,b}/**/*.rs"]
+        );
+        assert_eq!(
+            split_glob_patterns("src/{a,b}/*.rs, tests/**/*.rs"),
+            vec!["src/{a,b}/*.rs", " tests/**/*.rs"]
+        );
+        assert_eq!(split_glob_patterns("{a,b},{c,d}"), vec!["{a,b}", "{c,d}"]);
+        assert_eq!(split_glob_patterns("{{a,b},{c,d}}"), vec!["{{a,b},{c,d}}"]);
+        assert_eq!(split_glob_patterns(""), vec![""]);
+        assert_eq!(split_glob_patterns("a"), vec!["a"]);
+        // Escaped characters should not be treated as special
+        assert_eq!(split_glob_patterns(r"a\,b,c"), vec![r"a\,b", "c"]);
+        assert_eq!(split_glob_patterns(r"\{a,b\}"), vec![r"\{a", r"b\}"]);
+        assert_eq!(split_glob_patterns(r"a\\,b"), vec![r"a\\", "b"]);
+        assert_eq!(split_glob_patterns(r"a\\\,b"), vec![r"a\\\,b"]);
+    }
 
     #[perf]
     #[gpui::test]
@@ -4706,6 +4795,15 @@ pub mod tests {
         cx.update(|cx| {
             let settings = SettingsStore::test(cx);
             cx.set_global(settings);
+
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.editor.search = Some(SearchSettingsContent {
+                        search_on_input: Some(false),
+                        ..Default::default()
+                    });
+                });
+            });
 
             theme::init(theme::LoadThemes::JustBase, cx);
 
