@@ -813,8 +813,13 @@ calloop = { git = "https://github.com/zed-industries/calloop" }
 
 [profile.dev]
 split-debuginfo = "unpacked"
-incremental = true
+debug = 1
+incremental = false
 codegen-units = 16
+
+[profile.test]
+debug = 1
+incremental = false
 
 # mirror configuration for crates compiled for the build platform
 # (without this cargo will compile ~400 crates twice)

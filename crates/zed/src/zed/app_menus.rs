@@ -100,12 +100,13 @@ pub fn app_menus(cx: &mut App) -> Vec<Menu> {
                 MenuItem::action("Extensions", zed_actions::Extensions::default()),
                 #[cfg(not(target_os = "windows"))]
                 MenuItem::action("Install CLI", install_cli::InstallCliBinary),
+                #[cfg(target_os = "macos")]
                 MenuItem::separator(),
                 #[cfg(target_os = "macos")]
                 MenuItem::action("Hide Zed", super::Hide),
-                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                #[cfg(target_os = "macos")]
                 MenuItem::action("Hide Others", super::HideOthers),
-                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                #[cfg(target_os = "macos")]
                 MenuItem::action("Show All", super::ShowAll),
                 MenuItem::separator(),
                 MenuItem::action("Quit Zed", Quit),
