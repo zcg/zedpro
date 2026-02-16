@@ -345,6 +345,9 @@ impl EditorDb {
             last_selection = last_selection + count;
             let query = format!(
                 r#"
+INSERT OR IGNORE INTO editors (item_id, workspace_id)
+VALUES (?1, ?2);
+
 DELETE FROM editor_selections WHERE editor_id = ?1 AND workspace_id = ?2;
 
 INSERT OR IGNORE INTO editor_selections (editor_id, workspace_id, start, end)
@@ -397,6 +400,9 @@ VALUES {placeholders};
             last_fold = last_fold + count;
             let query = format!(
                 r#"
+INSERT OR IGNORE INTO editors (item_id, workspace_id)
+VALUES (?1, ?2);
+
 DELETE FROM editor_folds WHERE editor_id = ?1 AND workspace_id = ?2;
 
 INSERT OR IGNORE INTO editor_folds (editor_id, workspace_id, start, end, start_fingerprint, end_fingerprint)
@@ -581,6 +587,50 @@ mod tests {
                 Some("} // end impl".to_string())
             )
         );
+    }
+
+    #[gpui::test]
+    async fn test_save_editor_selections_without_existing_editor_row() {
+        let workspace_id = workspace::WORKSPACE_DB.next_id().await.unwrap();
+        let editor_id = 4242;
+        let selections = vec![(10, 20), (30, 40)];
+
+        DB.save_editor_selections(editor_id, workspace_id, selections.clone())
+            .await
+            .unwrap();
+
+        let retrieved = DB.get_editor_selections(editor_id, workspace_id).unwrap();
+        assert_eq!(retrieved, selections);
+        assert!(DB.get_serialized_editor(editor_id, workspace_id).unwrap().is_some());
+    }
+
+    #[gpui::test]
+    async fn test_save_editor_folds_without_existing_editor_row() {
+        let workspace_id = workspace::WORKSPACE_DB.next_id().await.unwrap();
+        let editor_id = 4343;
+        let folds = vec![(
+            100,
+            200,
+            "fn start()".to_string(),
+            "fn end()".to_string(),
+        )];
+
+        DB.save_editor_folds(editor_id, workspace_id, folds.clone())
+            .await
+            .unwrap();
+
+        let retrieved = DB.get_editor_folds(editor_id, workspace_id).unwrap();
+        assert_eq!(retrieved.len(), 1);
+        assert_eq!(
+            retrieved[0],
+            (
+                100,
+                200,
+                Some("fn start()".to_string()),
+                Some("fn end()".to_string())
+            )
+        );
+        assert!(DB.get_serialized_editor(editor_id, workspace_id).unwrap().is_some());
     }
 
     // NOTE: The fingerprint search logic (finding content at new offsets when file
