@@ -40,6 +40,7 @@ use workspace::{ModalView, Workspace, with_active_or_new_workspace};
 use futures::AsyncReadExt;
 use http::Request;
 use http_client::{AsyncBody, HttpClient};
+use remote::{DockerConnectionOptions, DockerHost, RemoteConnectionOptions};
 
 mod devcontainer_api;
 
@@ -50,25 +51,58 @@ use crate::devcontainer_api::DevContainerError;
 use crate::devcontainer_api::apply_dev_container_template;
 
 pub use devcontainer_api::{
-    DevContainerConfig, find_configs_in_snapshot, find_devcontainer_configs,
-    start_dev_container_with_config,
+    DevContainerBuildStep, DevContainerConfig, DevContainerLogLine, DevContainerLogStream,
+    DevContainerProgressEvent, find_configs_in_snapshot, find_devcontainer_configs,
+    start_dev_container_with_config, start_dev_container_with_progress,
 };
 
 pub struct DevContainerContext {
     pub project_directory: Arc<Path>,
     pub use_podman: bool,
     pub node_runtime: node_runtime::NodeRuntime,
+    pub remote_connection: Option<RemoteConnectionOptions>,
+    pub docker_connection: Option<DockerConnectionOptions>,
 }
 
 impl DevContainerContext {
     pub fn from_workspace(workspace: &Workspace, cx: &App) -> Option<Self> {
-        let project_directory = workspace.project().read(cx).active_project_directory(cx)?;
+        let (project_directory, remote_connection, docker_connection) = {
+            let project = workspace.project().read(cx);
+            let project_directory = project.active_project_directory(cx)?;
+            let (remote_connection, docker_connection) = match project.remote_connection_options(cx)
+            {
+                Some(RemoteConnectionOptions::Ssh(options)) => {
+                    (Some(RemoteConnectionOptions::Ssh(options)), None)
+                }
+                Some(RemoteConnectionOptions::Wsl(options)) => {
+                    (Some(RemoteConnectionOptions::Wsl(options)), None)
+                }
+                Some(RemoteConnectionOptions::Docker(options)) => {
+                    let host_remote = match &options.host {
+                        DockerHost::Wsl(options) => {
+                            Some(RemoteConnectionOptions::Wsl(options.clone()))
+                        }
+                        DockerHost::Ssh(options) => {
+                            Some(RemoteConnectionOptions::Ssh(options.clone()))
+                        }
+                        DockerHost::Local => None,
+                    };
+                    (host_remote, Some(options))
+                }
+                #[cfg(any(test, feature = "test-support"))]
+                Some(RemoteConnectionOptions::Mock(_)) => (None, None),
+                None => (None, None),
+            };
+            (project_directory, remote_connection, docker_connection)
+        };
         let use_podman = DevContainerSettings::get_global(cx).use_podman;
         let node_runtime = workspace.app_state().node_runtime.clone();
         Some(Self {
             project_directory,
             use_podman,
             node_runtime,
+            remote_connection,
+            docker_connection,
         })
     }
 }
@@ -1464,7 +1498,7 @@ fn dispatch_apply_templates(
             return;
         };
 
-        let Ok(cli) = ensure_devcontainer_cli(&context.node_runtime).await else {
+        let Ok(cli) = ensure_devcontainer_cli(&context).await else {
             this.update_in(cx, |this, window, cx| {
                 this.accept_message(
                     DevContainerMessage::FailedToWriteTemplate(
@@ -1480,7 +1514,7 @@ fn dispatch_apply_templates(
 
         {
             if check_for_existing
-                && read_devcontainer_configuration(&context, &cli, None)
+                && read_devcontainer_configuration(&context, cli.as_ref(), None)
                     .await
                     .is_ok()
             {
@@ -1500,7 +1534,7 @@ fn dispatch_apply_templates(
                 &template_entry.options_selected,
                 &template_entry.features_selected,
                 &context,
-                &cli,
+                cli.as_ref(),
             )
             .await
             {

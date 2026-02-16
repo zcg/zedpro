@@ -367,21 +367,6 @@ pub fn init(cx: &mut App) {
 
     cx.on_action(|_: &OpenDevContainer, cx| {
         with_active_or_new_workspace(cx, move |workspace, window, cx| {
-            if !workspace.project().read(cx).is_local() {
-                cx.spawn_in(window, async move |_, cx| {
-                    cx.prompt(
-                        gpui::PromptLevel::Critical,
-                        "Cannot open Dev Container from remote project",
-                        None,
-                        &["Ok"],
-                    )
-                    .await
-                    .ok();
-                })
-                .detach();
-                return;
-            }
-
             let fs = workspace.project().read(cx).fs().clone();
             let configs = find_devcontainer_configs(workspace, cx);
             let app_state = workspace.app_state().clone();

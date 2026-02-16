@@ -1,5 +1,6 @@
 use gpui::{
-    ClickEvent, DismissEvent, EventEmitter, FocusHandle, Focusable, PromptLevel, Render, WeakEntity,
+    App, BorrowAppContext, ClickEvent, DismissEvent, EventEmitter, FocusHandle, Focusable, Global,
+    PromptLevel, Render, WeakEntity,
 };
 use project::project_settings::ProjectSettings;
 use remote::{
@@ -7,7 +8,7 @@ use remote::{
     WslConnectionOptions,
 };
 use settings::{DevContainerHost, Settings};
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 use ui::{
     Button, ButtonCommon, ButtonStyle, Clickable, Context, ElevationIndex, FluentBuilder, Headline,
     HeadlineSize, IconName, IconPosition, InteractiveElement, IntoElement, Label, Modal,
@@ -23,6 +24,37 @@ use util::ResultExt as _;
 enum Host {
     CollabGuestProject,
     RemoteServerProject(RemoteConnectionOptions, bool),
+}
+
+#[derive(Default)]
+struct PendingDevcontainerHostReturns {
+    options: HashSet<DockerConnectionOptions>,
+}
+
+impl Global for PendingDevcontainerHostReturns {}
+
+pub(crate) fn mark_pending_devcontainer_host_return(
+    options: DockerConnectionOptions,
+    cx: &mut App,
+) {
+    cx.update_default_global::<PendingDevcontainerHostReturns, _>(|pending, _| {
+        pending.options.insert(options);
+    });
+}
+
+pub(crate) fn clear_pending_devcontainer_host_return(
+    options: &DockerConnectionOptions,
+    cx: &mut App,
+) {
+    cx.update_default_global::<PendingDevcontainerHostReturns, _>(|pending, _| {
+        pending.options.remove(options);
+    });
+}
+
+fn take_pending_devcontainer_host_return(options: &DockerConnectionOptions, cx: &mut App) -> bool {
+    cx.update_default_global::<PendingDevcontainerHostReturns, _>(|pending, _| {
+        pending.options.remove(options)
+    })
 }
 
 pub struct DisconnectedOverlay {
@@ -74,14 +106,13 @@ impl DisconnectedOverlay {
                 let handle = cx.entity().downgrade();
 
                 let remote_connection_options = project.read(cx).remote_connection_options(cx);
-                if let Some(RemoteConnectionOptions::Docker(options)) =
-                    remote_connection_options.clone()
-                {
-                    if Self::return_devcontainer_to_host_on_disconnect(
+                if let Some(RemoteConnectionOptions::Docker(options)) = remote_connection_options.clone()
+                    && take_pending_devcontainer_host_return(&options, cx)
+                    && Self::return_devcontainer_to_host_on_disconnect(
                         &options, workspace, window, cx,
-                    ) {
-                        return;
-                    }
+                    )
+                {
+                    return;
                 }
                 let host = if let Some(remote_connection_options) = remote_connection_options {
                     Host::RemoteServerProject(
@@ -183,6 +214,7 @@ impl DisconnectedOverlay {
             return;
         };
         let old_window = window.window_handle();
+        let old_workspace = workspace.clone();
 
         let host = devcontainer_host_from_docker_host(&options.host);
         let paths = host_project_paths_from_settings(options, host.as_ref(), cx);
@@ -199,19 +231,34 @@ impl DisconnectedOverlay {
 
         if let Some(connection_options) = host_connection_options(host.as_ref()) {
             let app_state = workspace.read(cx).app_state().clone();
+            let replace_window = old_window.downcast::<MultiWorkspace>();
+            let created_new_window = replace_window.is_none();
+            let cleanup_window = replace_window.clone();
             cx.spawn_in(window, async move |_, cx| {
                 open_remote_project(
                     connection_options,
                     paths,
                     app_state,
                     OpenOptions {
-                        replace_window: None,
+                        replace_window,
                         ..Default::default()
                     },
                     cx,
                 )
                 .await?;
-                let _ = old_window.update(cx, |_, window, _| window.remove_window());
+                if created_new_window {
+                    let _ = old_window.update(cx, |_, window, _| window.remove_window());
+                } else if let Some(window_handle) = cleanup_window {
+                    let _ = window_handle.update(cx, |multi_workspace, window, cx| {
+                        if let Some(index) = multi_workspace
+                            .workspaces()
+                            .iter()
+                            .position(|workspace| *workspace == old_workspace)
+                        {
+                            multi_workspace.remove_workspace(index, window, cx);
+                        }
+                    });
+                }
                 Ok(())
             })
             .detach_and_prompt_err(
@@ -244,6 +291,7 @@ impl DisconnectedOverlay {
         cx: &mut Context<Workspace>,
     ) -> bool {
         let old_window = window.window_handle();
+        let old_workspace = cx.entity();
         let host = devcontainer_host_from_docker_host(&options.host);
         let Some(paths) = host_project_paths_from_settings(options, host.as_ref(), cx) else {
             drop(window.prompt(
@@ -258,19 +306,34 @@ impl DisconnectedOverlay {
 
         if let Some(connection_options) = host_connection_options(host.as_ref()) {
             let app_state = workspace.app_state().clone();
+            let replace_window = old_window.downcast::<MultiWorkspace>();
+            let created_new_window = replace_window.is_none();
+            let cleanup_window = replace_window.clone();
             cx.spawn_in(window, async move |_, cx| {
                 open_remote_project(
                     connection_options,
                     paths,
                     app_state,
                     OpenOptions {
-                        replace_window: None,
+                        replace_window,
                         ..Default::default()
                     },
                     cx,
                 )
                 .await?;
-                let _ = old_window.update(cx, |_, window, _| window.remove_window());
+                if created_new_window {
+                    let _ = old_window.update(cx, |_, window, _| window.remove_window());
+                } else if let Some(window_handle) = cleanup_window {
+                    let _ = window_handle.update(cx, |multi_workspace, window, cx| {
+                        if let Some(index) = multi_workspace
+                            .workspaces()
+                            .iter()
+                            .position(|workspace| *workspace == old_workspace)
+                        {
+                            multi_workspace.remove_workspace(index, window, cx);
+                        }
+                    });
+                }
                 Ok(())
             })
             .detach_and_prompt_err(

@@ -1348,8 +1348,10 @@ impl SshSocket {
 
     async fn shell_posix(&self) -> String {
         const DEFAULT_SHELL: &str = "sh";
+        const SHELL_PROBE: &str =
+            "if command -v bash >/dev/null 2>&1; then command -v bash; else echo /bin/sh; fi";
         match self
-            .run_command(ShellKind::Posix, "sh", &["-c", "echo $SHELL"], false)
+            .run_command(ShellKind::Posix, "sh", &["-c", SHELL_PROBE], false)
             .await
         {
             Ok(output) => parse_shell(&output, DEFAULT_SHELL),
