@@ -63,8 +63,8 @@ use std::{
 use task::SharedTaskContext;
 use text::{PointUtf16, ToPointUtf16};
 use url::Url;
-use util::command::new_command;
 use util::command::Stdio;
+use util::command::new_command;
 use util::{ResultExt, debug_panic, maybe, paths::SanitizedPath};
 use worktree::Worktree;
 

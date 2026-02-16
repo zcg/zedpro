@@ -19,13 +19,12 @@ use remote::{
 pub use settings::SshConnection;
 use settings::{
     DevContainerConnection, DevContainerHost, ExtendingVec, RegisterSetting, RemoteProject,
-    Settings,
-    WslConnection,
+    Settings, WslConnection,
 };
 use util::paths::PathWithPosition;
-use workspace::{AppState, MultiWorkspace, Workspace};
 use workspace::notifications::NotificationId;
 use workspace::notifications::simple_message_notification::MessageNotification;
+use workspace::{AppState, MultiWorkspace, Workspace};
 
 pub use remote_connection::{
     RemoteClientDelegate, RemoteConnectionModal, RemoteConnectionPrompt, SshConnectionHeader,

@@ -991,7 +991,6 @@ impl Sidebar {
             }
         });
     }
-
 }
 
 impl WorkspaceSidebar for Sidebar {

@@ -291,12 +291,13 @@ pub async fn start_dev_container_with_progress(
     config: Option<DevContainerConfig>,
     progress_tx: Option<UnboundedSender<DevContainerProgressEvent>>,
 ) -> Result<(DevContainerConnection, String), DevContainerError> {
-    let send_progress = |event: DevContainerProgressEvent,
-                         progress_tx: &Option<UnboundedSender<DevContainerProgressEvent>>| {
-        if let Some(tx) = progress_tx {
-            let _ = tx.unbounded_send(event);
-        }
-    };
+    let send_progress =
+        |event: DevContainerProgressEvent,
+         progress_tx: &Option<UnboundedSender<DevContainerProgressEvent>>| {
+            if let Some(tx) = progress_tx {
+                let _ = tx.unbounded_send(event);
+            }
+        };
 
     let log_info =
         |line: &str, progress_tx: &Option<UnboundedSender<DevContainerProgressEvent>>| {
@@ -416,14 +417,14 @@ pub async fn start_dev_container_with_progress(
     let project_name =
         match read_devcontainer_configuration(&context, cli.as_ref(), config_path.as_deref()).await
         {
-        Ok(DevContainerConfigurationOutput {
-            configuration:
-                DevContainerConfiguration {
-                    name: Some(project_name),
-                },
-        }) => project_name,
-        _ => get_backup_project_name(&remote_workspace_folder, &container_id),
-    };
+            Ok(DevContainerConfigurationOutput {
+                configuration:
+                    DevContainerConfiguration {
+                        name: Some(project_name),
+                    },
+            }) => project_name,
+            _ => get_backup_project_name(&remote_workspace_folder, &container_id),
+        };
     send_progress(
         DevContainerProgressEvent::StepCompleted(DevContainerBuildStep::ReadConfiguration),
         &progress_tx,
@@ -617,11 +618,7 @@ fn normalize_remote_path_arg(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn join_config_path(
-    project_directory: &Path,
-    config_path: &Path,
-    remote_host: bool,
-) -> PathBuf {
+fn join_config_path(project_directory: &Path, config_path: &Path, remote_host: bool) -> PathBuf {
     if !remote_host {
         return project_directory.join(config_path);
     }
@@ -890,7 +887,8 @@ pub(crate) async fn ensure_devcontainer_cli(
 async fn ensure_devcontainer_cli_remote(
     options: &RemoteConnectionOptions,
 ) -> Result<(), DevContainerError> {
-    let mut command = build_remote_command(options, "devcontainer", &["--version".to_string()], false)?;
+    let mut command =
+        build_remote_command(options, "devcontainer", &["--version".to_string()], false)?;
     match command.output().await {
         Ok(output) if output.status.success() => Ok(()),
         Ok(output) => {
@@ -1223,7 +1221,10 @@ async fn read_devcontainer_configuration_remote(
             }
         }
         Err(e) => {
-            let message = format!("Error running remote devcontainer read-configuration: {:?}", e);
+            let message = format!(
+                "Error running remote devcontainer read-configuration: {:?}",
+                e
+            );
             log::error!("{}", &message);
             Err(DevContainerError::DevContainerNotFound)
         }

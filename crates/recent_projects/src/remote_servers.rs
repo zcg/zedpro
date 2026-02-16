@@ -33,9 +33,9 @@ use paths::{global_ssh_config_file, user_ssh_config_file};
 use picker::{Picker, PickerDelegate};
 use project::{Fs, Project};
 use remote::{
-    DockerConnectionOptions, DockerHost, RemoteClient, RemoteConnectionOptions, SshConnectionOptions,
-    WslConnectionOptions,
-    parse_port_forward_spec, remote_client::ConnectionIdentifier,
+    DockerConnectionOptions, DockerHost, RemoteClient, RemoteConnectionOptions,
+    SshConnectionOptions, WslConnectionOptions, parse_port_forward_spec,
+    remote_client::ConnectionIdentifier,
 };
 use settings::{
     DevContainerConnection, DevContainerHost, RemoteProject, RemoteSettingsContent, Settings as _,
@@ -394,10 +394,7 @@ impl DevContainerKey {
     }
 }
 
-fn begin_devcontainer_in_flight(
-    set: &mut HashSet<DevContainerKey>,
-    key: &DevContainerKey,
-) -> bool {
+fn begin_devcontainer_in_flight(set: &mut HashSet<DevContainerKey>, key: &DevContainerKey) -> bool {
     set.insert(key.clone())
 }
 
@@ -568,7 +565,10 @@ impl CreateRemoteDevContainer {
         progress: DevContainerCreationProgress,
         _cx: &mut Context<RemoteServerProjects>,
     ) -> Self {
-        Self { progress, build_state: None }
+        Self {
+            progress,
+            build_state: None,
+        }
     }
 
     fn with_progress(
@@ -3382,7 +3382,9 @@ impl RemoteServerProjects {
                 }
                 Connection::DevContainer(connection) => {
                     let host = Self::format_devcontainer_host(connection.host.as_ref());
-                    let aux = if let Some(config_path) = Self::devcontainer_display_config_path(connection) {
+                    let aux = if let Some(config_path) =
+                        Self::devcontainer_display_config_path(connection)
+                    {
                         SharedString::from(format!("{host} • {config_path}"))
                     } else {
                         host.into()
@@ -3617,10 +3619,7 @@ impl RemoteServerProjects {
                 } else {
                     SharedString::from(format!("{main_label} ({status_text})"))
                 };
-                (
-                    Some(probe),
-                    Some(tooltip),
-                )
+                (Some(probe), Some(tooltip))
             }
             _ => (None, None),
         };
@@ -3682,9 +3681,7 @@ impl RemoteServerProjects {
                                         Label::new(label).size(LabelSize::Small).color(Color::Muted)
                                     })),
                             )
-                            .when_some(tooltip_text, |this, text| {
-                                this.tooltip(Tooltip::text(text))
-                            })
+                            .when_some(tooltip_text, |this, text| this.tooltip(Tooltip::text(text)))
                             .on_click(cx.listener(move |this, _, _window, cx| {
                                 this.selected_entry = Some(entry_key.clone());
                                 cx.notify();
@@ -4393,7 +4390,12 @@ impl RemoteServerProjects {
         cx: &mut Context<Self>,
     ) {
         if let Some(paths) = recent_project_paths {
-            self.open_remote_project_from_paths(Connection::DevContainer(connection), paths, window, cx);
+            self.open_remote_project_from_paths(
+                Connection::DevContainer(connection),
+                paths,
+                window,
+                cx,
+            );
         } else {
             self.create_remote_project(
                 ServerIndex::DevContainer(index),
@@ -4576,7 +4578,8 @@ impl RemoteServerProjects {
                 end_devcontainer_in_flight(&mut this.dev_container_remove_in_flight, &key);
                 match result {
                     Ok(()) => {
-                        let disconnected = this.disconnect_active_dev_container(&connection, true, cx);
+                        let disconnected =
+                            this.disconnect_active_dev_container(&connection, true, cx);
                         this.delete_dev_container_server(index, cx);
                         let message = if disconnected {
                             format!("Removed dev container `{}` and disconnected.", name)
@@ -5004,7 +5007,12 @@ impl RemoteServerProjects {
                     .map(|dir| dir.display().to_string());
                 let project_connection_options =
                     workspace.project().read(cx).remote_connection_options(cx);
-                Some((app_state, context, host_starting_dir, project_connection_options))
+                Some((
+                    app_state,
+                    context,
+                    host_starting_dir,
+                    project_connection_options,
+                ))
             })
             .ok()
             .flatten()
@@ -5052,59 +5060,59 @@ impl RemoteServerProjects {
             .detach();
 
             let config_for_binding = config.clone();
-            let (mut dev_connection, starting_dir) = match start_dev_container_with_progress(
-                context,
-                config,
-                Some(progress_tx),
-            )
-            .await
-            {
-                Ok((c, s)) => (c, s),
-                Err(e) => {
-                    log::error!("Failed to start dev container: {:?}", e);
-                    entity
-                        .update_in(cx, |remote_server_projects, window, cx| {
-                            let message = e.to_string();
-                            match &mut remote_server_projects.mode {
-                                Mode::CreateRemoteDevContainer(state) => {
-                                    if state.build_state.is_none() {
-                                        state.build_state =
-                                            Some(DevContainerBuildState::new(window, cx));
+            let (mut dev_connection, starting_dir) =
+                match start_dev_container_with_progress(context, config, Some(progress_tx)).await {
+                    Ok((c, s)) => (c, s),
+                    Err(e) => {
+                        log::error!("Failed to start dev container: {:?}", e);
+                        entity
+                            .update_in(cx, |remote_server_projects, window, cx| {
+                                let message = e.to_string();
+                                match &mut remote_server_projects.mode {
+                                    Mode::CreateRemoteDevContainer(state) => {
+                                        if state.build_state.is_none() {
+                                            state.build_state =
+                                                Some(DevContainerBuildState::new(window, cx));
+                                        }
+                                        if let Some(build_state) = state.build_state.as_mut() {
+                                            build_state.append_log_line(
+                                                DevContainerLogLine {
+                                                    stream: DevContainerLogStream::Stderr,
+                                                    line: message.clone(),
+                                                },
+                                                window,
+                                                cx,
+                                            );
+                                        }
+                                        state.progress =
+                                            DevContainerCreationProgress::Error(message.clone());
+                                        cx.notify();
                                     }
-                                    if let Some(build_state) = state.build_state.as_mut() {
-                                        build_state.append_log_line(
-                                            DevContainerLogLine {
-                                                stream: DevContainerLogStream::Stderr,
-                                                line: message.clone(),
-                                            },
-                                            window,
-                                            cx,
-                                        );
+                                    _ => {
+                                        remote_server_projects.mode =
+                                            Mode::CreateRemoteDevContainer(
+                                                CreateRemoteDevContainer::new(
+                                                    DevContainerCreationProgress::Error(
+                                                        message.clone(),
+                                                    ),
+                                                    cx,
+                                                )
+                                                .with_progress(
+                                                    DevContainerCreationProgress::Error(
+                                                        message.clone(),
+                                                    ),
+                                                    window,
+                                                    cx,
+                                                ),
+                                            );
+                                        cx.notify();
                                     }
-                                    state.progress =
-                                        DevContainerCreationProgress::Error(message.clone());
-                                    cx.notify();
                                 }
-                                _ => {
-                                    remote_server_projects.mode = Mode::CreateRemoteDevContainer(
-                                        CreateRemoteDevContainer::new(
-                                            DevContainerCreationProgress::Error(message.clone()),
-                                            cx,
-                                        )
-                                        .with_progress(
-                                            DevContainerCreationProgress::Error(message.clone()),
-                                            window,
-                                            cx,
-                                        ),
-                                    );
-                                    cx.notify();
-                                }
-                            }
-                        })
-                        .log_err();
-                    return;
-                }
-            };
+                            })
+                            .log_err();
+                        return;
+                    }
+                };
             if dev_connection.host.is_none() {
                 if let Some(options) = project_connection_options.as_ref() {
                     dev_connection.host = devcontainer_host_from_remote_options(options);
@@ -5509,57 +5517,49 @@ impl RemoteServerProjects {
                 .justify_between()
                 .items_center()
                 .child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .child(
-                            div()
-                                .id("devcontainer-progress-back")
-                                .track_focus(&build_state.back_entry.focus_handle)
-                                .on_action(cx.listener(|this, _: &menu::Confirm, window, cx| {
-                                    if let Mode::CreateRemoteDevContainer(state) = &mut this.mode {
-                                        if let Some(build_state) = state.build_state.as_mut() {
-                                            build_state.select_previous_step();
-                                            build_state.log_editor.update(cx, |editor, cx| {
-                                                editor.move_to_beginning(
-                                                    &editor::actions::MoveToBeginning,
-                                                    window,
-                                                    cx,
-                                                );
-                                            });
-                                        }
-                                        cx.notify();
+                    h_flex().gap_1().items_center().child(
+                        div()
+                            .id("devcontainer-progress-back")
+                            .track_focus(&build_state.back_entry.focus_handle)
+                            .on_action(cx.listener(|this, _: &menu::Confirm, window, cx| {
+                                if let Mode::CreateRemoteDevContainer(state) = &mut this.mode {
+                                    if let Some(build_state) = state.build_state.as_mut() {
+                                        build_state.select_previous_step();
+                                        build_state.log_editor.update(cx, |editor, cx| {
+                                            editor.move_to_beginning(
+                                                &editor::actions::MoveToBeginning,
+                                                window,
+                                                cx,
+                                            );
+                                        });
                                     }
-                                    cx.focus_self(window);
-                                }))
-                                .child(
-                                    Button::new("devcontainer-progress-back-button", "Back")
-                                        .icon(IconName::ArrowLeft)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            if let Mode::CreateRemoteDevContainer(state) =
-                                                &mut this.mode
-                                            {
-                                                if let Some(build_state) =
-                                                    state.build_state.as_mut()
-                                                {
-                                                    build_state.select_previous_step();
-                                                    build_state.log_editor.update(
+                                    cx.notify();
+                                }
+                                cx.focus_self(window);
+                            }))
+                            .child(
+                                Button::new("devcontainer-progress-back-button", "Back")
+                                    .icon(IconName::ArrowLeft)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if let Mode::CreateRemoteDevContainer(state) =
+                                            &mut this.mode
+                                        {
+                                            if let Some(build_state) = state.build_state.as_mut() {
+                                                build_state.select_previous_step();
+                                                build_state.log_editor.update(cx, |editor, cx| {
+                                                    editor.move_to_beginning(
+                                                        &editor::actions::MoveToBeginning,
+                                                        window,
                                                         cx,
-                                                        |editor, cx| {
-                                                            editor.move_to_beginning(
-                                                                &editor::actions::MoveToBeginning,
-                                                                window,
-                                                                cx,
-                                                            );
-                                                        },
                                                     );
-                                                }
-                                                cx.notify();
+                                                });
                                             }
-                                            cx.focus_self(window);
-                                        })),
-                                ),
-                        ),
+                                            cx.notify();
+                                        }
+                                        cx.focus_self(window);
+                                    })),
+                            ),
+                    ),
                 )
                 .child(
                     h_flex()
@@ -5583,7 +5583,7 @@ impl RemoteServerProjects {
                                         "devcontainer-progress-copy-button",
                                         build_state.log_contents.clone(),
                                     )
-                                        .tooltip_label("Copy logs"),
+                                    .tooltip_label("Copy logs"),
                                 ),
                         )
                         .child(
@@ -7565,13 +7565,11 @@ impl RemoteServerProjects {
                             .toggle_state(entries[4].focus_handle.contains_focused(window, cx))
                             .inset(true)
                             .spacing(ui::ListItemSpacing::Sparse)
-                            .start_slot(
-                                if is_running {
-                                    Icon::new(IconName::Stop).color(Color::Warning)
-                                } else {
-                                    Icon::new(IconName::PlayFilled).color(Color::Success)
-                                },
-                            )
+                            .start_slot(if is_running {
+                                Icon::new(IconName::Stop).color(Color::Warning)
+                            } else {
+                                Icon::new(IconName::PlayFilled).color(Color::Success)
+                            })
                             .child(Label::new(if is_running {
                                 "Stop Container and Disconnect"
                             } else {

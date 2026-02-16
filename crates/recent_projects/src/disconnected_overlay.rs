@@ -106,7 +106,8 @@ impl DisconnectedOverlay {
                 let handle = cx.entity().downgrade();
 
                 let remote_connection_options = project.read(cx).remote_connection_options(cx);
-                if let Some(RemoteConnectionOptions::Docker(options)) = remote_connection_options.clone()
+                if let Some(RemoteConnectionOptions::Docker(options)) =
+                    remote_connection_options.clone()
                     && take_pending_devcontainer_host_return(&options, cx)
                     && Self::return_devcontainer_to_host_on_disconnect(
                         &options, workspace, window, cx,
