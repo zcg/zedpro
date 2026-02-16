@@ -569,6 +569,7 @@ impl PickerDelegate for WorkspacePickerDelegate {
                 let workspace_index = thread_entry.index;
                 let multi_workspace = self.multi_workspace.clone();
                 let workspace_count = self.workspace_thread_count;
+                let is_active = self.active_workspace_index == workspace_index;
                 let is_hovered = self.hovered_thread_item == Some(workspace_index);
 
                 let remove_btn = IconButton::new(
@@ -588,10 +589,23 @@ impl PickerDelegate for WorkspacePickerDelegate {
                 });
 
                 let has_notification = self.notified_workspaces.contains(&workspace_index);
-                let thread_subtitle = if thread_entry.tab_title.is_empty() {
-                    Some(worktree_label.clone())
+                let title = thread_info
+                    .as_ref()
+                    .map(|info| info.title.clone())
+                    .or_else(|| {
+                        (!thread_entry.tab_title.is_empty()).then(|| thread_entry.tab_title.clone())
+                    })
+                    .unwrap_or_else(|| worktree_label.clone());
+                let show_worktree_subtitle = title != worktree_label;
+                let title_highlight_positions = if show_worktree_subtitle {
+                    Vec::new()
                 } else {
-                    Some(thread_entry.tab_title.clone())
+                    positions.clone()
+                };
+                let worktree_highlight_positions = if show_worktree_subtitle {
+                    positions.clone()
+                } else {
+                    Vec::new()
                 };
                 let running = matches!(
                     thread_info,
@@ -604,14 +618,21 @@ impl PickerDelegate for WorkspacePickerDelegate {
                 Some(
                     ThreadItem::new(
                         ("workspace-item", thread_entry.index),
-                        worktree_label.clone(),
+                        title,
                     )
-                    .icon(IconName::Folder)
+                    .icon(if is_active {
+                        IconName::FolderOpen
+                    } else {
+                        IconName::Folder
+                    })
                     .running(running)
                     .generation_done(has_notification)
                     .selected(selected)
-                    .highlight_positions(positions.clone())
-                    .when_some(thread_subtitle, |item, subtitle| item.worktree(subtitle))
+                    .highlight_positions(title_highlight_positions)
+                    .worktree_highlight_positions(worktree_highlight_positions)
+                    .when(show_worktree_subtitle, |item| {
+                        item.worktree(worktree_label.clone())
+                    })
                     .when(workspace_count > 1, |item| item.action_slot(remove_btn))
                     .hovered(is_hovered)
                     .on_hover(cx.listener(move |picker, is_hovered, _window, cx| {

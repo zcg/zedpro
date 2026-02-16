@@ -40,7 +40,6 @@ pub(crate) struct WindowsPlatform {
     foreground_executor: ForegroundExecutor,
     text_system: Arc<dyn PlatformTextSystem>,
     direct_write_text_system: Option<Arc<DirectWriteTextSystem>>,
-    windows_version: WindowsVersion,
     drop_target_helper: Option<IDropTargetHelper>,
     /// Flag to instruct the `VSyncProvider` thread to invalidate the directx devices
     /// as resizing them has failed, causing us to have lost at least the render target.
@@ -259,7 +258,6 @@ impl WindowsPlatform {
         } else {
             HICON::default()
         };
-        let windows_version = WindowsVersion::new().context("Error retrieve windows version")?;
 
         Ok(Self {
             inner,
@@ -272,7 +270,6 @@ impl WindowsPlatform {
             text_system,
             direct_write_text_system,
             disable_direct_composition,
-            windows_version,
             drop_target_helper,
             invalidate_devices: Arc::new(AtomicBool::new(false)),
             tab_coordinator: Rc::new(WindowsTabCoordinator::new()),
@@ -307,7 +304,6 @@ impl WindowsPlatform {
             icon: self.icon,
             executor: self.foreground_executor.clone(),
             current_cursor: self.inner.state.current_cursor.get(),
-            windows_version: self.windows_version,
             drop_target_helper: self.drop_target_helper.clone().unwrap(),
             validation_number: self.inner.validation_number,
             main_receiver: self.inner.main_receiver.clone(),
@@ -1170,7 +1166,6 @@ pub(crate) struct WindowCreationInfo {
     pub(crate) icon: HICON,
     pub(crate) executor: ForegroundExecutor,
     pub(crate) current_cursor: Option<HCURSOR>,
-    pub(crate) windows_version: WindowsVersion,
     pub(crate) drop_target_helper: IDropTargetHelper,
     pub(crate) validation_number: usize,
     pub(crate) main_receiver: PriorityQueueReceiver<RunnableVariant>,
