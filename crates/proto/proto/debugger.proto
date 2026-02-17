@@ -323,6 +323,18 @@ message DapStackTraceResponse {
     repeated DapStackFrame frames = 1;
 }
 
+message DapSourceRequest {
+    uint64 project_id = 1;
+    uint64 client_id = 2;
+    optional DapSource source = 3;
+    optional uint64 source_reference = 4;
+}
+
+message DapSourceResponse {
+    string content = 1;
+    optional string mime_type = 2;
+}
+
 message DapStackFrame {
     uint64 id = 1;
     string name = 2;

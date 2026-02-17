@@ -6,7 +6,7 @@ use super::dap_command::{
     EvaluateCommand, Initialize, Launch, LoadedSourcesCommand, LocalDapCommand, LocationsCommand,
     ModulesCommand, NextCommand, PauseCommand, RestartCommand, RestartStackFrameCommand,
     ScopesCommand, SetDataBreakpointsCommand, SetExceptionBreakpoints, SetVariableValueCommand,
-    StackTraceCommand, StepBackCommand, StepCommand, StepInCommand, StepOutCommand,
+    SourceCommand, StackTraceCommand, StepBackCommand, StepCommand, StepInCommand, StepOutCommand,
     TerminateCommand, TerminateThreadsCommand, ThreadsCommand, VariablesCommand,
 };
 use super::dap_store::DapStore;
@@ -2231,6 +2231,10 @@ impl Session {
             cx,
         );
         self.session_state().loaded_sources.clone()
+    }
+
+    pub fn source(&mut self, source: Source, _cx: &mut Context<Self>) -> Task<Result<dap::SourceResponse>> {
+        self.state.request_dap(SourceCommand { source })
     }
 
     fn fallback_to_manual_restart(

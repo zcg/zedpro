@@ -1262,6 +1262,86 @@ impl DapCommand for StackTraceCommand {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct SourceCommand {
+    pub source: dap::Source,
+}
+
+impl LocalDapCommand for SourceCommand {
+    type Response = dap::SourceResponse;
+    type DapRequest = dap::requests::Source;
+
+    fn to_dap(&self) -> <Self::DapRequest as dap::requests::Request>::Arguments {
+        dap::SourceArguments {
+            source: Some(self.source.clone()),
+            source_reference: self.source.source_reference.unwrap_or_default(),
+        }
+    }
+
+    fn response_from_dap(
+        &self,
+        message: <Self::DapRequest as dap::requests::Request>::Response,
+    ) -> Result<Self::Response> {
+        Ok(message)
+    }
+}
+
+impl DapCommand for SourceCommand {
+    type ProtoRequest = proto::DapSourceRequest;
+    type ProtoResponse = proto::DapSourceResponse;
+
+    fn to_proto(&self, debug_client_id: SessionId, upstream_project_id: u64) -> Self::ProtoRequest {
+        proto::DapSourceRequest {
+            project_id: upstream_project_id,
+            client_id: debug_client_id.to_proto(),
+            source: Some(self.source.clone().to_proto()),
+            source_reference: self.source.source_reference,
+        }
+    }
+
+    fn from_proto(request: &Self::ProtoRequest) -> Self {
+        let mut source = request
+            .source
+            .clone()
+            .map(dap::Source::from_proto)
+            .unwrap_or(dap::Source {
+                name: None,
+                path: None,
+                source_reference: None,
+                presentation_hint: None,
+                origin: None,
+                sources: None,
+                adapter_data: None,
+                checksums: None,
+            });
+        if source.source_reference.is_none() {
+            source.source_reference = request.source_reference;
+        }
+        Self { source }
+    }
+
+    fn client_id_from_proto(request: &Self::ProtoRequest) -> SessionId {
+        SessionId::from_proto(request.client_id)
+    }
+
+    fn response_from_proto(&self, message: Self::ProtoResponse) -> Result<Self::Response> {
+        Ok(dap::SourceResponse {
+            content: message.content,
+            mime_type: message.mime_type,
+        })
+    }
+
+    fn response_to_proto(
+        _debug_client_id: SessionId,
+        message: Self::Response,
+    ) -> Self::ProtoResponse {
+        proto::DapSourceResponse {
+            content: message.content,
+            mime_type: message.mime_type,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct ScopesCommand {
     pub stack_frame_id: u64,

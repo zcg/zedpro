@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,6 +7,7 @@ use anyhow::{Context as _, Result, anyhow};
 use dap::StackFrameId;
 use dap::adapters::DebugAdapterName;
 use db::kvp::KEY_VALUE_STORE;
+use editor::{Editor, MultiBuffer};
 use gpui::{
     Action, AnyElement, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, ListState,
     Subscription, Task, WeakEntity, list,
@@ -16,10 +18,11 @@ use util::{
 };
 
 use crate::{StackTraceView, ToggleUserFrames};
-use language::PointUtf16;
+use language::{Buffer, Capability, PointUtf16};
 use project::debugger::breakpoint_store::ActiveStackFrame;
 use project::debugger::session::{Session, SessionEvent, StackFrame, ThreadStatus};
 use project::{ProjectItem, ProjectPath};
+use text::Point;
 use ui::{Tooltip, WithScrollbar, prelude::*};
 use workspace::{ItemHandle, Workspace, WorkspaceId};
 
@@ -80,6 +83,7 @@ pub struct StackFrameList {
     list_filter: StackFrameFilter,
     filter_entries_indices: Vec<usize>,
     error: Option<SharedString>,
+    source_reference_cache: HashMap<u64, SourceReferenceCacheEntry>,
     _refresh_task: Task<()>,
 }
 
@@ -89,6 +93,12 @@ pub enum StackFrameEntry {
     /// Used to indicate that the frame is artificial and is a visual label or separator
     Label(dap::StackFrame),
     Collapsed(Vec<dap::StackFrame>),
+}
+
+#[derive(Clone)]
+struct SourceReferenceCacheEntry {
+    buffer: Entity<Buffer>,
+    editor: WeakEntity<Editor>,
 }
 
 impl StackFrameList {
@@ -143,6 +153,7 @@ impl StackFrameList {
             opened_stack_frame_id: None,
             list_filter,
             list_state,
+            source_reference_cache: HashMap::default(),
             _refresh_task: Task::ready(()),
         };
         this.schedule_refresh(true, window, cx);
@@ -261,7 +272,7 @@ impl StackFrameList {
         let mut entries = Vec::new();
         let mut collapsed_entries = Vec::new();
         let mut first_stack_frame = None;
-        let mut first_stack_frame_with_path = None;
+        let mut first_openable_stack_frame = None;
 
         let stack_frames = match self.stack_frames(cx) {
             Ok(stack_frames) => stack_frames,
@@ -314,13 +325,8 @@ impl StackFrameList {
 
                     first_stack_frame.get_or_insert(entries.len());
 
-                    if stack_frame
-                        .dap
-                        .source
-                        .as_ref()
-                        .is_some_and(|source| source.path.is_some())
-                    {
-                        first_stack_frame_with_path.get_or_insert(entries.len());
+                    if Self::can_open_stack_frame_source(&stack_frame.dap) {
+                        first_openable_stack_frame.get_or_insert(entries.len());
                     }
                     entries.push(StackFrameEntry::Normal(stack_frame.dap.clone()));
                     if frame_in_visible_worktree {
@@ -337,7 +343,7 @@ impl StackFrameList {
         self.entries = entries;
         self.filter_entries_indices = filter_entries_indices;
 
-        if let Some(ix) = first_stack_frame_with_path
+        if let Some(ix) = first_openable_stack_frame
             .or(first_stack_frame)
             .filter(|_| open_first_stack_frame)
         {
@@ -393,13 +399,207 @@ impl StackFrameList {
     ) -> Task<Result<()>> {
         let stack_frame_id = stack_frame.id;
         self.opened_stack_frame_id = Some(stack_frame_id);
-        let Some(abs_path) = Self::abs_path_from_stack_frame(&stack_frame) else {
-            return Task::ready(Err(anyhow!("Project path not found")));
-        };
         let row = stack_frame.line.saturating_sub(1) as u32;
+        let source = stack_frame.source.clone();
+        let source_reference = Self::source_reference_from_stack_frame(&stack_frame);
+        let abs_path = Self::abs_path_from_stack_frame(&stack_frame);
         cx.emit(StackFrameListEvent::SelectedStackFrameChanged(
             stack_frame_id,
         ));
+        if let (Some(source_reference), Some(source)) = (source_reference, source) {
+            return self.go_to_stack_frame_source_reference(
+                stack_frame_id,
+                row,
+                source,
+                source_reference,
+                abs_path,
+                window,
+                cx,
+            );
+        }
+
+        let Some(abs_path) = abs_path else {
+            return Task::ready(Err(anyhow!("Project path not found")));
+        };
+        self.go_to_stack_frame_path(stack_frame_id, row, abs_path, window, cx)
+    }
+
+    fn go_to_stack_frame_source_reference(
+        &mut self,
+        stack_frame_id: StackFrameId,
+        row: u32,
+        source: dap::Source,
+        source_reference: u64,
+        fallback_abs_path: Option<Arc<Path>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let source_title = Self::source_title(&source, source_reference);
+        let active_path = Self::active_path_for_source_reference(source_reference);
+        let language_hint_path = Self::source_language_path(&source);
+        cx.spawn_in(window, async move |this, cx| {
+            let cache_entry = this.update(cx, |this, _| {
+                this.source_reference_cache
+                    .get(&source_reference)
+                    .cloned()
+            })?;
+
+            if let Some(cache_entry) = cache_entry {
+                let buffer = cache_entry.buffer.clone();
+                let editor = this.update_in(cx, |this, window, cx| {
+                    this.open_source_reference_editor(
+                        source_reference,
+                        source_title.clone(),
+                        buffer.clone(),
+                        window,
+                        cx,
+                    )
+                })??;
+                editor.update_in(cx, |editor, window, cx| {
+                    editor.go_to_singleton_buffer_point(Point::new(row, 0), window, cx);
+                })?;
+                this.update(cx, |this, cx| {
+                    let thread_id = this.state.read_with(cx, |state, _| {
+                        state.thread_id.context("No selected thread ID found")
+                    })??;
+                    let position = cache_entry
+                        .buffer
+                        .read_with(cx, |buffer, _| {
+                            buffer.snapshot().anchor_after(PointUtf16::new(row, 0))
+                        });
+
+                    this.workspace.update(cx, |workspace, cx| {
+                        let breakpoint_store = workspace.project().read(cx).breakpoint_store();
+                        breakpoint_store.update(cx, |store, cx| {
+                            store.set_active_position(
+                                ActiveStackFrame {
+                                    session_id: this.session.read(cx).session_id(),
+                                    thread_id,
+                                    stack_frame_id,
+                                    path: active_path.clone(),
+                                    position,
+                                },
+                                cx,
+                            );
+                        })
+                    })
+                })??;
+                return Ok(());
+            }
+
+            let source_response = this
+                .update(cx, |this, cx| {
+                    this.session
+                        .update(cx, |session, cx| session.source(source.clone(), cx))
+                })?
+                .await;
+
+            let source_response = match source_response {
+                Ok(source_response) => source_response,
+                Err(error) => {
+                    log::warn!(
+                        "Failed to fetch sourceReference {} for stack frame {}: {:#}",
+                        source_reference,
+                        stack_frame_id,
+                        error
+                    );
+
+                    if let Some(abs_path) = fallback_abs_path {
+                        return this
+                            .update_in(cx, |this, window, cx| {
+                                this.go_to_stack_frame_path(stack_frame_id, row, abs_path, window, cx)
+                            })?
+                            .await;
+                    }
+
+                    return Err(error);
+                }
+            };
+
+            let language_registry = this.update(cx, |this, cx| {
+                this.workspace
+                    .update(cx, |workspace, cx| workspace.project().read(cx).languages().clone())
+            })??;
+            let mut language = None;
+            if let Some(path) = language_hint_path.as_ref() {
+                language = language_registry
+                    .load_language_for_file_path(path.as_path())
+                    .await
+                    .ok();
+            }
+            if language.is_none()
+                && let Some(mime_type) = source_response.mime_type.as_deref()
+                && let Some(language_name) = Self::language_name_for_mime_type(mime_type)
+            {
+                language = language_registry.language_for_name(language_name).await.ok();
+            }
+
+            let buffer = this
+                .update(cx, |this, cx| {
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace
+                            .project()
+                            .update(cx, |project, cx| project.create_buffer(language.clone(), false, cx))
+                    })
+                })??
+                .await?;
+
+            buffer.update(cx, |buffer, cx| {
+                buffer.set_text(source_response.content, cx);
+                buffer.set_capability(Capability::ReadOnly, cx);
+            });
+
+            let editor = this.update_in(cx, |this, window, cx| {
+                this.open_source_reference_editor(
+                    source_reference,
+                    source_title.clone(),
+                    buffer.clone(),
+                    window,
+                    cx,
+                )
+            })??;
+
+            editor.update_in(cx, |editor, window, cx| {
+                editor.go_to_singleton_buffer_point(Point::new(row, 0), window, cx);
+            })?;
+
+            this.update(cx, |this, cx| {
+                let thread_id = this.state.read_with(cx, |state, _| {
+                    state.thread_id.context("No selected thread ID found")
+                })??;
+                let position = buffer.read_with(cx, |buffer, _| {
+                    buffer.snapshot().anchor_after(PointUtf16::new(row, 0))
+                });
+
+                this.workspace.update(cx, |workspace, cx| {
+                    let breakpoint_store = workspace.project().read(cx).breakpoint_store();
+                    breakpoint_store.update(cx, |store, cx| {
+                        store.set_active_position(
+                            ActiveStackFrame {
+                                session_id: this.session.read(cx).session_id(),
+                                thread_id,
+                                stack_frame_id,
+                                path: active_path.clone(),
+                                position,
+                            },
+                            cx,
+                        );
+                    })
+                })
+            })??;
+
+            Ok(())
+        })
+    }
+
+    fn go_to_stack_frame_path(
+        &mut self,
+        stack_frame_id: StackFrameId,
+        row: u32,
+        abs_path: Arc<Path>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
         cx.spawn_in(window, async move |this, cx| {
             let (worktree, relative_path) = this
                 .update(cx, |this, cx| {
@@ -481,6 +681,102 @@ impl StackFrameList {
                 })
             })?
         })
+    }
+
+    fn open_source_reference_editor(
+        &mut self,
+        source_reference: u64,
+        source_title: String,
+        buffer: Entity<Buffer>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<Entity<Editor>> {
+        let editor = if let Some(cached_editor) = self
+            .source_reference_cache
+            .get(&source_reference)
+            .and_then(|entry| entry.editor.upgrade())
+        {
+            cached_editor
+        } else {
+            self.create_source_reference_editor(buffer.clone(), source_title, window, cx)?
+        };
+
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+        })?;
+
+        self.source_reference_cache.insert(
+            source_reference,
+            SourceReferenceCacheEntry {
+                buffer,
+                editor: editor.downgrade(),
+            },
+        );
+
+        Ok(editor)
+    }
+
+    fn create_source_reference_editor(
+        &self,
+        buffer: Entity<Buffer>,
+        source_title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<Entity<Editor>> {
+        let project = self.workspace.update(cx, |workspace, _| workspace.project().clone())?;
+        let multibuffer =
+            cx.new(|cx| MultiBuffer::singleton(buffer, cx).with_title(source_title.into()));
+        Ok(cx.new(|cx| {
+            let mut editor = Editor::for_multibuffer(multibuffer, Some(project), window, cx);
+            editor.set_read_only(true);
+            editor.set_should_serialize(false, cx);
+            editor
+        }))
+    }
+
+    fn source_reference_from_stack_frame(stack_frame: &dap::StackFrame) -> Option<u64> {
+        stack_frame
+            .source
+            .as_ref()
+            .and_then(|source| source.source_reference.filter(|source_reference| *source_reference > 0))
+    }
+
+    fn can_open_stack_frame_source(stack_frame: &dap::StackFrame) -> bool {
+        Self::source_reference_from_stack_frame(stack_frame).is_some()
+            || Self::abs_path_from_stack_frame(stack_frame).is_some()
+    }
+
+    fn source_title(source: &dap::Source, source_reference: u64) -> String {
+        source
+            .name
+            .clone()
+            .or_else(|| source.path.clone())
+            .unwrap_or_else(|| format!("source:{source_reference}"))
+    }
+
+    fn active_path_for_source_reference(source_reference: u64) -> Arc<Path> {
+        Arc::<Path>::from(PathBuf::from(format!(
+            ".zed-dap-source/source-reference-{source_reference}"
+        )))
+    }
+
+    fn source_language_path(source: &dap::Source) -> Option<PathBuf> {
+        source
+            .path
+            .as_deref()
+            .map(PathBuf::from)
+            .or_else(|| source.name.as_deref().map(PathBuf::from))
+    }
+
+    fn language_name_for_mime_type(mime_type: &str) -> Option<&'static str> {
+        match mime_type {
+            "text/x-csharp" => Some("C#"),
+            "text/rust" | "text/x-rustsrc" => Some("Rust"),
+            "text/javascript" | "application/javascript" => Some("JavaScript"),
+            "text/typescript" | "application/typescript" => Some("TypeScript"),
+            "application/json" | "text/json" => Some("JSON"),
+            _ => None,
+        }
     }
 
     pub(crate) fn abs_path_from_stack_frame(stack_frame: &dap::StackFrame) -> Option<Arc<Path>> {
