@@ -1164,7 +1164,7 @@ impl RemoteClient {
             .unwrap()
     }
 
-    fn remote_connection(&self) -> Option<Arc<dyn RemoteConnection>> {
+    pub fn remote_connection(&self) -> Option<Arc<dyn RemoteConnection>> {
         self.state
             .as_ref()
             .and_then(|state| state.remote_connection())
