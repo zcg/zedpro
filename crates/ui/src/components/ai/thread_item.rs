@@ -9,6 +9,7 @@ use gpui::{AnyView, ClickEvent, SharedString};
 pub struct ThreadItem {
     id: ElementId,
     icon: IconName,
+    icon_color: Color,
     title: SharedString,
     timestamp: SharedString,
     running: bool,
@@ -22,6 +23,7 @@ pub struct ThreadItem {
     worktree_highlight_positions: Vec<usize>,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
     on_hover: Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>,
+    status_slot: Option<AnyElement>,
     action_slot: Option<AnyElement>,
     tooltip: Option<Box<dyn Fn(&mut Window, &mut App) -> AnyView + 'static>>,
 }
@@ -31,6 +33,7 @@ impl ThreadItem {
         Self {
             id: id.into(),
             icon: IconName::ZedAgent,
+            icon_color: Color::Muted,
             title: title.into(),
             timestamp: "".into(),
             running: false,
@@ -44,6 +47,7 @@ impl ThreadItem {
             worktree_highlight_positions: Vec::new(),
             on_click: None,
             on_hover: Box::new(|_, _, _| {}),
+            status_slot: None,
             action_slot: None,
             tooltip: None,
         }
@@ -56,6 +60,11 @@ impl ThreadItem {
 
     pub fn icon(mut self, icon: IconName) -> Self {
         self.icon = icon;
+        self
+    }
+
+    pub fn icon_color(mut self, icon_color: Color) -> Self {
+        self.icon_color = icon_color;
         self
     }
 
@@ -122,6 +131,11 @@ impl ThreadItem {
         self
     }
 
+    pub fn status_slot(mut self, element: impl IntoElement) -> Self {
+        self.status_slot = Some(element.into_any_element());
+        self
+    }
+
     pub fn tooltip(mut self, tooltip: impl Fn(&mut Window, &mut App) -> AnyView + 'static) -> Self {
         self.tooltip = Some(Box::new(tooltip));
         self
@@ -139,9 +153,7 @@ impl RenderOnce for ThreadItem {
         // };
 
         let icon_container = || h_flex().size_4().justify_center();
-        let agent_icon = Icon::new(self.icon)
-            .color(Color::Muted)
-            .size(IconSize::Small);
+        let agent_icon = Icon::new(self.icon).color(self.icon_color).size(IconSize::Small);
 
         let icon = if self.generation_done {
             icon_container().child(DecoratedIcon::new(
@@ -163,7 +175,8 @@ impl RenderOnce for ThreadItem {
             icon_container().child(agent_icon)
         };
 
-        let running_or_action = self.running || (self.hovered && self.action_slot.is_some());
+        let show_trailing =
+            self.status_slot.is_some() || self.running || (self.hovered && self.action_slot.is_some());
 
         // let has_no_changes = self.added.is_none() && self.removed.is_none();
 
@@ -182,9 +195,9 @@ impl RenderOnce for ThreadItem {
             .cursor_pointer()
             .map(|this| {
                 if self.worktree.is_some() {
-                    this.p_2()
+                    this.px_1p5().py_1()
                 } else {
-                    this.px_2().py_1()
+                    this.px_1p5().py_0p5()
                 }
             })
             .when(self.selected, |s| s.bg(clr.element_active))
@@ -194,7 +207,7 @@ impl RenderOnce for ThreadItem {
                 h_flex()
                     .min_w_0()
                     .w_full()
-                    .gap_2()
+                    .gap_1p5()
                     .justify_between()
                     .child(
                         h_flex()
@@ -206,10 +219,13 @@ impl RenderOnce for ThreadItem {
                             .child(title_label)
                             .when_some(self.tooltip, |this, tooltip| this.tooltip(tooltip)),
                     )
-                    .when(running_or_action, |this| {
+                    .when(show_trailing, |this| {
                         this.child(
                             h_flex()
                                 .gap_1()
+                                .when_some(self.status_slot, |this, status_slot| {
+                                    this.child(status_slot)
+                                })
                                 .when(self.running, |this| {
                                     this.child(
                                         icon_container()
@@ -226,13 +242,13 @@ impl RenderOnce for ThreadItem {
                 let worktree_highlight_positions = self.worktree_highlight_positions;
                 let worktree_label = if worktree_highlight_positions.is_empty() {
                     Label::new(worktree)
-                        .size(LabelSize::Small)
+                        .size(LabelSize::XSmall)
                         .color(Color::Muted)
                         .truncate_start()
                         .into_any_element()
                 } else {
                     HighlightedLabel::new(worktree, worktree_highlight_positions)
-                        .size(LabelSize::Small)
+                        .size(LabelSize::XSmall)
                         .color(Color::Muted)
                         .into_any_element()
                 };
@@ -240,7 +256,7 @@ impl RenderOnce for ThreadItem {
                 this.child(
                     h_flex()
                         .min_w_0()
-                        .gap_1p5()
+                        .gap_1()
                         .child(icon_container()) // Icon Spacing
                         .child(worktree_label)
                         // TODO: Uncomment the elements below when we're ready to expose this data

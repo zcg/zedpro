@@ -15314,6 +15314,7 @@ dependencies = [
  "picker",
  "project",
  "recent_projects",
+ "remote",
  "serde_json",
  "settings",
  "theme",

@@ -11,6 +11,7 @@ use gpui::{
 use picker::{Picker, PickerDelegate};
 use project::Event as ProjectEvent;
 use recent_projects::{RecentProjectEntry, get_recent_projects};
+use remote::{ConnectionState, RemoteConnectionOptions};
 use std::fmt::Display;
 
 use std::collections::{HashMap, HashSet};
@@ -19,7 +20,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use theme::ActiveTheme;
 use ui::utils::TRAFFIC_LIGHT_PADDING;
-use ui::{Divider, DividerColor, KeyBinding, ListSubHeader, Tab, ThreadItem, Tooltip, prelude::*};
+use ui::{
+    Divider, DividerColor, Indicator, KeyBinding, ListSubHeader, Tab, ThreadItem, Tooltip,
+    prelude::*,
+};
 use ui_input::ErasedEditor;
 use util::ResultExt as _;
 use workspace::{
@@ -37,7 +41,6 @@ pub enum AgentThreadStatus {
 struct AgentThreadInfo {
     title: SharedString,
     status: AgentThreadStatus,
-    icon: IconName,
 }
 
 const LAST_THREAD_TITLES_KEY: &str = "sidebar-last-thread-titles";
@@ -46,6 +49,10 @@ const DEFAULT_WIDTH: Pixels = px(320.0);
 const MIN_WIDTH: Pixels = px(200.0);
 const MAX_WIDTH: Pixels = px(800.0);
 const MAX_MATCHES: usize = 100;
+const ACTIVE_WORKSPACES_LABEL: &str = "Active Workspaces";
+const REMOTE_WORKSPACES_LABEL: &str = "Remote Workspaces";
+const LOCAL_WORKSPACES_LABEL: &str = "Local Workspaces";
+const RECENT_PROJECTS_LABEL: &str = "Recent Projects";
 
 #[derive(Clone)]
 struct WorkspaceThreadEntry {
@@ -53,7 +60,12 @@ struct WorkspaceThreadEntry {
     workspace: Option<Entity<Workspace>>,
     worktree_label: SharedString,
     full_path: SharedString,
-    tab_title: SharedString,
+    worktree_count: usize,
+    project_icon: IconName,
+    project_kind: SharedString,
+    project_target: Option<SharedString>,
+    is_remote: bool,
+    connection_state: Option<ConnectionState>,
     thread_info: Option<AgentThreadInfo>,
 }
 
@@ -61,7 +73,6 @@ impl WorkspaceThreadEntry {
     fn from_workspace(
         index: usize,
         workspace: Entity<Workspace>,
-        tab_title: SharedString,
         persisted_titles: &HashMap<String, String>,
         cx: &App,
     ) -> Self {
@@ -81,8 +92,22 @@ impl WorkspaceThreadEntry {
             })
             .collect();
 
+        let project = workspace_ref.project();
+        let (remote_connection, connection_state) = project.read_with(cx, |project, cx| {
+            (
+                project.remote_connection_options(cx),
+                project.remote_connection_state(cx),
+            )
+        });
+        let (project_icon, project_kind, project_target, is_remote) =
+            workspace_project_details(remote_connection.as_ref());
+
         let worktree_label: SharedString = if worktree_names.is_empty() {
-            format!("Workspace {}", index + 1).into()
+            if remote_connection.is_some() {
+                format!("Remote Workspace {}", index + 1).into()
+            } else {
+                format!("Workspace {}", index + 1).into()
+            }
         } else {
             worktree_names.join(", ").into()
         };
@@ -103,7 +128,6 @@ impl WorkspaceThreadEntry {
             Some(AgentThreadInfo {
                 title: SharedString::from(title.clone()),
                 status: AgentThreadStatus::Completed,
-                icon: IconName::ZedAgent,
             })
         });
 
@@ -112,7 +136,12 @@ impl WorkspaceThreadEntry {
             workspace: Some(workspace),
             worktree_label,
             full_path,
-            tab_title,
+            worktree_count: worktrees.len(),
+            project_icon,
+            project_kind,
+            project_target,
+            is_remote,
+            connection_state,
             thread_info,
         }
     }
@@ -129,7 +158,12 @@ impl WorkspaceThreadEntry {
             workspace: None,
             full_path: worktree_label.clone(),
             worktree_label,
-            tab_title,
+            worktree_count: 0,
+            project_icon: IconName::Folder,
+            project_kind: "Workspace Tab".into(),
+            project_target: None,
+            is_remote: false,
+            connection_state: None,
             thread_info: None,
         }
     }
@@ -141,7 +175,6 @@ impl WorkspaceThreadEntry {
         let thread_view = agent_panel_ref.as_active_thread_view(cx)?.read(cx);
         let thread = thread_view.thread.read(cx);
 
-        let icon = thread_view.agent_icon;
         let title = thread.title();
 
         let status = match thread.status() {
@@ -151,8 +184,51 @@ impl WorkspaceThreadEntry {
         Some(AgentThreadInfo {
             title,
             status,
-            icon,
         })
+    }
+}
+
+fn workspace_project_details(
+    options: Option<&RemoteConnectionOptions>,
+) -> (IconName, SharedString, Option<SharedString>, bool) {
+    match options {
+        Some(options) => {
+            let kind = match options {
+                RemoteConnectionOptions::Ssh(_) => "SSH",
+                RemoteConnectionOptions::Wsl(_) => "WSL",
+                RemoteConnectionOptions::Docker(_) => "Dev Container",
+                #[cfg(any(test, feature = "test-support"))]
+                RemoteConnectionOptions::Mock(_) => "Mock",
+            };
+            let icon = match options {
+                RemoteConnectionOptions::Ssh(_) => IconName::Server,
+                RemoteConnectionOptions::Wsl(_) => IconName::Linux,
+                RemoteConnectionOptions::Docker(_) => IconName::Box,
+                #[cfg(any(test, feature = "test-support"))]
+                RemoteConnectionOptions::Mock(_) => IconName::Server,
+            };
+            (
+                icon,
+                format!("Remote ({kind})").into(),
+                Some(options.display_name().into()),
+                true,
+            )
+        }
+        None => (IconName::Folder, "Local Project".into(), None, false),
+    }
+}
+
+fn remote_connection_style(state: Option<ConnectionState>) -> (SharedString, Color, Color) {
+    match state.unwrap_or(ConnectionState::Disconnected) {
+        ConnectionState::Connecting => ("Connecting".into(), Color::Info, Color::Info),
+        ConnectionState::Connected => ("Connected".into(), Color::Success, Color::Default),
+        ConnectionState::HeartbeatMissed => ("Unstable".into(), Color::Warning, Color::Warning),
+        ConnectionState::Reconnecting => (
+            "Reconnecting".into(),
+            Color::Warning,
+            Color::Warning,
+        ),
+        ConnectionState::Disconnected => ("Disconnected".into(), Color::Error, Color::Error),
     }
 }
 
@@ -171,6 +247,13 @@ impl SidebarEntry {
             SidebarEntry::RecentProject(entry) => entry.name.as_ref(),
         }
     }
+}
+
+fn is_minor_group_separator(title: &SharedString) -> bool {
+    matches!(
+        title.as_ref(),
+        REMOTE_WORKSPACES_LABEL | LOCAL_WORKSPACES_LABEL
+    )
 }
 
 #[derive(Clone)]
@@ -211,6 +294,83 @@ impl WorkspacePickerDelegate {
             query: String::new(),
             hovered_thread_item: None,
             notified_workspaces: HashSet::new(),
+        }
+    }
+
+    fn first_selectable_match_index(&self) -> usize {
+        self.matches
+            .iter()
+            .position(|m| !matches!(&m.entry, SidebarEntry::Separator(_)))
+            .unwrap_or(0)
+    }
+
+    fn active_workspace_match_index(&self) -> Option<usize> {
+        self.matches.iter().position(|m| match &m.entry {
+            SidebarEntry::WorkspaceThread(thread) => thread.index == self.active_workspace_index,
+            _ => false,
+        })
+    }
+
+    fn append_grouped_workspace_entries(
+        entries: &mut Vec<SidebarEntry>,
+        workspace_threads: Vec<WorkspaceThreadEntry>,
+    ) {
+        if workspace_threads.is_empty() {
+            return;
+        }
+
+        entries.push(SidebarEntry::Separator(ACTIVE_WORKSPACES_LABEL.into()));
+
+        let (remote_threads, local_threads): (Vec<_>, Vec<_>) = workspace_threads
+            .into_iter()
+            .partition(|thread| thread.is_remote);
+
+        if !remote_threads.is_empty() {
+            entries.push(SidebarEntry::Separator(REMOTE_WORKSPACES_LABEL.into()));
+            for thread in remote_threads {
+                entries.push(SidebarEntry::WorkspaceThread(thread));
+            }
+        }
+
+        if !local_threads.is_empty() {
+            entries.push(SidebarEntry::Separator(LOCAL_WORKSPACES_LABEL.into()));
+            for thread in local_threads {
+                entries.push(SidebarEntry::WorkspaceThread(thread));
+            }
+        }
+    }
+
+    fn append_grouped_workspace_matches(
+        matches: &mut Vec<SidebarMatch>,
+        workspace_matches: Vec<SidebarMatch>,
+    ) {
+        if workspace_matches.is_empty() {
+            return;
+        }
+
+        matches.push(SidebarMatch {
+            entry: SidebarEntry::Separator(ACTIVE_WORKSPACES_LABEL.into()),
+            positions: Vec::new(),
+        });
+
+        let (remote_matches, local_matches): (Vec<_>, Vec<_>) = workspace_matches
+            .into_iter()
+            .partition(|m| matches!(&m.entry, SidebarEntry::WorkspaceThread(thread) if thread.is_remote));
+
+        if !remote_matches.is_empty() {
+            matches.push(SidebarMatch {
+                entry: SidebarEntry::Separator(REMOTE_WORKSPACES_LABEL.into()),
+                positions: Vec::new(),
+            });
+            matches.extend(remote_matches);
+        }
+
+        if !local_matches.is_empty() {
+            matches.push(SidebarMatch {
+                entry: SidebarEntry::Separator(LOCAL_WORKSPACES_LABEL.into()),
+                positions: Vec::new(),
+            });
+            matches.extend(local_matches);
         }
     }
 
@@ -314,13 +474,7 @@ impl WorkspacePickerDelegate {
 
         self.entries.clear();
 
-        if !workspace_threads.is_empty() {
-            self.entries
-                .push(SidebarEntry::Separator("Active Workspaces".into()));
-            for thread in workspace_threads {
-                self.entries.push(SidebarEntry::WorkspaceThread(thread));
-            }
-        }
+        Self::append_grouped_workspace_entries(&mut self.entries, workspace_threads);
 
         let recent: Vec<_> = self
             .recent_projects
@@ -493,13 +647,9 @@ impl PickerDelegate for WorkspacePickerDelegate {
                 })
                 .collect();
 
-            let separator_offset = if self.workspace_thread_count > 0 {
-                1
-            } else {
-                0
-            };
-            self.selected_index = (self.active_workspace_index + separator_offset)
-                .min(self.matches.len().saturating_sub(1));
+            self.selected_index = self
+                .active_workspace_match_index()
+                .unwrap_or_else(|| self.first_selectable_match_index());
             return Task::ready(());
         }
 
@@ -552,16 +702,13 @@ impl PickerDelegate for WorkspacePickerDelegate {
                     }
 
                     let mut result = Vec::new();
-                    if !workspace_matches.is_empty() {
-                        result.push(SidebarMatch {
-                            entry: SidebarEntry::Separator("Active Workspaces".into()),
-                            positions: Vec::new(),
-                        });
-                        result.extend(workspace_matches);
-                    }
+                    WorkspacePickerDelegate::append_grouped_workspace_matches(
+                        &mut result,
+                        workspace_matches,
+                    );
                     if !project_matches.is_empty() {
                         result.push(SidebarMatch {
-                            entry: SidebarEntry::Separator("Recent Projects".into()),
+                            entry: SidebarEntry::Separator(RECENT_PROJECTS_LABEL.into()),
                             positions: Vec::new(),
                         });
                         result.extend(project_matches);
@@ -576,13 +723,7 @@ impl PickerDelegate for WorkspacePickerDelegate {
                     if picker.delegate.matches.is_empty() {
                         picker.delegate.selected_index = 0;
                     } else {
-                        let first_selectable = picker
-                            .delegate
-                            .matches
-                            .iter()
-                            .position(|m| !matches!(m.entry, SidebarEntry::Separator(_)))
-                            .unwrap_or(0);
-                        picker.delegate.selected_index = first_selectable;
+                        picker.delegate.selected_index = picker.delegate.first_selectable_match_index();
                     }
                 })
                 .log_err();
@@ -622,24 +763,48 @@ impl PickerDelegate for WorkspacePickerDelegate {
         let SidebarMatch { entry, positions } = match_entry;
 
         match entry {
-            SidebarEntry::Separator(title) => Some(
-                v_flex()
-                    .when(index > 0, |this| {
-                        this.mt_1()
-                            .gap_2()
-                            .child(Divider::horizontal().color(DividerColor::BorderFaded))
-                    })
-                    .child(ListSubHeader::new(title.clone()).inset(true))
-                    .into_any_element(),
-            ),
+            SidebarEntry::Separator(title) => {
+                if is_minor_group_separator(title) {
+                    Some(
+                        h_flex()
+                            .px_3()
+                            .pt_0p5()
+                            .pb_0p5()
+                            .child(
+                                Label::new(title.clone())
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Hidden),
+                            )
+                            .into_any_element(),
+                    )
+                } else {
+                    Some(
+                        v_flex()
+                            .when(index > 0, |this| {
+                                this.mt_0p5()
+                                    .gap_1()
+                                    .child(Divider::horizontal().color(DividerColor::BorderFaded))
+                            })
+                            .child(ListSubHeader::new(title.clone()).inset(true))
+                            .into_any_element(),
+                    )
+                }
+            }
             SidebarEntry::WorkspaceThread(thread_entry) => {
                 let worktree_label = thread_entry.worktree_label.clone();
                 let full_path = thread_entry.full_path.clone();
+                let worktree_count = thread_entry.worktree_count;
+                let project_icon = thread_entry.project_icon;
+                let project_kind = thread_entry.project_kind.clone();
+                let project_target = thread_entry.project_target.clone();
+                let is_remote = thread_entry.is_remote;
+                let connection_state = thread_entry.connection_state;
                 let thread_info = thread_entry.thread_info.clone();
                 let workspace_index = thread_entry.index;
                 let multi_workspace = self.multi_workspace.clone();
                 let workspace_count = self.workspace_thread_count;
                 let is_hovered = self.hovered_thread_item == Some(workspace_index);
+                let is_active_workspace = workspace_index == self.active_workspace_index;
 
                 let remove_btn = IconButton::new(
                     format!("remove-workspace-{}", workspace_index),
@@ -658,24 +823,9 @@ impl PickerDelegate for WorkspacePickerDelegate {
                 });
 
                 let has_notification = self.notified_workspaces.contains(&workspace_index);
-                let title = thread_info
-                    .as_ref()
-                    .map(|info| info.title.clone())
-                    .or_else(|| {
-                        (!thread_entry.tab_title.is_empty()).then(|| thread_entry.tab_title.clone())
-                    })
-                    .unwrap_or_else(|| worktree_label.clone());
-                let show_worktree_subtitle = title != worktree_label;
-                let title_highlight_positions = if show_worktree_subtitle {
-                    Vec::new()
-                } else {
-                    positions.clone()
-                };
-                let worktree_highlight_positions = if show_worktree_subtitle {
-                    positions.clone()
-                } else {
-                    Vec::new()
-                };
+                let title = worktree_label.clone();
+                let title_highlight_positions = positions.clone();
+                let worktree_highlight_positions = Vec::new();
                 let running = matches!(
                     thread_info,
                     Some(AgentThreadInfo {
@@ -683,48 +833,103 @@ impl PickerDelegate for WorkspacePickerDelegate {
                         ..
                     })
                 );
+                let icon = if is_active_workspace {
+                    IconName::FolderOpen
+                } else {
+                    project_icon
+                };
+                let (connection_status, status_color, remote_icon_color) = if is_remote {
+                    remote_connection_style(connection_state)
+                } else {
+                    ("Local".into(), Color::Muted, Color::Muted)
+                };
+                let icon_color = if is_active_workspace {
+                    Color::Accent
+                } else if is_remote {
+                    remote_icon_color
+                } else {
+                    Color::Muted
+                };
+                let status_dot = is_remote.then_some(
+                    h_flex()
+                        .w_2()
+                        .h_2()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(cx.theme().colors().element_hover)
+                        .child(
+                            Indicator::dot()
+                                .color(status_color)
+                                .border_color(Color::Default),
+                        ),
+                );
+                let tooltip_body: SharedString = if full_path.is_empty() {
+                    "No visible worktrees".into()
+                } else {
+                    full_path.clone()
+                };
+                let thread_state = if running { "Running" } else { "Idle" };
+                let project_subtitle: SharedString = if is_remote {
+                    match project_target.as_ref() {
+                        Some(target) => {
+                            format!("{project_kind} • {target} • {connection_status}").into()
+                        }
+                        None => format!("{project_kind} • {connection_status}").into(),
+                    }
+                } else {
+                    project_kind.clone()
+                };
+                let tooltip_meta: SharedString = if is_remote {
+                    let target = project_target.unwrap_or_else(|| "Unknown Remote".into());
+                    format!(
+                        "Type: {project_kind}\nTarget: {target}\nStatus: {connection_status}\nVisible Worktrees: {worktree_count}\nThread State: {thread_state}\nPaths:\n{tooltip_body}"
+                    )
+                    .into()
+                } else {
+                    format!(
+                        "Type: {project_kind}\nVisible Worktrees: {worktree_count}\nThread State: {thread_state}\nPaths:\n{tooltip_body}"
+                    )
+                    .into()
+                };
 
                 Some(
-                    ThreadItem::new(
-                        ("workspace-item", thread_entry.index),
-                        title,
-                    )
-                    .icon(
-                        thread_info
-                            .as_ref()
-                            .map_or(IconName::ZedAgent, |info| info.icon),
-                    )
-                    .running(running)
-                    .generation_done(has_notification)
-                    .selected(selected)
-                    .highlight_positions(title_highlight_positions)
-                    .worktree_highlight_positions(worktree_highlight_positions)
-                    .when(show_worktree_subtitle, |item| {
-                        item.worktree(worktree_label.clone())
-                    })
-                    .when(workspace_count > 1, |item| item.action_slot(remove_btn))
-                    .hovered(is_hovered)
-                    .on_hover(cx.listener(move |picker, is_hovered, _window, cx| {
-                        let mut changed = false;
-                        if *is_hovered {
-                            if picker.delegate.hovered_thread_item != Some(workspace_index) {
-                                picker.delegate.hovered_thread_item = Some(workspace_index);
+                    ThreadItem::new(("workspace-item", thread_entry.index), title)
+                        .icon(icon)
+                        .icon_color(icon_color)
+                        .running(running)
+                        .generation_done(has_notification)
+                        .selected(selected)
+                        .highlight_positions(title_highlight_positions)
+                        .worktree_highlight_positions(worktree_highlight_positions)
+                        .worktree(project_subtitle)
+                        .when_some(status_dot, |item, dot| item.status_slot(dot))
+                        .when(workspace_count > 1, |item| item.action_slot(remove_btn))
+                        .hovered(is_hovered)
+                        .on_hover(cx.listener(move |picker, is_hovered, _window, cx| {
+                            let mut changed = false;
+                            if *is_hovered {
+                                if picker.delegate.hovered_thread_item != Some(workspace_index) {
+                                    picker.delegate.hovered_thread_item = Some(workspace_index);
+                                    changed = true;
+                                }
+                            } else if picker.delegate.hovered_thread_item == Some(workspace_index) {
+                                picker.delegate.hovered_thread_item = None;
                                 changed = true;
                             }
-                        } else if picker.delegate.hovered_thread_item == Some(workspace_index) {
-                            picker.delegate.hovered_thread_item = None;
-                            changed = true;
-                        }
-                        if changed {
-                            cx.notify();
-                        }
-                    }))
-                    .when(!full_path.is_empty(), |this| {
-                        this.tooltip(move |_, cx| {
-                            Tooltip::with_meta(worktree_label.clone(), None, full_path.clone(), cx)
+                            if changed {
+                                cx.notify();
+                            }
+                        }))
+                        .tooltip(move |_, cx| {
+                            Tooltip::with_meta(
+                                worktree_label.clone(),
+                                None,
+                                tooltip_meta.clone(),
+                                cx,
+                            )
                         })
-                    })
-                    .into_any_element(),
+                        .into_any_element(),
                 )
             }
             SidebarEntry::RecentProject(project_entry) => {
@@ -876,7 +1081,10 @@ impl Sidebar {
                     |this, _project, event, window, cx| match event {
                         ProjectEvent::WorktreeAdded(_)
                         | ProjectEvent::WorktreeRemoved(_)
-                        | ProjectEvent::WorktreeOrderChanged => {
+                        | ProjectEvent::WorktreeOrderChanged
+                        | ProjectEvent::DisconnectedFromHost
+                        | ProjectEvent::DisconnectedFromRemote { .. }
+                        | ProjectEvent::RemoteIdChanged(_) => {
                             this.queue_refresh(this.multi_workspace.clone(), window, cx);
                         }
                         _ => {}
@@ -903,7 +1111,6 @@ impl Sidebar {
                     WorkspaceThreadEntry::from_workspace(
                         entry.index,
                         workspace,
-                        entry.tab_title,
                         &persisted_titles,
                         cx,
                     )
@@ -948,7 +1155,6 @@ impl Sidebar {
             AgentThreadInfo {
                 title,
                 status,
-                icon: IconName::ZedAgent,
             },
         );
     }

@@ -241,11 +241,11 @@ impl AcpThreadHistory {
         }));
     }
 
-    fn can_export_as_markdown(&self, cx: &App) -> bool {
+    fn can_export_as_markdown(&self, _cx: &App) -> bool {
         let Some(connection) = self.connection.as_ref() else {
             return false;
         };
-        if !connection.supports_load_session(cx) {
+        if !connection.supports_load_session() {
             return false;
         }
         self.project.is_some()
@@ -267,7 +267,7 @@ impl AcpThreadHistory {
         let Some(connection) = self.connection.as_ref().cloned() else {
             return;
         };
-        if !connection.supports_load_session(cx) {
+        if !connection.supports_load_session() {
             return;
         }
         let Some(project) = self.project.as_ref().cloned() else {
