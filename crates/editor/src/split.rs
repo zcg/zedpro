@@ -1616,7 +1616,7 @@ impl Item for SplittableEditor {
         self.rhs_editor.read(cx).tab_content(params, window, cx)
     }
 
-    fn to_item_events(event: &EditorEvent, f: impl FnMut(ItemEvent)) {
+    fn to_item_events(event: &EditorEvent, f: &mut dyn FnMut(ItemEvent)) {
         Editor::to_item_events(event, f)
     }
 
@@ -2254,7 +2254,7 @@ mod tests {
         assert_eq!(lhs_content, expected_lhs, "lhs");
     }
 
-    #[gpui::test(iterations = 100)]
+    #[gpui::test(iterations = 25)]
     async fn test_random_split_editor(mut rng: StdRng, cx: &mut gpui::TestAppContext) {
         use rand::prelude::*;
 

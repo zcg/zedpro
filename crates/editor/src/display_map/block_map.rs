@@ -736,7 +736,7 @@ impl BlockMap {
     }
 
     // Warning: doesn't sync the block map, use advisedly
-    pub(crate) fn retain_blocks_raw(&mut self, mut pred: impl FnMut(&Arc<CustomBlock>) -> bool) {
+    pub(crate) fn retain_blocks_raw(&mut self, pred: &mut dyn FnMut(&Arc<CustomBlock>) -> bool) {
         let mut ids_to_remove = HashSet::default();
         self.custom_blocks.retain(|block| {
             let keep = pred(block);
@@ -1275,8 +1275,8 @@ impl BlockMap {
                 .row()
         };
         fn determine_spacer(
-            our_wrapper: &mut impl FnMut(Point, Bias) -> WrapRow,
-            companion_wrapper: &mut impl FnMut(Point, Bias) -> WrapRow,
+            our_wrapper: &mut dyn FnMut(Point, Bias) -> WrapRow,
+            companion_wrapper: &mut dyn FnMut(Point, Bias) -> WrapRow,
             our_point: Point,
             their_point: Point,
             delta: i32,
@@ -2635,9 +2635,11 @@ impl<'a> Iterator for BlockChunks<'a> {
         self.input_chunk.text = suffix;
         self.input_chunk.tabs >>= prefix_bytes.saturating_sub(1);
         self.input_chunk.chars >>= prefix_bytes.saturating_sub(1);
+        self.input_chunk.newlines >>= prefix_bytes.saturating_sub(1);
 
         let mut tabs = self.input_chunk.tabs;
         let mut chars = self.input_chunk.chars;
+        let mut newlines = self.input_chunk.newlines;
 
         if self.masked {
             // Not great for multibyte text because to keep cursor math correct we
@@ -2647,12 +2649,14 @@ impl<'a> Iterator for BlockChunks<'a> {
             prefix = unsafe { std::str::from_utf8_unchecked(&BULLETS[..bullet_len]) };
             chars = 1u128.unbounded_shl(bullet_len as u32).wrapping_sub(1);
             tabs = 0;
+            newlines = 0;
         }
 
         let chunk = Chunk {
             text: prefix,
             tabs,
             chars,
+            newlines,
             ..self.input_chunk.clone()
         };
 

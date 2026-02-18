@@ -8,7 +8,6 @@ use agent_client_protocol::{self as acp, Agent as _, ErrorCode};
 use anyhow::anyhow;
 use collections::HashMap;
 use db::kvp::KEY_VALUE_STORE;
-use feature_flags::{AcpBetaFeatureFlag, FeatureFlagAppExt as _};
 use futures::AsyncBufReadExt as _;
 use futures::io::BufReader;
 use project::Project;
@@ -696,17 +695,15 @@ impl AgentConnection for AcpConnection {
         })
     }
 
-    fn supports_load_session(&self, cx: &App) -> bool {
-        cx.has_flag::<AcpBetaFeatureFlag>() && self.agent_capabilities.load_session
+    fn supports_load_session(&self) -> bool {
+        self.agent_capabilities.load_session
     }
 
-    fn supports_resume_session(&self, cx: &App) -> bool {
-        cx.has_flag::<AcpBetaFeatureFlag>()
-            && self
-                .agent_capabilities
-                .session_capabilities
-                .resume
-                .is_some()
+    fn supports_resume_session(&self) -> bool {
+        self.agent_capabilities
+            .session_capabilities
+            .resume
+            .is_some()
     }
 
     fn load_session(
@@ -716,7 +713,7 @@ impl AgentConnection for AcpConnection {
         cwd: &Path,
         cx: &mut App,
     ) -> Task<Result<Entity<AcpThread>>> {
-        if !cx.has_flag::<AcpBetaFeatureFlag>() || !self.agent_capabilities.load_session {
+        if !self.agent_capabilities.load_session {
             return Task::ready(Err(anyhow!(LoadError::Other(
                 "Loading sessions is not supported by this agent.".into()
             ))));
@@ -784,12 +781,11 @@ impl AgentConnection for AcpConnection {
         cwd: &Path,
         cx: &mut App,
     ) -> Task<Result<Entity<AcpThread>>> {
-        if !cx.has_flag::<AcpBetaFeatureFlag>()
-            || self
-                .agent_capabilities
-                .session_capabilities
-                .resume
-                .is_none()
+        if self
+            .agent_capabilities
+            .session_capabilities
+            .resume
+            .is_none()
         {
             return Task::ready(Err(anyhow!(LoadError::Other(
                 "Resuming sessions is not supported by this agent.".into()
@@ -998,12 +994,8 @@ impl AgentConnection for AcpConnection {
         }) as _)
     }
 
-    fn session_list(&self, cx: &mut App) -> Option<Rc<dyn AgentSessionList>> {
-        if cx.has_flag::<AcpBetaFeatureFlag>() {
-            self.session_list.clone().map(|s| s as _)
-        } else {
-            None
-        }
+    fn session_list(&self, _cx: &mut App) -> Option<Rc<dyn AgentSessionList>> {
+        self.session_list.clone().map(|s| s as _)
     }
 
     fn into_any(self: Rc<Self>) -> Rc<dyn Any> {

@@ -2563,7 +2563,7 @@ impl MultiBuffer {
         language_settings(language.map(|l| l.name()), file, cx)
     }
 
-    pub fn for_each_buffer(&self, mut f: impl FnMut(&Entity<Buffer>)) {
+    pub fn for_each_buffer(&self, f: &mut dyn FnMut(&Entity<Buffer>)) {
         self.buffers.values().for_each(|state| f(&state.buffer))
     }
 
@@ -4688,12 +4688,12 @@ impl MultiBufferSnapshot {
         self.singleton
     }
 
-    pub fn as_singleton(&self) -> Option<(&ExcerptId, BufferId, &BufferSnapshot)> {
+    pub fn as_singleton(&self) -> Option<(ExcerptId, BufferId, &BufferSnapshot)> {
         if self.singleton {
             self.excerpts
                 .iter()
                 .next()
-                .map(|e| (&e.id, e.buffer_id, &*e.buffer))
+                .map(|e| (e.id, e.buffer_id, &*e.buffer))
         } else {
             None
         }
@@ -4978,7 +4978,7 @@ impl MultiBufferSnapshot {
         let mut result = BTreeMap::new();
         self.suggested_indents_callback(
             rows,
-            |row, indent| {
+            &mut |row, indent| {
                 result.insert(row, indent);
                 ControlFlow::Continue(())
             },
@@ -4991,7 +4991,7 @@ impl MultiBufferSnapshot {
     pub fn suggested_indents_callback(
         &self,
         rows: impl IntoIterator<Item = u32>,
-        mut cb: impl FnMut(MultiBufferRow, IndentSize) -> ControlFlow<()>,
+        cb: &mut dyn FnMut(MultiBufferRow, IndentSize) -> ControlFlow<()>,
         cx: &App,
     ) {
         let mut rows_for_excerpt = Vec::new();
@@ -5822,7 +5822,7 @@ impl MultiBufferSnapshot {
     pub fn as_singleton_anchor(&self, text_anchor: text::Anchor) -> Option<Anchor> {
         let (excerpt, buffer, _) = self.as_singleton()?;
         if text_anchor.buffer_id.is_none_or(|id| id == buffer) {
-            Some(Anchor::in_buffer(*excerpt, text_anchor))
+            Some(Anchor::in_buffer(excerpt, text_anchor))
         } else {
             None
         }
@@ -6749,17 +6749,17 @@ impl MultiBufferSnapshot {
                 .flat_map(|item| {
                     Some(OutlineItem {
                         depth: item.depth,
-                        range: self.anchor_range_in_excerpt(*excerpt_id, item.range)?,
+                        range: self.anchor_range_in_excerpt(excerpt_id, item.range)?,
                         source_range_for_text: self
-                            .anchor_range_in_excerpt(*excerpt_id, item.source_range_for_text)?,
+                            .anchor_range_in_excerpt(excerpt_id, item.source_range_for_text)?,
                         text: item.text,
                         highlight_ranges: item.highlight_ranges,
                         name_ranges: item.name_ranges,
                         body_range: item.body_range.and_then(|body_range| {
-                            self.anchor_range_in_excerpt(*excerpt_id, body_range)
+                            self.anchor_range_in_excerpt(excerpt_id, body_range)
                         }),
                         annotation_range: item.annotation_range.and_then(|annotation_range| {
-                            self.anchor_range_in_excerpt(*excerpt_id, annotation_range)
+                            self.anchor_range_in_excerpt(excerpt_id, annotation_range)
                         }),
                     })
                 })
@@ -8370,15 +8370,18 @@ impl<'a> Iterator for MultiBufferChunks<'a> {
                     let mask = 1u128.unbounded_shl(split_idx as u32).wrapping_sub(1);
                     let chars = chunk.chars & mask;
                     let tabs = chunk.tabs & mask;
+                    let newlines = chunk.newlines & mask;
 
                     chunk.text = after;
                     chunk.chars = chunk.chars >> split_idx;
                     chunk.tabs = chunk.tabs >> split_idx;
+                    chunk.newlines = chunk.newlines >> split_idx;
 
                     Some(Chunk {
                         text: before,
                         chars,
                         tabs,
+                        newlines,
                         ..chunk.clone()
                     })
                 } else {
@@ -8423,6 +8426,7 @@ impl<'a> Iterator for MultiBufferChunks<'a> {
                     Chunk {
                         text: "\n",
                         chars: 1u128,
+                        newlines: 1u128,
                         ..Default::default()
                     }
                 };
@@ -8520,10 +8524,12 @@ impl<'a> Iterator for ExcerptChunks<'a> {
         if self.has_footer {
             let text = "\n";
             let chars = 0b1;
+            let newlines = 0b1;
             self.has_footer = false;
             return Some(Chunk {
                 text,
                 chars,
+                newlines,
                 ..Default::default()
             });
         }

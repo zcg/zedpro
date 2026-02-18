@@ -5,7 +5,7 @@ use super::{
 
 use language::Point;
 use multi_buffer::MultiBufferSnapshot;
-use std::{cmp, mem, num::NonZeroU32, ops::Range};
+use std::{cmp, num::NonZeroU32, ops::Range};
 use sum_tree::Bias;
 
 const MAX_EXPANSION_COLUMN: u32 = 256;
@@ -280,6 +280,7 @@ impl TabSnapshot {
             chunk: Chunk {
                 text: unsafe { std::str::from_utf8_unchecked(&SPACES[..to_next_stop as usize]) },
                 is_tab: true,
+                chars: 1u128.unbounded_shl(to_next_stop) - 1,
                 ..Default::default()
             },
             inside_leading_tab: to_next_stop > 0,
@@ -647,22 +648,6 @@ impl TabChunks<'_> {
         self.inside_leading_tab = to_next_stop > 0;
     }
 
-    fn advance_state_for_text(&mut self, text: &str) {
-        for character in text.chars() {
-            if character == '\n' {
-                self.column = 0;
-                self.input_column = 0;
-                self.output_position += Point::new(1, 0);
-            } else {
-                let byte_len = character.len_utf8() as u32;
-                self.column += 1;
-                if !self.inside_leading_tab {
-                    self.input_column += byte_len;
-                }
-                self.output_position.column += byte_len;
-            }
-        }
-    }
 }
 
 impl<'a> Iterator for TabChunks<'a> {
@@ -675,6 +660,9 @@ impl<'a> Iterator for TabChunks<'a> {
                 self.chunk = chunk;
                 if self.inside_leading_tab {
                     self.chunk.text = &self.chunk.text[1..];
+                    self.chunk.tabs >>= 1;
+                    self.chunk.chars >>= 1;
+                    self.chunk.newlines >>= 1;
                     self.inside_leading_tab = false;
                     self.input_column += 1;
                 }
@@ -683,29 +671,17 @@ impl<'a> Iterator for TabChunks<'a> {
             }
         }
 
-        if self.chunk.tabs != 0 {
-            let tab_ix = self.chunk.tabs.trailing_zeros() as usize;
-            if tab_ix > 0 {
-                let (prefix, suffix) = self.chunk.text.split_at(tab_ix);
-                self.advance_state_for_text(prefix);
+        let first_tab_ix = if self.chunk.tabs != 0 {
+            self.chunk.tabs.trailing_zeros() as usize
+        } else {
+            self.chunk.text.len()
+        };
 
-                let mask = 1u128.unbounded_shl(tab_ix as u32).wrapping_sub(1);
-                let chars = self.chunk.chars & mask;
-                let tabs = self.chunk.tabs & mask;
-                self.chunk.tabs = self.chunk.tabs.unbounded_shr(tab_ix as u32);
-                self.chunk.chars = self.chunk.chars.unbounded_shr(tab_ix as u32);
-                self.chunk.text = suffix;
-                return Some(Chunk {
-                    text: prefix,
-                    chars,
-                    tabs,
-                    ..self.chunk.clone()
-                });
-            }
-
+        if first_tab_ix == 0 {
             self.chunk.text = &self.chunk.text[1..];
             self.chunk.tabs >>= 1;
             self.chunk.chars >>= 1;
+            self.chunk.newlines >>= 1;
             let tab_size = if self.input_column < self.max_expansion_column {
                 self.tab_size.get()
             } else {
@@ -725,17 +701,60 @@ impl<'a> Iterator for TabChunks<'a> {
                 is_tab: true,
                 chars: 1u128.unbounded_shl(len) - 1,
                 tabs: 0,
+                newlines: 0,
                 ..self.chunk.clone()
             });
         }
 
-        self.advance_state_for_text(self.chunk.text);
-        Some(mem::take(&mut self.chunk))
+        let prefix_len = first_tab_ix;
+        let (prefix, suffix) = self.chunk.text.split_at(prefix_len);
+
+        let mask = 1u128.unbounded_shl(prefix_len as u32).wrapping_sub(1);
+        let prefix_chars = self.chunk.chars & mask;
+        let prefix_tabs = self.chunk.tabs & mask;
+        let prefix_newlines = self.chunk.newlines & mask;
+
+        self.chunk.text = suffix;
+        self.chunk.tabs = self.chunk.tabs.unbounded_shr(prefix_len as u32);
+        self.chunk.chars = self.chunk.chars.unbounded_shr(prefix_len as u32);
+        self.chunk.newlines = self.chunk.newlines.unbounded_shr(prefix_len as u32);
+
+        let newline_count = prefix_newlines.count_ones();
+        if newline_count > 0 {
+            let last_newline_bit = 128 - prefix_newlines.leading_zeros();
+            let chars_after_last_newline =
+                prefix_chars.unbounded_shr(last_newline_bit).count_ones();
+            let bytes_after_last_newline = prefix_len as u32 - last_newline_bit;
+
+            self.column = chars_after_last_newline;
+            self.input_column = bytes_after_last_newline;
+            self.output_position = Point::new(
+                self.output_position.row + newline_count,
+                bytes_after_last_newline,
+            );
+        } else {
+            let char_count = prefix_chars.count_ones();
+            self.column += char_count;
+            if !self.inside_leading_tab {
+                self.input_column += prefix_len as u32;
+            }
+            self.output_position.column += prefix_len as u32;
+        }
+
+        Some(Chunk {
+            text: prefix,
+            chars: prefix_chars,
+            tabs: prefix_tabs,
+            newlines: prefix_newlines,
+            ..self.chunk.clone()
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::mem;
+
     use super::*;
     use crate::{
         MultiBuffer,
