@@ -814,7 +814,7 @@ calloop = { git = "https://github.com/zed-industries/calloop" }
 [profile.dev]
 split-debuginfo = "unpacked"
 debug = 1
-incremental = true
+incremental = false
 codegen-units = 16
 
 [profile.test]
