@@ -2,6 +2,7 @@ use acp_thread::ThreadStatus;
 use agent_ui::{AgentPanel, AgentPanelEvent};
 use chrono::{Datelike, Local, NaiveDate, TimeDelta};
 use db::kvp::KEY_VALUE_STORE;
+
 use fs::Fs;
 use fuzzy::StringMatchCandidate;
 use gpui::{
@@ -22,7 +23,8 @@ use std::sync::Arc;
 use theme::ActiveTheme;
 use ui::utils::TRAFFIC_LIGHT_PADDING;
 use ui::{
-    Divider, DividerColor, Indicator, KeyBinding, ListSubHeader, Tab, ThreadItem, Tooltip,
+    AgentThreadStatus, Divider, DividerColor, KeyBinding, ListSubHeader, Tab, ThreadItem, Tooltip,
+    Indicator,
     prelude::*,
 };
 use ui_input::ErasedEditor;
@@ -32,12 +34,6 @@ use workspace::{
     SidebarEvent, SidebarWorkspaceEntry, ToggleWorkspaceSidebar, Workspace,
     OpenOptions, SerializedWorkspaceLocation, notifications::DetachAndPromptErr,
 };
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AgentThreadStatus {
-    Running,
-    Completed,
-}
 
 #[derive(Clone, Debug)]
 struct AgentThreadInfo {
@@ -179,9 +175,15 @@ impl WorkspaceThreadEntry {
 
         let title = thread.title();
 
-        let status = match thread.status() {
-            ThreadStatus::Generating => AgentThreadStatus::Running,
-            ThreadStatus::Idle => AgentThreadStatus::Completed,
+        let status = if thread.is_waiting_for_confirmation() {
+            AgentThreadStatus::WaitingForConfirmation
+        } else if thread.had_error() {
+            AgentThreadStatus::Error
+        } else {
+            match thread.status() {
+                ThreadStatus::Generating => AgentThreadStatus::Running,
+                ThreadStatus::Idle => AgentThreadStatus::Completed,
+            }
         };
         Some(AgentThreadInfo {
             title,
@@ -398,7 +400,7 @@ impl WorkspacePickerDelegate {
                 SidebarEntry::WorkspaceThread(thread) => thread
                     .thread_info
                     .as_ref()
-                    .map(|info| (thread.index, info.status.clone())),
+                    .map(|info| (thread.index, info.status)),
                 _ => None,
             })
             .collect();
@@ -859,12 +861,12 @@ impl PickerDelegate for WorkspacePickerDelegate {
                 let title = worktree_label.clone();
                 let title_highlight_positions = positions.clone();
                 let worktree_highlight_positions = Vec::new();
+                let status = thread_info
+                    .as_ref()
+                    .map_or(AgentThreadStatus::default(), |info| info.status);
                 let running = matches!(
-                    thread_info,
-                    Some(AgentThreadInfo {
-                        status: AgentThreadStatus::Running,
-                        ..
-                    })
+                    status,
+                    AgentThreadStatus::Running | AgentThreadStatus::WaitingForConfirmation
                 );
                 let icon = if is_active_workspace {
                     IconName::FolderOpen
@@ -932,6 +934,7 @@ impl PickerDelegate for WorkspacePickerDelegate {
                         .icon_color(icon_color)
                         .running(running)
                         .generation_done(has_notification)
+                        .status(status)
                         .selected(selected)
                         .highlight_positions(title_highlight_positions)
                         .worktree_highlight_positions(worktree_highlight_positions)
@@ -1312,6 +1315,10 @@ impl Sidebar {
     ) {
         let current_window_id = window.window_handle().window_id();
         cx.defer_in(window, move |this, window, cx| {
+            if !this.multi_workspace.read(cx).multi_workspace_enabled(cx) {
+                return;
+            }
+
             this._project_subscriptions = this.subscribe_to_projects(window, cx);
             this._agent_panel_subscriptions = this.subscribe_to_agent_panels(window, cx);
             this._thread_subscriptions = this.subscribe_to_threads(window, cx);
@@ -1403,10 +1410,11 @@ impl Render for Sidebar {
                     .mt_px()
                     .pb_px()
                     .pr_1()
-                    .when(cfg!(target_os = "macos"), |this| {
-                        this.pl(px(TRAFFIC_LIGHT_PADDING))
-                    })
-                    .when(cfg!(not(target_os = "macos")), |this| this.pl_2())
+                    .when_else(
+                        cfg!(target_os = "macos") && !window.is_fullscreen(),
+                        |this| this.pl(px(TRAFFIC_LIGHT_PADDING)),
+                        |this| this.pl_2(),
+                    )
                     .justify_between()
                     .border_b_1()
                     .border_color(cx.theme().colors().border)
@@ -1492,7 +1500,7 @@ mod tests {
         cx: &mut gpui::VisualTestContext,
     ) {
         sidebar.update_in(cx, |s, _window, _cx| {
-            s.set_test_thread_info(index, SharedString::from(title.to_string()), status.clone());
+            s.set_test_thread_info(index, SharedString::from(title.to_string()), status);
         });
         multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
         cx.run_until_parked();

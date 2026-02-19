@@ -4,6 +4,7 @@ use context_server::ContextServerCommand;
 use dap::adapters::DebugAdapterName;
 use fs::Fs;
 use futures::StreamExt as _;
+use git::repository::DEFAULT_WORKTREE_DIRECTORY;
 use gpui::{AsyncApp, BorrowAppContext, Context, Entity, EventEmitter, Subscription, Task};
 use lsp::{DEFAULT_LSP_REQUEST_TIMEOUT_SECS, LanguageServerName};
 use paths::{
@@ -424,7 +425,7 @@ impl GoToDiagnosticSeverityFilter {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct GitSettings {
     /// Whether or not git integration is enabled.
     ///
@@ -457,6 +458,13 @@ pub struct GitSettings {
     ///
     /// Default: file_name_first
     pub path_style: GitPathStyle,
+    /// Directory where git worktrees are created, relative to the repository
+    /// working directory. When the resolved directory is outside the project
+    /// root, the project's directory name is automatically appended so that
+    /// sibling repos don't collide.
+    ///
+    /// Default: ../worktrees
+    pub worktree_directory: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -646,6 +654,10 @@ impl Settings for ProjectSettings {
             },
             hunk_style: git.hunk_style.unwrap(),
             path_style: git.path_style.unwrap().into(),
+            worktree_directory: git
+                .worktree_directory
+                .clone()
+                .unwrap_or_else(|| DEFAULT_WORKTREE_DIRECTORY.to_string()),
         };
         Self {
             context_servers: project

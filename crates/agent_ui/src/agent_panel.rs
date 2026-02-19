@@ -24,16 +24,15 @@ use crate::{
     agent_configuration::{AgentConfiguration, AssistantConfigurationEvent},
     slash_command::SlashCommandCompletionProvider,
     text_thread_editor::{AgentPanelDelegate, TextThreadEditor, make_lsp_adapter_delegate},
-    ui::{AgentOnboardingModal, EndTrialUpsell},
+    ui::EndTrialUpsell,
+};
+use crate::{
+    AgentInitialContent, ExternalAgent, NewExternalAgentThread, NewNativeAgentThreadFromSummary,
 };
 use crate::{
     ExpandMessageEditor,
     acp::{AcpThreadHistory, ThreadHistoryEvent},
     text_thread_history::{TextThreadHistory, TextThreadHistoryEvent},
-};
-use crate::{
-    ExternalAgent, ExternalAgentInitialContent, NewExternalAgentThread,
-    NewNativeAgentThreadFromSummary,
 };
 use crate::{ManageProfiles, acp::thread_view::AcpThreadView};
 use agent_settings::AgentSettings;
@@ -72,9 +71,7 @@ use workspace::{
 };
 use zed_actions::{
     DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFontSize,
-    agent::{
-        OpenAcpOnboardingModal, OpenOnboardingModal, OpenSettings, ResetAgentZoom, ResetOnboarding,
-    },
+    agent::{OpenAcpOnboardingModal, OpenSettings, ResetAgentZoom, ResetOnboarding},
     assistant::{OpenRulesLibrary, Toggle, ToggleFocus},
 };
 
@@ -231,9 +228,6 @@ pub fn init(cx: &mut App) {
                             panel.toggle_new_thread_menu(&ToggleNewThreadMenu, window, cx);
                         });
                     }
-                })
-                .register_action(|workspace, _: &OpenOnboardingModal, window, cx| {
-                    AgentOnboardingModal::toggle(workspace, window, cx)
                 })
                 .register_action(|workspace, _: &OpenAcpOnboardingModal, window, cx| {
                     AcpOnboardingModal::toggle(workspace, window, cx)
@@ -909,7 +903,7 @@ impl AgentPanel {
         self.external_thread(
             Some(ExternalAgent::NativeAgent),
             None,
-            Some(ExternalAgentInitialContent::ThreadSummary(thread)),
+            Some(AgentInitialContent::ThreadSummary(thread)),
             window,
             cx,
         );
@@ -963,7 +957,7 @@ impl AgentPanel {
         &mut self,
         agent_choice: Option<crate::ExternalAgent>,
         resume_thread: Option<AgentSessionInfo>,
-        initial_content: Option<ExternalAgentInitialContent>,
+        initial_content: Option<AgentInitialContent>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1790,7 +1784,10 @@ impl AgentPanel {
         self.external_thread(
             None,
             None,
-            initial_text.map(ExternalAgentInitialContent::Text),
+            initial_text.map(|text| AgentInitialContent::ContentBlock {
+                blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(text))],
+                auto_submit: false,
+            }),
             window,
             cx,
         );
@@ -1858,7 +1855,7 @@ impl AgentPanel {
         &mut self,
         server: Rc<dyn AgentServer>,
         resume_thread: Option<AgentSessionInfo>,
-        initial_content: Option<ExternalAgentInitialContent>,
+        initial_content: Option<AgentInitialContent>,
         workspace: WeakEntity<Workspace>,
         project: Entity<Project>,
         ext_agent: ExternalAgent,
@@ -3412,6 +3409,34 @@ impl AgentPanelDelegate for ConcreteAssistantPanelDelegate {
                     });
                 }
             });
+        });
+    }
+
+    fn new_thread_with_content(
+        &self,
+        workspace: &mut Workspace,
+        blocks: Vec<acp::ContentBlock>,
+        auto_submit: bool,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        let Some(panel) = workspace.panel::<AgentPanel>(cx) else {
+            return;
+        };
+
+        workspace.focus_panel::<AgentPanel>(window, cx);
+
+        panel.update(cx, |panel, cx| {
+            panel.external_thread(
+                None,
+                None,
+                Some(AgentInitialContent::ContentBlock {
+                    blocks,
+                    auto_submit,
+                }),
+                window,
+                cx,
+            );
         });
     }
 }
