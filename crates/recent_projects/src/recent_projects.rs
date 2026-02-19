@@ -57,6 +57,7 @@ pub struct RecentProjectEntry {
     pub name: SharedString,
     pub full_path: SharedString,
     pub paths: Vec<PathBuf>,
+    pub location: SerializedWorkspaceLocation,
     pub workspace_id: WorkspaceId,
     pub timestamp: DateTime<Utc>,
 }
@@ -96,8 +97,7 @@ pub async fn get_recent_projects(
     let entries: Vec<RecentProjectEntry> = workspaces
         .into_iter()
         .filter(|(id, _, _, _)| Some(*id) != current_workspace_id)
-        .filter(|(_, location, _, _)| matches!(location, SerializedWorkspaceLocation::Local))
-        .map(|(workspace_id, _, path_list, timestamp)| {
+        .map(|(workspace_id, location, path_list, timestamp)| {
             let paths: Vec<PathBuf> = path_list.paths().to_vec();
             let ordered_paths: Vec<&PathBuf> = path_list.ordered_paths().collect();
 
@@ -120,11 +120,18 @@ pub async fn get_recent_projects(
                 .map(|p| p.to_string_lossy().to_string())
                 .collect::<Vec<_>>()
                 .join("\n");
+            let full_path = match &location {
+                SerializedWorkspaceLocation::Local => full_path,
+                SerializedWorkspaceLocation::Remote(options) => {
+                    format!("{}\n{}", options.display_name(), full_path)
+                }
+            };
 
             RecentProjectEntry {
                 name: SharedString::from(name),
                 full_path: SharedString::from(full_path),
                 paths,
+                location,
                 workspace_id,
                 timestamp,
             }

@@ -10,8 +10,9 @@ use gpui::{
 };
 use picker::{Picker, PickerDelegate};
 use project::Event as ProjectEvent;
-use recent_projects::{RecentProjectEntry, get_recent_projects};
+use recent_projects::{RecentProjectEntry, RemoteSettings, get_recent_projects, open_remote_project};
 use remote::{ConnectionState, RemoteConnectionOptions};
+use settings::Settings;
 use std::fmt::Display;
 
 use std::collections::{HashMap, HashSet};
@@ -29,6 +30,7 @@ use util::ResultExt as _;
 use workspace::{
     FocusWorkspaceSidebar, MultiWorkspace, NewWorkspaceInWindow, Sidebar as WorkspaceSidebar,
     SidebarEvent, SidebarWorkspaceEntry, ToggleWorkspaceSidebar, Workspace,
+    OpenOptions, SerializedWorkspaceLocation,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -561,21 +563,52 @@ impl Display for TimeBucket {
     }
 }
 
-fn open_recent_project(paths: Vec<PathBuf>, window: &mut Window, cx: &mut App) {
+fn open_recent_project(project: RecentProjectEntry, window: &mut Window, cx: &mut App) {
     let Some(handle) = window.window_handle().downcast::<MultiWorkspace>() else {
         return;
     };
 
-    cx.defer(move |cx| {
-        if let Some(task) = handle
-            .update(cx, |multi_workspace, window, cx| {
-                multi_workspace.open_project(paths, window, cx)
-            })
-            .log_err()
-        {
-            task.detach_and_log_err(cx);
+    match project.location {
+        SerializedWorkspaceLocation::Local => {
+            let paths = project.paths;
+            cx.defer(move |cx| {
+                if let Some(task) = handle
+                    .update(cx, |multi_workspace, window, cx| {
+                        multi_workspace.open_project(paths, window, cx)
+                    })
+                    .log_err()
+                {
+                    task.detach_and_log_err(cx);
+                }
+            });
         }
-    });
+        SerializedWorkspaceLocation::Remote(mut connection) => {
+            if let RemoteConnectionOptions::Ssh(connection_options) = &mut connection {
+                RemoteSettings::get_global(cx)
+                    .fill_connection_options_from_settings(connection_options);
+            }
+
+            let Some(app_state) = handle
+                .update(cx, |multi_workspace, _window, cx| {
+                    multi_workspace.workspace().read(cx).app_state().clone()
+                })
+                .log_err()
+            else {
+                return;
+            };
+
+            let paths = project.paths;
+            let open_options = OpenOptions {
+                replace_window: Some(handle),
+                ..Default::default()
+            };
+
+            cx.spawn_in(window, async move |_, cx| {
+                open_remote_project(connection, paths, app_state, open_options, cx).await
+            })
+            .detach_and_log_err(cx);
+        }
+    }
 }
 
 impl PickerDelegate for WorkspacePickerDelegate {
@@ -744,8 +777,7 @@ impl PickerDelegate for WorkspacePickerDelegate {
                 });
             }
             SidebarEntry::RecentProject(project_entry) => {
-                let paths = project_entry.paths.clone();
-                open_recent_project(paths, window, cx);
+                open_recent_project(project_entry.clone(), window, cx);
             }
         }
     }
@@ -937,14 +969,37 @@ impl PickerDelegate for WorkspacePickerDelegate {
                 let full_path = project_entry.full_path.clone();
                 let item_id: SharedString =
                     format!("recent-project-{:?}", project_entry.workspace_id).into();
+                let (project_icon, project_kind, project_target, is_remote) =
+                    match &project_entry.location {
+                        SerializedWorkspaceLocation::Local => workspace_project_details(None),
+                        SerializedWorkspaceLocation::Remote(options) => {
+                            workspace_project_details(Some(options))
+                        }
+                    };
+                let project_subtitle = if is_remote {
+                    Some(match project_target {
+                        Some(target) => format!("{project_kind} • {target}").into(),
+                        None => project_kind.clone(),
+                    })
+                } else {
+                    None
+                };
+                let icon_color = if is_remote { Color::Info } else { Color::Muted };
+                let tooltip_meta = if is_remote {
+                    format!("Type: {project_kind}\nPaths:\n{full_path}").into()
+                } else {
+                    full_path.clone()
+                };
 
                 Some(
                     ThreadItem::new(item_id, name.clone())
-                        .icon(IconName::Folder)
+                        .icon(project_icon)
+                        .icon_color(icon_color)
+                        .when_some(project_subtitle, |item, subtitle| item.worktree(subtitle))
                         .selected(selected)
                         .highlight_positions(positions.clone())
                         .tooltip(move |_, cx| {
-                            Tooltip::with_meta(name.clone(), None, full_path.clone(), cx)
+                            Tooltip::with_meta(name.clone(), None, tooltip_meta.clone(), cx)
                         })
                         .into_any_element(),
                 )
