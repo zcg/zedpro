@@ -30,7 +30,7 @@ use util::ResultExt as _;
 use workspace::{
     FocusWorkspaceSidebar, MultiWorkspace, NewWorkspaceInWindow, Sidebar as WorkspaceSidebar,
     SidebarEvent, SidebarWorkspaceEntry, ToggleWorkspaceSidebar, Workspace,
-    OpenOptions, SerializedWorkspaceLocation,
+    OpenOptions, SerializedWorkspaceLocation, notifications::DetachAndPromptErr,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -567,50 +567,49 @@ fn open_recent_project(project: RecentProjectEntry, window: &mut Window, cx: &mu
     let Some(handle) = window.window_handle().downcast::<MultiWorkspace>() else {
         return;
     };
+    let replace_window = Some(handle.clone());
+    cx.defer(move |cx| {
+        let RecentProjectEntry {
+            paths, location, ..
+        } = project;
 
-    match project.location {
-        SerializedWorkspaceLocation::Local => {
-            let paths = project.paths;
-            cx.defer(move |cx| {
-                if let Some(task) = handle
-                    .update(cx, |multi_workspace, window, cx| {
-                        multi_workspace.open_project(paths, window, cx)
-                    })
-                    .log_err()
-                {
-                    task.detach_and_log_err(cx);
-                }
-            });
-        }
-        SerializedWorkspaceLocation::Remote(mut connection) => {
-            if let RemoteConnectionOptions::Ssh(connection_options) = &mut connection {
-                RemoteSettings::get_global(cx)
-                    .fill_connection_options_from_settings(connection_options);
-            }
-
-            let Some(app_state) = handle
-                .update(cx, |multi_workspace, _window, cx| {
-                    multi_workspace.workspace().read(cx).app_state().clone()
-                })
-                .log_err()
-            else {
-                return;
-            };
-
-            let paths = project.paths;
-            let open_options = OpenOptions {
-                replace_window: Some(handle),
-                ..Default::default()
-            };
-
-            cx.spawn(async move |cx| {
-                open_remote_project(connection, paths, app_state, open_options, cx)
-                    .await
-                    .log_err();
+        handle
+            .update(cx, |multi_workspace, window, cx| {
+                let workspace = multi_workspace.workspace().clone();
+                workspace.update(cx, |workspace, cx| {
+                    match location {
+                        SerializedWorkspaceLocation::Local => {
+                            workspace.open_workspace_for_paths(false, paths, window, cx)
+                        }
+                        SerializedWorkspaceLocation::Remote(mut connection) => {
+                            let app_state = workspace.app_state().clone();
+                            if let RemoteConnectionOptions::Ssh(connection_options) =
+                                &mut connection
+                            {
+                                RemoteSettings::get_global(cx)
+                                    .fill_connection_options_from_settings(connection_options);
+                            }
+                            let open_options = OpenOptions {
+                                replace_window: replace_window.clone(),
+                                ..Default::default()
+                            };
+                            cx.spawn_in(window, async move |_, cx| {
+                                open_remote_project(
+                                    connection.clone(),
+                                    paths,
+                                    app_state,
+                                    open_options,
+                                    cx,
+                                )
+                                .await
+                            })
+                        }
+                    }
+                    .detach_and_prompt_err("Failed to open project", window, cx, |_, _, _| None);
+                });
             })
-            .detach();
-        }
-    }
+            .log_err();
+    });
 }
 
 impl PickerDelegate for WorkspacePickerDelegate {
@@ -971,37 +970,22 @@ impl PickerDelegate for WorkspacePickerDelegate {
                 let full_path = project_entry.full_path.clone();
                 let item_id: SharedString =
                     format!("recent-project-{:?}", project_entry.workspace_id).into();
-                let (project_icon, project_kind, project_target, is_remote) =
+                let (project_icon, _, _, _) =
                     match &project_entry.location {
                         SerializedWorkspaceLocation::Local => workspace_project_details(None),
                         SerializedWorkspaceLocation::Remote(options) => {
                             workspace_project_details(Some(options))
                         }
                     };
-                let project_subtitle = if is_remote {
-                    Some(match project_target {
-                        Some(target) => format!("{project_kind} • {target}").into(),
-                        None => project_kind.clone(),
-                    })
-                } else {
-                    None
-                };
-                let icon_color = if is_remote { Color::Info } else { Color::Muted };
-                let tooltip_meta = if is_remote {
-                    format!("Type: {project_kind}\nPaths:\n{full_path}").into()
-                } else {
-                    full_path.clone()
-                };
 
                 Some(
                     ThreadItem::new(item_id, name.clone())
                         .icon(project_icon)
-                        .icon_color(icon_color)
-                        .when_some(project_subtitle, |item, subtitle| item.worktree(subtitle))
+                        .icon_color(Color::Muted)
                         .selected(selected)
                         .highlight_positions(positions.clone())
                         .tooltip(move |_, cx| {
-                            Tooltip::with_meta(name.clone(), None, tooltip_meta.clone(), cx)
+                            Tooltip::with_meta(name.clone(), None, full_path.clone(), cx)
                         })
                         .into_any_element(),
                 )
