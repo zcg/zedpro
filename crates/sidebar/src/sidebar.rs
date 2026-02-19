@@ -17,7 +17,7 @@ use std::fmt::Display;
 
 use std::collections::{HashMap, HashSet};
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use theme::ActiveTheme;
 use ui::utils::TRAFFIC_LIGHT_PADDING;
@@ -603,10 +603,12 @@ fn open_recent_project(project: RecentProjectEntry, window: &mut Window, cx: &mu
                 ..Default::default()
             };
 
-            cx.spawn_in(window, async move |_, cx| {
-                open_remote_project(connection, paths, app_state, open_options, cx).await
+            cx.spawn(async move |cx| {
+                open_remote_project(connection, paths, app_state, open_options, cx)
+                    .await
+                    .log_err();
             })
-            .detach_and_log_err(cx);
+            .detach();
         }
     }
 }
