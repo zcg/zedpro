@@ -598,7 +598,8 @@ impl Copilot {
                 None,
                 Default::default(),
                 cx,
-            )?;
+            )
+            .await?;
 
             server
                 .on_notification::<DidChangeStatus, _>({

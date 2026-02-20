@@ -987,7 +987,7 @@ impl Fs for RealFs {
         Pin<Box<dyn Send + Stream<Item = Vec<PathEvent>>>>,
         Arc<dyn Watcher>,
     ) {
-        use util::{ResultExt as _, paths::SanitizedPath};
+        use util::paths::SanitizedPath;
         let executor = self.executor.clone();
 
         let (tx, rx) = smol::channel::unbounded();
@@ -999,10 +999,15 @@ impl Fs for RealFs {
             && let Some(parent) = path.parent()
             && let Err(parent_e) = watcher.add(parent)
         {
-            log::warn!(
-                "Failed to watch {} and its parent directory {}:\n{e}\n{parent_e}",
-                path.display(),
-                parent.display()
+            fs_watcher::log_watch_error(
+                fs_watcher::WatchOperation::Watch,
+                path,
+                &e.to_string(),
+            );
+            fs_watcher::log_watch_error(
+                fs_watcher::WatchOperation::Watch,
+                parent,
+                &parent_e.to_string(),
             );
         }
 
@@ -1018,9 +1023,21 @@ impl Fs for RealFs {
                     target = SanitizedPath::new(&canonical).as_path().to_path_buf();
                 }
             }
-            watcher.add(&target).ok();
-            if let Some(parent) = target.parent() {
-                watcher.add(parent).log_err();
+            if let Err(error) = watcher.add(&target) {
+                fs_watcher::log_watch_error(
+                    fs_watcher::WatchOperation::Watch,
+                    &target,
+                    &error.to_string(),
+                );
+            }
+            if let Some(parent) = target.parent()
+                && let Err(error) = watcher.add(parent)
+            {
+                fs_watcher::log_watch_error(
+                    fs_watcher::WatchOperation::Watch,
+                    parent,
+                    &error.to_string(),
+                );
             }
         }
 

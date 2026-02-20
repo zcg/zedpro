@@ -394,7 +394,7 @@ pub const SEMANTIC_TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
 impl LanguageServer {
     /// Starts a language server process.
     /// A request_timeout of zero or Duration::MAX indicates an indefinite timeout.
-    pub fn new(
+    pub async fn new(
         stderr_capture: Arc<Mutex<Option<String>>>,
         server_id: LanguageServerId,
         server_name: LanguageServerName,
@@ -428,9 +428,14 @@ impl LanguageServer {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        let mut server = command
-            .spawn()
-            .with_context(|| format!("failed to spawn command {command:?}",))?;
+        let mut server = cx
+            .background_executor()
+            .await_on_background(async move {
+                command
+                    .spawn()
+                    .with_context(|| format!("failed to spawn command {command:?}"))
+            })
+            .await?;
 
         let stdin = server.stdin.take().unwrap();
         let stdout = server.stdout.take().unwrap();

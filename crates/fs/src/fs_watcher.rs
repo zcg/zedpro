@@ -1,9 +1,11 @@
 use notify::EventKind;
 use parking_lot::Mutex;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{hash_map::Entry, BTreeMap, HashMap},
     ops::DerefMut,
+    path::{Path, PathBuf},
     sync::{Arc, OnceLock},
+    time::{Duration, Instant},
 };
 use util::{ResultExt, paths::SanitizedPath};
 
@@ -49,6 +51,8 @@ impl Watcher for FsWatcher {
         log::trace!("watcher add: {path:?}");
         let tx = self.tx.clone();
         let pending_paths = self.pending_path_events.clone();
+        let registration_path = normalize_registration_path(path);
+        let watch_path = normalize_watch_path(path);
 
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         {
@@ -59,10 +63,10 @@ impl Watcher for FsWatcher {
                 .lock()
                 .range::<std::path::Path, _>((
                     std::ops::Bound::Unbounded,
-                    std::ops::Bound::Included(path),
+                    std::ops::Bound::Included(registration_path.as_ref()),
                 ))
                 .next_back()
-                && path.starts_with(watched_path.as_ref())
+                && registration_path.starts_with(watched_path.as_ref())
             {
                 log::trace!(
                     "path to watch is covered by existing registration: {path:?}, {watched_path:?}"
@@ -72,14 +76,17 @@ impl Watcher for FsWatcher {
         }
         #[cfg(target_os = "linux")]
         {
-            if self.registrations.lock().contains_key(path) {
+            if self
+                .registrations
+                .lock()
+                .contains_key(registration_path.as_ref())
+            {
                 log::trace!("path to watch is already watched: {path:?}");
                 return Ok(());
             }
         }
 
-        let root_path = SanitizedPath::new_arc(path);
-        let path: Arc<std::path::Path> = path.into();
+        let root_path = SanitizedPath::new_arc(watch_path.as_ref());
 
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         let mode = notify::RecursiveMode::Recursive;
@@ -87,9 +94,9 @@ impl Watcher for FsWatcher {
         let mode = notify::RecursiveMode::NonRecursive;
 
         let registration_id = global({
-            let path = path.clone();
+            let watch_path = watch_path.clone();
             |g| {
-                g.add(path, mode, move |event: &notify::Event| {
+                g.add(watch_path, mode, move |event: &notify::Event| {
                     log::trace!("watcher received event: {event:?}");
                     let kind = match event.kind {
                         EventKind::Create(_) => Some(PathEventKind::Created),
@@ -126,14 +133,21 @@ impl Watcher for FsWatcher {
             }
         })??;
 
-        self.registrations.lock().insert(path, registration_id);
+        self.registrations
+            .lock()
+            .insert(registration_path, registration_id);
 
         Ok(())
     }
 
     fn remove(&self, path: &std::path::Path) -> anyhow::Result<()> {
         log::trace!("remove watched path: {path:?}");
-        let Some(registration) = self.registrations.lock().remove(path) else {
+        let registration_path = normalize_registration_path(path);
+        let Some(registration) = self
+            .registrations
+            .lock()
+            .remove(registration_path.as_ref())
+        else {
             return Ok(());
         };
 
@@ -227,12 +241,214 @@ impl GlobalWatcher {
             state.path_registrations.remove(&registration_state.path);
 
             drop(state);
-            self.watcher
-                .lock()
-                .unwatch(&registration_state.path)
-                .log_err();
+            if let Err(err) = self.watcher.lock().unwatch(&registration_state.path) {
+                let err = err.to_string();
+                log_watch_error(
+                    WatchOperation::Unwatch,
+                    registration_state.path.as_ref(),
+                    &err,
+                );
+            }
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum WatchOperation {
+    Watch,
+    Unwatch,
+}
+
+impl WatchOperation {
+    fn as_str(self) -> &'static str {
+        match self {
+            WatchOperation::Watch => "watch",
+            WatchOperation::Unwatch => "unwatch",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum WatchErrorKind {
+    InvalidArgument,
+    PathNotFound,
+    PermissionDenied,
+    Other(Arc<str>),
+}
+
+impl WatchErrorKind {
+    fn from_message(message: &str) -> Self {
+        let normalized = message.to_ascii_lowercase();
+        if normalized.contains("invalid argument") {
+            WatchErrorKind::InvalidArgument
+        } else if normalized.contains("no path was found")
+            || normalized.contains("path not found")
+            || normalized.contains("no such file or directory")
+        {
+            WatchErrorKind::PathNotFound
+        } else if normalized.contains("permission denied")
+            || normalized.contains("access is denied")
+            || normalized.contains("operation not permitted")
+        {
+            WatchErrorKind::PermissionDenied
+        } else {
+            WatchErrorKind::Other(summarize_error_message_for_key(message))
+        }
+    }
+
+    fn is_ignorable(&self) -> bool {
+        matches!(self, WatchErrorKind::InvalidArgument | WatchErrorKind::PathNotFound)
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            WatchErrorKind::InvalidArgument => "invalid_argument",
+            WatchErrorKind::PathNotFound => "path_not_found",
+            WatchErrorKind::PermissionDenied => "permission_denied",
+            WatchErrorKind::Other(_) => "other",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct WatchErrorKey {
+    operation: WatchOperation,
+    path: Arc<str>,
+    error_kind: WatchErrorKind,
+}
+
+struct WatchErrorRateState {
+    last_logged_at: Instant,
+    suppressed_count: u32,
+}
+
+#[derive(Default)]
+struct WatchErrorRateLimiter {
+    entries: HashMap<WatchErrorKey, WatchErrorRateState>,
+}
+
+const WATCH_ERROR_LOG_INTERVAL: Duration = Duration::from_secs(30);
+const WATCH_ERROR_LOG_STALE_TTL: Duration = Duration::from_secs(10 * 60);
+const WATCH_ERROR_LOG_MAX_KEYS: usize = 4096;
+
+static WATCH_ERROR_RATE_LIMITER: OnceLock<Mutex<WatchErrorRateLimiter>> = OnceLock::new();
+
+pub(crate) fn log_watch_error(operation: WatchOperation, path: &Path, error_message: &str) {
+    let normalized_path = normalize_watch_path_buf(path);
+    let error_kind = WatchErrorKind::from_message(error_message);
+
+    let key = WatchErrorKey {
+        operation,
+        path: Arc::<str>::from(normalized_path.to_string_lossy().into_owned()),
+        error_kind: error_kind.clone(),
+    };
+
+    let Some(suppressed_count) = should_log_watch_error(key) else {
+        return;
+    };
+
+    let suppressed_suffix = if suppressed_count == 0 {
+        String::new()
+    } else {
+        format!(" (suppressed {suppressed_count} similar errors)")
+    };
+
+    if error_kind.is_ignorable() {
+        log::debug!(
+            "ignoring watcher {} error [{}] for {}: {}{}",
+            operation.as_str(),
+            error_kind.as_str(),
+            normalized_path.display(),
+            error_message,
+            suppressed_suffix,
+        );
+        return;
+    }
+
+    match operation {
+        WatchOperation::Watch => {
+            log::warn!(
+                "watcher {} error [{}] for {}: {}{}",
+                operation.as_str(),
+                error_kind.as_str(),
+                normalized_path.display(),
+                error_message,
+                suppressed_suffix,
+            );
+        }
+        WatchOperation::Unwatch => {
+            log::error!(
+                "watcher {} error [{}] for {}: {}{}",
+                operation.as_str(),
+                error_kind.as_str(),
+                normalized_path.display(),
+                error_message,
+                suppressed_suffix,
+            );
+        }
+    }
+}
+
+fn should_log_watch_error(key: WatchErrorKey) -> Option<u32> {
+    let now = Instant::now();
+    let limiter = WATCH_ERROR_RATE_LIMITER.get_or_init(|| Mutex::new(WatchErrorRateLimiter::default()));
+    let mut limiter = limiter.lock();
+
+    if limiter.entries.len() > WATCH_ERROR_LOG_MAX_KEYS {
+        limiter.entries.retain(|_, state| {
+            now.saturating_duration_since(state.last_logged_at) <= WATCH_ERROR_LOG_STALE_TTL
+        });
+    }
+
+    match limiter.entries.entry(key) {
+        Entry::Vacant(entry) => {
+            entry.insert(WatchErrorRateState {
+                last_logged_at: now,
+                suppressed_count: 0,
+            });
+            Some(0)
+        }
+        Entry::Occupied(mut entry) => {
+            let state = entry.get_mut();
+            if now.saturating_duration_since(state.last_logged_at) >= WATCH_ERROR_LOG_INTERVAL {
+                let suppressed_count = state.suppressed_count;
+                state.last_logged_at = now;
+                state.suppressed_count = 0;
+                Some(suppressed_count)
+            } else {
+                state.suppressed_count = state.suppressed_count.saturating_add(1);
+                None
+            }
+        }
+    }
+}
+
+fn summarize_error_message_for_key(message: &str) -> Arc<str> {
+    let summary = message
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .unwrap_or("unknown")
+        .to_ascii_lowercase();
+
+    const LIMIT: usize = 120;
+    if summary.chars().count() <= LIMIT {
+        return Arc::<str>::from(summary);
+    }
+
+    Arc::<str>::from(summary.chars().take(LIMIT).collect::<String>())
+}
+
+fn normalize_registration_path(path: &Path) -> Arc<Path> {
+    crate::normalize_path(path).into()
+}
+
+fn normalize_watch_path(path: &Path) -> Arc<Path> {
+    normalize_watch_path_buf(path).into()
+}
+
+fn normalize_watch_path_buf(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| crate::normalize_path(path))
 }
 
 static FS_WATCHER_INSTANCE: OnceLock<anyhow::Result<GlobalWatcher, notify::Error>> =
