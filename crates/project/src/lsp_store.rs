@@ -89,7 +89,7 @@ use language::{
 };
 use lsp::{
     AdapterServerCapabilities, CodeActionKind, CompletionContext, CompletionOptions,
-    DEFAULT_LSP_REQUEST_TIMEOUT, DiagnosticServerCapabilities, DiagnosticSeverity, DiagnosticTag,
+    DiagnosticServerCapabilities, DiagnosticSeverity, DiagnosticTag,
     DidChangeWatchedFilesRegistrationOptions, Edit, FileOperationFilter, FileOperationPatternKind,
     FileOperationRegistrationOptions, FileRename, FileSystemWatcher, LanguageServer,
     LanguageServerBinary, LanguageServerBinaryOptions, LanguageServerId, LanguageServerName,
@@ -13215,6 +13215,8 @@ fn lsp_workspace_diagnostics_refresh(
     server: Arc<LanguageServer>,
     cx: &mut Context<'_, LspStore>,
 ) -> Option<WorkspaceRefreshTask> {
+    const WORKSPACE_DIAGNOSTICS_MIN_REQUEST_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
     let identifier = workspace_diagnostic_identifier(&options)?;
     let registration_id_shared = registration_id.as_ref().map(SharedString::from);
 
@@ -13226,17 +13228,18 @@ fn lsp_workspace_diagnostics_refresh(
         .global_lsp_settings
         .get_request_timeout();
 
-    // Clamp timeout duration at a minimum of [`DEFAULT_LSP_REQUEST_TIMEOUT`] to mitigate useless loops from re-trying connections with smaller timeouts from project settings.
-    // This allows users to increase the duration if need be
+    // workspace/diagnostic is a background long-poll request for many servers.
+    // Keep a much larger lower bound than interactive requests so idle long-polls
+    // are not treated as regular request failures.
     let timeout = if request_timeout != Duration::ZERO {
-        request_timeout.max(DEFAULT_LSP_REQUEST_TIMEOUT)
+        request_timeout.max(WORKSPACE_DIAGNOSTICS_MIN_REQUEST_TIMEOUT)
     } else {
         request_timeout
     };
 
     let workspace_query_language_server = cx.spawn(async move |lsp_store, cx| {
-        let mut attempts = 0;
-        let max_attempts = 50;
+        let mut retry_attempts = 0;
+        let max_retry_attempts = 50;
         let mut requests = 0;
 
         loop {
@@ -13246,17 +13249,16 @@ fn lsp_workspace_diagnostics_refresh(
 
             'request: loop {
                 requests += 1;
-                if attempts > max_attempts {
+                if retry_attempts > max_retry_attempts {
                     log::error!(
-                        "Failed to pull workspace diagnostics {max_attempts} times, aborting"
+                        "Failed to pull workspace diagnostics {max_retry_attempts} times, aborting"
                     );
                     return;
                 }
-                let backoff_millis = (50 * (1 << attempts)).clamp(30, 1000);
+                let backoff_millis = (50 * (1 << retry_attempts)).clamp(30, 1000);
                 cx.background_executor()
                     .timer(Duration::from_millis(backoff_millis))
                     .await;
-                attempts += 1;
 
                 let Ok(previous_result_ids) = lsp_store.update(cx, |lsp_store, _| {
                     lsp_store
@@ -13307,19 +13309,23 @@ fn lsp_workspace_diagnostics_refresh(
                 // >  If a server closes a workspace diagnostic pull request the client should re-trigger the request.
                 match response_result {
                     ConnectionResult::Timeout => {
-                        log::error!("Timeout during workspace diagnostics pull");
+                        // A timeout during background long-poll is often transient and should not
+                        // be counted as a hard failure for retry budget.
+                        log::debug!("Timeout during workspace diagnostics pull");
                         continue 'request;
                     }
                     ConnectionResult::ConnectionReset => {
-                        log::error!("Server closed a workspace diagnostics pull request");
+                        retry_attempts += 1;
+                        log::warn!("Server closed a workspace diagnostics pull request");
                         continue 'request;
                     }
                     ConnectionResult::Result(Err(e)) => {
+                        retry_attempts += 1;
                         log::error!("Error during workspace diagnostics pull: {e:#}");
                         break 'request;
                     }
                     ConnectionResult::Result(Ok(pulled_diagnostics)) => {
-                        attempts = 0;
+                        retry_attempts = 0;
                         if lsp_store
                             .update(cx, |lsp_store, cx| {
                                 lsp_store.apply_workspace_diagnostic_report(
