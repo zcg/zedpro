@@ -1035,7 +1035,10 @@ pub fn word_consists_of_emojis(s: &str) -> bool {
 
 /// Similar to `str::split`, but also provides byte-offset ranges of the results. Unlike
 /// `str::split`, this is not generic on pattern types and does not return an `Iterator`.
-pub fn split_str_with_ranges(s: &str, pat: impl Fn(char) -> bool) -> Vec<(Range<usize>, &str)> {
+pub fn split_str_with_ranges<'s>(
+    s: &'s str,
+    pat: &dyn Fn(char) -> bool,
+) -> Vec<(Range<usize>, &'s str)> {
     let mut result = Vec::new();
     let mut start = 0;
 
@@ -1398,13 +1401,13 @@ Line 3"#
     #[test]
     fn test_split_with_ranges() {
         let input = "hi";
-        let result = split_str_with_ranges(input, |c| c == ' ');
+        let result = split_str_with_ranges(input, &|c| c == ' ');
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], (0..2, "hi"));
 
         let input = "héllo🦀world";
-        let result = split_str_with_ranges(input, |c| c == '🦀');
+        let result = split_str_with_ranges(input, &|c| c == '🦀');
 
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], (0..6, "héllo")); // 'é' is 2 bytes

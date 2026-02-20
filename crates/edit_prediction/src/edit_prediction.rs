@@ -1019,6 +1019,9 @@ impl EditPredictionStore {
         event: &project::Event,
         cx: &mut Context<Self>,
     ) {
+        if !is_ep_store_provider(all_language_settings(None, cx).edit_predictions.provider) {
+            return;
+        }
         // TODO [zeta2] init with recent paths
         match event {
             project::Event::ActiveEntryChanged(Some(active_entry_id)) => {
@@ -1540,6 +1543,10 @@ impl EditPredictionStore {
         scope: DiagnosticSearchScope,
         cx: &mut Context<Self>,
     ) {
+        if !is_ep_store_provider(all_language_settings(None, cx).edit_predictions.provider) {
+            return;
+        }
+
         let Some(project_state) = self.projects.get_mut(&project.entity_id()) else {
             return;
         };
@@ -1671,7 +1678,24 @@ impl EditPredictionStore {
     }
 
     pub const THROTTLE_TIMEOUT: Duration = Duration::from_millis(300);
+}
 
+fn is_ep_store_provider(provider: EditPredictionProvider) -> bool {
+    match provider {
+        EditPredictionProvider::Zed
+        | EditPredictionProvider::Sweep
+        | EditPredictionProvider::Mercury
+        | EditPredictionProvider::Ollama
+        | EditPredictionProvider::OpenAiCompatibleApi
+        | EditPredictionProvider::Experimental(_) => true,
+        EditPredictionProvider::None
+        | EditPredictionProvider::Copilot
+        | EditPredictionProvider::Supermaven
+        | EditPredictionProvider::Codestral => false,
+    }
+}
+
+impl EditPredictionStore {
     fn error_chain_contains_case_insensitive(error: &anyhow::Error, needle: &str) -> bool {
         let needle = needle.to_ascii_lowercase();
         error
@@ -1737,7 +1761,10 @@ impl EditPredictionStore {
                 EditPredictionProvider::None
                 | EditPredictionProvider::Copilot
                 | EditPredictionProvider::Supermaven
-                | EditPredictionProvider::Codestral => unreachable!(),
+                | EditPredictionProvider::Codestral => {
+                    log::error!("queue_prediction_refresh called with non-store provider");
+                    return;
+                }
             };
 
         let drop_on_cancel = !needs_acceptance_tracking;
