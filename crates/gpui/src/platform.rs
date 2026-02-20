@@ -524,7 +524,7 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn get_raw_handle(&self) -> windows::Win32::Foundation::HWND;
 
     #[cfg(target_os = "windows")]
-    fn merge_into_tabbing_group(&self, _target_identifier: String, _target_hwnd: windows::HWND) {}
+    fn merge_into_tabbing_group(&self, _target_identifier: String, _target_hwnd: HWND) {}
 
     // Linux specific methods
     fn inner_window_bounds(&self) -> WindowBounds {

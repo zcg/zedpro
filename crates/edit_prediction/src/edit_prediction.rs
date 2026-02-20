@@ -103,6 +103,8 @@ const CHANGE_GROUPING_LINE_SPAN: u32 = 8;
 const LAST_CHANGE_GROUPING_TIME: Duration = Duration::from_secs(1);
 const ZED_PREDICT_DATA_COLLECTION_CHOICE: &str = "zed_predict_data_collection_choice";
 const REJECT_REQUEST_DEBOUNCE: Duration = Duration::from_secs(15);
+const PREDICTION_NON_RETRIABLE_ERROR_COOLDOWN: Duration = Duration::from_secs(30);
+const PREDICTION_RAW_MODE_ERROR_COOLDOWN: Duration = Duration::from_secs(60);
 
 pub struct Zeta2FeatureFlag;
 
@@ -311,6 +313,8 @@ struct ProjectState {
     debug_tx: Option<mpsc::UnboundedSender<DebugEvent>>,
     last_edit_prediction_refresh: Option<(EntityId, Instant)>,
     last_jump_prediction_refresh: Option<(EntityId, Instant)>,
+    prediction_request_cooldown_until: Option<Instant>,
+    suppressed_prediction_requests: usize,
     cancelled_predictions: HashSet<usize>,
     context: Entity<RelatedExcerptStore>,
     license_detection_watchers: HashMap<WorktreeId, Rc<LicenseDetectionWatcher>>,
@@ -919,6 +923,8 @@ impl EditPredictionStore {
                 next_pending_prediction_id: 0,
                 last_edit_prediction_refresh: None,
                 last_jump_prediction_refresh: None,
+                prediction_request_cooldown_until: None,
+                suppressed_prediction_requests: 0,
                 license_detection_watchers: HashMap::default(),
                 user_actions: VecDeque::with_capacity(USER_ACTION_HISTORY_SIZE),
                 _subscriptions: [
@@ -1666,6 +1672,35 @@ impl EditPredictionStore {
 
     pub const THROTTLE_TIMEOUT: Duration = Duration::from_millis(300);
 
+    fn error_chain_contains_case_insensitive(error: &anyhow::Error, needle: &str) -> bool {
+        let needle = needle.to_ascii_lowercase();
+        error
+            .chain()
+            .any(|cause| cause.to_string().to_ascii_lowercase().contains(&needle))
+    }
+
+    fn prediction_request_cooldown(error: &anyhow::Error) -> Option<Duration> {
+        if Self::error_chain_contains_case_insensitive(
+            error,
+            "raw mode does not support template, system, or context",
+        ) {
+            return Some(PREDICTION_RAW_MODE_ERROR_COOLDOWN);
+        }
+
+        let has_non_retriable_request_error = [
+            "request failed with status: 400",
+            "request failed with status: 401",
+            "request failed with status: 403",
+            "request failed with status: 404",
+            "request failed with status: 422",
+            "unsupported edit prediction provider",
+        ]
+        .into_iter()
+        .any(|pattern| Self::error_chain_contains_case_insensitive(error, pattern));
+
+        has_non_retriable_request_error.then_some(PREDICTION_NON_RETRIABLE_ERROR_COOLDOWN)
+    }
+
     fn queue_prediction_refresh(
         &mut self,
         project: Entity<Project>,
@@ -1741,7 +1776,55 @@ impl EditPredictionStore {
                 return None;
             }
 
-            let new_prediction_result = do_refresh(this.clone(), cx).await.log_err().flatten();
+            let mut skip_due_to_error_cooldown = false;
+            this.update(cx, |this, cx| {
+                let project_state = this.get_or_init_project(&project, cx);
+                if let Some(cooldown_until) = project_state.prediction_request_cooldown_until {
+                    if cooldown_until > Instant::now() {
+                        project_state.suppressed_prediction_requests += 1;
+                        skip_due_to_error_cooldown = true;
+                    } else {
+                        let suppressed = project_state.suppressed_prediction_requests;
+                        project_state.prediction_request_cooldown_until = None;
+                        project_state.suppressed_prediction_requests = 0;
+                        if suppressed > 0 {
+                            log::info!(
+                                "Resuming edit prediction requests after suppressing {suppressed} requests during cooldown"
+                            );
+                        }
+                    }
+                }
+            })
+            .ok();
+            if skip_due_to_error_cooldown {
+                return None;
+            }
+
+            let new_prediction_result = match do_refresh(this.clone(), cx).await {
+                Ok(result) => result,
+                Err(error) => {
+                    util::log_err(&error);
+
+                    if let Some(cooldown) = Self::prediction_request_cooldown(&error) {
+                        let summary = error.to_string();
+                        this.update(cx, |this, cx| {
+                            let project_state = this.get_or_init_project(&project, cx);
+                            project_state.prediction_request_cooldown_until =
+                                Some(Instant::now() + cooldown);
+                            project_state.suppressed_prediction_requests = 0;
+                        })
+                        .ok();
+
+                        log::warn!(
+                            "Pausing edit prediction requests for {}s after non-retriable error: {}",
+                            cooldown.as_secs(),
+                            summary
+                        );
+                    }
+
+                    None
+                }
+            };
             let new_prediction_id = new_prediction_result
                 .as_ref()
                 .map(|(prediction, _)| prediction.id.clone());

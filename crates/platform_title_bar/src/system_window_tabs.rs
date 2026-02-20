@@ -78,6 +78,8 @@ impl SystemWindowTabs {
     pub fn init(cx: &mut App) {
         let mut was_use_system_window_tabs =
             WorkspaceSettings::get_global(cx).use_system_window_tabs;
+        let mut was_window_tab_link_mode =
+            WorkspaceSettings::get_global(cx).window_tab_link_mode;
 
         // Initialize on startup if setting is already enabled
         if was_use_system_window_tabs {
@@ -87,11 +89,45 @@ impl SystemWindowTabs {
         }
 
         cx.observe_global::<SettingsStore>(move |cx| {
-            let use_system_window_tabs = WorkspaceSettings::get_global(cx).use_system_window_tabs;
-            if use_system_window_tabs == was_use_system_window_tabs {
+            let settings = WorkspaceSettings::get_global(cx);
+            let use_system_window_tabs = settings.use_system_window_tabs;
+            let window_tab_link_mode = settings.window_tab_link_mode;
+            let use_system_window_tabs_changed = use_system_window_tabs != was_use_system_window_tabs;
+            let window_tab_link_mode_changed = window_tab_link_mode != was_window_tab_link_mode;
+
+            if !use_system_window_tabs_changed && !window_tab_link_mode_changed {
                 return;
             }
             was_use_system_window_tabs = use_system_window_tabs;
+            was_window_tab_link_mode = window_tab_link_mode;
+
+            if !use_system_window_tabs_changed {
+                if use_system_window_tabs {
+                    cx.windows().iter().for_each(|handle| {
+                        handle
+                            .update(cx, |_, window, cx| {
+                                let tabs = if let Some(tabs) = window.tabbed_windows() {
+                                    tabs
+                                } else {
+                                    vec![SystemWindowTab::new(
+                                        SharedString::from(window.window_title()),
+                                        window.window_handle(),
+                                    )]
+                                };
+                                SystemWindowTabController::add_tab(cx, handle.window_id(), tabs);
+                            })
+                            .ok();
+                    });
+                }
+
+                let to_refresh = cx
+                    .windows()
+                    .into_iter()
+                    .map(|handle| handle.window_id())
+                    .collect::<Vec<_>>();
+                SystemWindowTabController::refresh_window_ids(cx, to_refresh);
+                return;
+            }
 
             let tabbing_identifier = if use_system_window_tabs {
                 Some(String::from("zed"))
@@ -492,7 +528,6 @@ impl SystemWindowTabs {
                         let merge_all_tabs = merge_all_tabs.clone();
                         let merge_target_windows = merge_target_windows.clone();
                         let source_window_id = item.id;
-                        let source_handle = item.handle.clone();
 
                         menu = menu
                             .separator()
@@ -550,13 +585,11 @@ impl SystemWindowTabs {
 
                                 for (target_window_id, target_title) in merge_target_windows.clone()
                                 {
-                                    let source_handle = source_handle.clone();
                                     let label = format!("Group Into \"{}\"", target_title);
                                     menu = menu.entry(label, None, move |_window, cx| {
                                         Self::defer_merge_window_into_target_group(
                                             cx,
                                             source_window_id,
-                                            source_handle.clone(),
                                             target_window_id,
                                             usize::MAX,
                                         );
@@ -642,103 +675,35 @@ impl SystemWindowTabs {
         target_window_id: WindowId,
         ix: usize,
     ) {
-        Self::merge_window_into_target_group(
-            cx,
-            dragged_tab.id,
-            dragged_tab.handle,
-            target_window_id,
-            ix,
-        );
+        Self::merge_window_into_target_group(cx, dragged_tab.id, target_window_id, ix);
     }
 
     #[cfg(target_os = "windows")]
     fn merge_window_into_target_group(
         cx: &mut App,
         source_window_id: WindowId,
-        source_handle: AnyWindowHandle,
         target_window_id: WindowId,
         ix: usize,
     ) {
-        let Some(target_handle) = cx
-            .windows()
-            .into_iter()
-            .find(|h| h.window_id() == target_window_id)
-        else {
-            return;
-        };
-
-        let Ok((target_identifier, target_hwnd)) =
-            target_handle.update(cx, |_, target_window, _| {
-                (
-                    target_window.tabbing_identifier(),
-                    target_window.raw_handle(),
-                )
-            })
-        else {
-            return;
-        };
-
-        let Some(target_identifier) = target_identifier else {
-            return;
-        };
-
-        // Dragging the active tab "into itself" is a no-op.
-        if source_window_id == target_window_id {
-            return;
-        }
-
-        let mut to_refresh = SystemWindowTabController::tab_group_window_ids(cx, source_window_id);
-        to_refresh.extend(SystemWindowTabController::tab_group_window_ids(
-            cx,
-            target_window_id,
-        ));
-
-        // Update controller state synchronously; perform the platform operation separately.
-        SystemWindowTabController::merge_window_into_group(
+        SystemWindowTabController::merge_window_into_group_and_sync_platform(
             cx,
             source_window_id,
             target_window_id,
             ix,
         );
-        SystemWindowTabController::refresh_window_ids(cx, to_refresh);
-
-        // Perform the platform operation (may show/hide windows; keep it out of nested updates).
-        let _ = source_handle.update(cx, |_, source_window, _| {
-            source_window.merge_into_tabbing_group(target_identifier.clone(), target_hwnd);
-        });
     }
 
     #[cfg(target_os = "windows")]
     fn defer_move_tab_to_new_window(cx: &mut App, tab_id: WindowId) {
         cx.defer(move |cx| {
-            let to_refresh = SystemWindowTabController::tab_group_window_ids(cx, tab_id);
-            SystemWindowTabController::move_tab_to_new_window(cx, tab_id);
-            SystemWindowTabController::refresh_window_ids(cx, to_refresh);
-
-            if let Some(handle) = cx.windows().into_iter().find(|h| h.window_id() == tab_id) {
-                handle
-                    .update(cx, |_, window, _cx| window.move_tab_to_new_window())
-                    .ok();
-            }
+            SystemWindowTabController::move_tab_to_new_window_and_sync_platform(cx, tab_id);
         });
     }
 
     #[cfg(target_os = "windows")]
     fn defer_merge_all_windows(cx: &mut App, tab_id: WindowId) {
         cx.defer(move |cx| {
-            let to_refresh = cx
-                .windows()
-                .into_iter()
-                .map(|handle| handle.window_id())
-                .collect::<Vec<_>>();
-            SystemWindowTabController::merge_all_windows(cx, tab_id);
-            SystemWindowTabController::refresh_window_ids(cx, to_refresh);
-
-            if let Some(handle) = cx.windows().into_iter().find(|h| h.window_id() == tab_id) {
-                handle
-                    .update(cx, |_, window, _cx| window.merge_all_windows())
-                    .ok();
-            }
+            SystemWindowTabController::merge_all_windows_and_sync_platform(cx, tab_id);
         });
     }
 
@@ -746,41 +711,18 @@ impl SystemWindowTabs {
     fn defer_merge_window_into_target_group(
         cx: &mut App,
         source_window_id: WindowId,
-        source_handle: AnyWindowHandle,
         target_window_id: WindowId,
         ix: usize,
     ) {
         cx.defer(move |cx| {
-            Self::merge_window_into_target_group(
-                cx,
-                source_window_id,
-                source_handle,
-                target_window_id,
-                ix,
-            );
+            Self::merge_window_into_target_group(cx, source_window_id, target_window_id, ix);
         });
     }
 
     #[cfg(target_os = "windows")]
     fn defer_detach_all_windows(cx: &mut App, window_ids: Vec<WindowId>) {
         cx.defer(move |cx| {
-            let to_refresh = window_ids.clone();
-            for window_id in &window_ids {
-                SystemWindowTabController::move_tab_to_new_window(cx, *window_id);
-            }
-            SystemWindowTabController::refresh_window_ids(cx, to_refresh);
-
-            for window_id in &window_ids {
-                if let Some(handle) = cx
-                    .windows()
-                    .into_iter()
-                    .find(|h| h.window_id() == *window_id)
-                {
-                    handle
-                        .update(cx, |_, window, _cx| window.move_tab_to_new_window())
-                        .ok();
-                }
-            }
+            SystemWindowTabController::move_tabs_to_new_windows_and_sync_platform(cx, window_ids);
         });
     }
 
@@ -882,11 +824,22 @@ impl Render for SystemWindowTabs {
             SharedString::from(window.window_title()),
             window.window_handle(),
         )];
-        let tabs = cx
+        let live_window_ids = cx
+            .windows()
+            .into_iter()
+            .map(|handle| handle.window_id())
+            .collect::<std::collections::HashSet<_>>();
+        let mut tabs = cx
             .global::<SystemWindowTabController>()
             .tabs(window_id)
             .unwrap_or(&current_window_tab)
-            .clone();
+            .iter()
+            .filter(|tab| live_window_ids.contains(&tab.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if tabs.is_empty() {
+            tabs = current_window_tab;
+        }
 
         let tab_width = self.measured_tab_width.max(window.rem_size() * 10.);
 

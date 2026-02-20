@@ -1293,10 +1293,20 @@ pub(crate) async fn restore_or_create_workspace(
     {
         let mut results: Vec<Result<(), Error>> = Vec::new();
         let mut tasks = Vec::new();
+        let mut restored_windows_by_id = HashMap::default();
 
         for multi_workspace in multi_workspaces {
+            let restored_window_id = multi_workspace
+                .workspaces
+                .first()
+                .and_then(|workspace| workspace.window_id);
+
             match restore_multiworkspace(multi_workspace, app_state.clone(), cx).await {
                 Ok(result) => {
+                    if let Some(window_id) = restored_window_id {
+                        restored_windows_by_id.insert(window_id, result.window_handle.clone());
+                    }
+
                     for error in result.errors {
                         log::error!("Failed to restore workspace in group: {error:#}");
                         results.push(Err(error));
@@ -1310,6 +1320,10 @@ pub(crate) async fn restore_or_create_workspace(
 
         for session_workspace in remote_workspaces {
             let app_state = app_state.clone();
+            let replace_window = session_workspace
+                .window_id
+                .and_then(|window_id| restored_windows_by_id.get(&window_id).cloned());
+
             let SerializedWorkspaceLocation::Remote(mut connection_options) =
                 session_workspace.location
             else {
@@ -1326,7 +1340,10 @@ pub(crate) async fn restore_or_create_workspace(
                     connection_options,
                     paths.paths().iter().map(PathBuf::from).collect(),
                     app_state,
-                    workspace::OpenOptions::default(),
+                    workspace::OpenOptions {
+                        replace_window,
+                        ..Default::default()
+                    },
                     cx,
                 )
                 .await

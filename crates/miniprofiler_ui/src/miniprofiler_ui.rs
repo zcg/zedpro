@@ -456,7 +456,8 @@ impl Render for ProfilerWindow {
         window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
-        let ui_font = theme::setup_ui_font(window, cx);
+        window.set_rem_size(theme::get_ui_font_size(cx));
+        let ui_font = theme::get_ui_font(cx);
         if !self.paused {
             self.poll_timings(cx);
             window.request_animation_frame();
