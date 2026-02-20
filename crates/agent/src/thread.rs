@@ -61,7 +61,6 @@ use uuid::Uuid;
 const TOOL_CANCELED_MESSAGE: &str = "Tool canceled by user";
 pub const MAX_TOOL_NAME_LENGTH: usize = 64;
 pub const MAX_SUBAGENT_DEPTH: u8 = 4;
-pub const MAX_PARALLEL_SUBAGENTS: usize = 8;
 
 /// Context passed to a subagent thread for lifecycle management
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -602,7 +601,7 @@ pub trait TerminalHandle {
 
 pub trait SubagentHandle {
     fn id(&self) -> acp::SessionId;
-    fn wait_for_summary(&self, summary_prompt: String, cx: &AsyncApp) -> Task<Result<String>>;
+    fn wait_for_output(&self, cx: &AsyncApp) -> Task<Result<String>>;
 }
 
 pub trait ThreadEnvironment {
@@ -620,7 +619,6 @@ pub trait ThreadEnvironment {
         label: String,
         initial_prompt: String,
         timeout: Option<Duration>,
-        allowed_tools: Option<Vec<String>>,
         cx: &mut App,
     ) -> Result<Rc<dyn SubagentHandle>>;
 }
@@ -1328,7 +1326,7 @@ impl Thread {
 
     pub fn add_default_tools(
         &mut self,
-        allowed_tool_names: Option<Vec<&str>>,
+        allowed_tool_names: Option<Vec<SharedString>>,
         environment: Rc<dyn ThreadEnvironment>,
         cx: &mut Context<Self>,
     ) {
@@ -1422,8 +1420,14 @@ impl Thread {
         }
     }
 
-    pub fn add_tool<T: AgentTool>(&mut self, tool: T, allowed_tool_names: Option<&Vec<&str>>) {
-        if allowed_tool_names.is_some_and(|tool_names| !tool_names.contains(&T::NAME)) {
+    pub fn add_tool<T: AgentTool>(
+        &mut self,
+        tool: T,
+        allowed_tool_names: Option<&Vec<SharedString>>,
+    ) {
+        if allowed_tool_names
+            .is_some_and(|tool_names| !tool_names.iter().any(|x| x.as_str() == T::NAME))
+        {
             return;
         }
 
@@ -2616,13 +2620,6 @@ impl Thread {
             .iter()
             .filter_map(|s| s.upgrade().map(|s| s.read(cx).id().clone()))
             .collect()
-    }
-
-    pub fn running_subagent_count(&self) -> usize {
-        self.running_subagents
-            .iter()
-            .filter(|s| s.upgrade().is_some())
-            .count()
     }
 
     pub fn is_subagent(&self) -> bool {

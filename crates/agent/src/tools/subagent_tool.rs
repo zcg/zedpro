@@ -1,7 +1,7 @@
 use acp_thread::SUBAGENT_SESSION_ID_META_KEY;
 use agent_client_protocol as acp;
 use anyhow::{Result, anyhow};
-use gpui::{App, Entity, SharedString, Task, WeakEntity};
+use gpui::{App, SharedString, Task, WeakEntity};
 use language_model::LanguageModelToolResultContent;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -10,64 +10,42 @@ use std::{rc::Rc, time::Duration};
 
 use crate::{AgentTool, Thread, ThreadEnvironment, ToolCallEventStream};
 
-/// Spawns a subagent with its own context window to perform a delegated task.
+/// Spawns an agent to perform a delegated task.
 ///
 /// Use this tool when you want to do any of the following:
 /// - Perform an investigation where all you need to know is the outcome, not the research that led to that outcome.
 /// - Complete a self-contained task where you need to know if it succeeded or failed (and how), but none of its intermediate output.
 /// - Run multiple tasks in parallel that would take significantly longer to run sequentially.
 ///
-/// You control what the subagent does by providing:
-/// 1. A task prompt describing what the subagent should do
-/// 2. A summary prompt that tells the subagent how to summarize its work when done
-/// 3. A "context running out" prompt for when the subagent is low on tokens
+/// You control what the agent does by providing a prompt describing what the agent should do. The agent has access to the same tools you do.
 ///
-/// Each subagent has access to the same tools you do. You can optionally restrict
-/// which tools each subagent can use.
+/// You will receive the agent's final message.
 ///
 /// Note:
-/// - Maximum 8 subagents can run in parallel
-/// - Subagents cannot use tools you don't have access to
-/// - If spawning multiple subagents that might write to the filesystem, provide
-///   guidance on how to avoid conflicts (e.g. assign each to different directories)
-/// - Instruct subagents to be concise in their summaries to conserve your context
+/// - Agents cannot use tools you don't have access to.
+/// - If spawning multiple agents that might write to the filesystem, provide guidance on how to avoid conflicts (e.g. assign each to different directories)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SubagentToolInput {
-    /// Short label displayed in the UI while the subagent runs (e.g., "Researching alternatives")
+    /// Short label displayed in the UI while the agent runs (e.g., "Researching alternatives")
     pub label: String,
-
-    /// The initial prompt that tells the subagent what task to perform.
-    /// Be specific about what you want the subagent to accomplish.
-    pub task_prompt: String,
-
-    /// The prompt sent to the subagent when it completes its task, asking it
-    /// to summarize what it did and return results. This summary becomes the
-    /// tool result you receive.
-    ///
-    /// Example: "Summarize what you found, listing the top 3 alternatives with pros/cons."
-    pub summary_prompt: String,
-
-    /// Optional: Maximum runtime in milliseconds. If exceeded, the subagent is
-    /// asked to summarize and return. No timeout by default.
+    /// The prompt that tells the agent what task to perform. Be specific about what you want the agent to accomplish.
+    pub prompt: String,
+    /// Optional: Maximum runtime in seconds. No timeout by default.
     #[serde(default)]
-    pub timeout_ms: Option<u64>,
-
-    /// Optional: List of tool names the subagent is allowed to use.
-    /// If not provided, the subagent can use all tools available to the parent.
-    /// Tools listed here must be a subset of the parent's available tools.
-    #[serde(default)]
-    pub allowed_tools: Option<Vec<String>>,
+    pub timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SubagentToolOutput {
-    pub subagent_session_id: acp::SessionId,
-    pub summary: String,
+    pub session_id: acp::SessionId,
+    pub output: String,
 }
 
 impl From<SubagentToolOutput> for LanguageModelToolResultContent {
     fn from(output: SubagentToolOutput) -> Self {
-        output.summary.into()
+        serde_json::to_string(&output)
+            .expect("Failed to serialize SubagentToolOutput")
+            .into()
     }
 }
 
@@ -83,32 +61,6 @@ impl SubagentTool {
             parent_thread,
             environment,
         }
-    }
-
-    fn validate_allowed_tools(
-        allowed_tools: &Option<Vec<String>>,
-        parent_thread: &Entity<Thread>,
-        cx: &App,
-    ) -> Result<()> {
-        let Some(allowed_tools) = allowed_tools else {
-            return Ok(());
-        };
-
-        let thread = parent_thread.read(cx);
-        let invalid_tools: Vec<_> = allowed_tools
-            .iter()
-            .filter(|tool| !thread.tools.contains_key(tool.as_str()))
-            .map(|s| format!("'{s}'"))
-            .collect::<Vec<_>>();
-
-        if !invalid_tools.is_empty() {
-            return Err(anyhow!(
-                "The following tools do not exist: {}",
-                invalid_tools.join(", ")
-            ));
-        }
-
-        Ok(())
     }
 }
 
@@ -142,18 +94,11 @@ impl AgentTool for SubagentTool {
             return Task::ready(Err(anyhow!("Parent thread no longer exists")));
         };
 
-        if let Err(e) =
-            Self::validate_allowed_tools(&input.allowed_tools, &parent_thread_entity, cx)
-        {
-            return Task::ready(Err(e));
-        }
-
         let subagent = match self.environment.create_subagent(
             parent_thread_entity,
             input.label,
-            input.task_prompt,
-            input.timeout_ms.map(|ms| Duration::from_millis(ms)),
-            input.allowed_tools,
+            input.prompt,
+            input.timeout.map(|secs| Duration::from_secs(secs)),
             cx,
         ) {
             Ok(subagent) => subagent,
@@ -170,10 +115,10 @@ impl AgentTool for SubagentTool {
         event_stream.update_fields_with_meta(acp::ToolCallUpdateFields::new(), Some(meta));
 
         cx.spawn(async move |cx| {
-            let summary = subagent.wait_for_summary(input.summary_prompt, cx).await?;
+            let output = subagent.wait_for_output(cx).await?;
             Ok(SubagentToolOutput {
-                subagent_session_id,
-                summary,
+                session_id: subagent_session_id,
+                output,
             })
         })
     }
@@ -185,10 +130,10 @@ impl AgentTool for SubagentTool {
         event_stream: ToolCallEventStream,
         _cx: &mut App,
     ) -> Result<()> {
-        event_stream.subagent_spawned(output.subagent_session_id.clone());
+        event_stream.subagent_spawned(output.session_id.clone());
         let meta = acp::Meta::from_iter([(
             SUBAGENT_SESSION_ID_META_KEY.into(),
-            output.subagent_session_id.to_string().into(),
+            output.session_id.to_string().into(),
         )]);
         event_stream.update_fields_with_meta(acp::ToolCallUpdateFields::new(), Some(meta));
         Ok(())

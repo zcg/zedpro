@@ -63,9 +63,16 @@ pub fn notify_schema_changed(lsp_store: Entity<LspStore>, uri: String, cx: &App)
         servers
     });
     for server in servers {
-        zlog::trace!(LOGGER => "Notifying server {:?} of schema change for URI: {:?}", server.server_id(), &uri);
-        if let Err(err) = server.notify::<SchemaContentsChanged>(uri.clone()) {
-            zlog::warn!(LOGGER => "Failed to notify server {:?} for schema URI {:?}: {}", server.server_id(), &uri, err);
+        zlog::trace!(LOGGER => "Notifying server {NAME} (id {ID:?}) of schema change for URI: {uri:?}",
+            NAME = server.name(),
+            ID = server.server_id()
+        );
+        if let Err(error) = server.notify::<SchemaContentsChanged>(uri.clone()) {
+            zlog::error!(
+                LOGGER => "Failed to notify server {NAME} (id {ID:?}) of schema change for URI {uri:?}: {error:#}",
+                    NAME = server.name(),
+                    ID = server.server_id(),
+            );
         }
     }
 }
