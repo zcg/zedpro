@@ -292,6 +292,7 @@ fn build_test_request(prompt: &str) -> LanguageModelRequest {
         thinking_allowed: true,
         bypass_rate_limit: false,
         thinking_effort: None,
+        speed: None,
     }
 }
 

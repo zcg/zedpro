@@ -1219,7 +1219,7 @@ impl TextThread {
             } => cx.emit(TextThreadEvent::Operation(
                 TextThreadOperation::BufferOperation(operation.clone()),
             )),
-            language::BufferEvent::Edited => {
+            language::BufferEvent::Edited { .. } => {
                 self.count_remaining_tokens(cx);
                 self.reparse(cx);
                 cx.emit(TextThreadEvent::MessagesEdited);
@@ -2276,6 +2276,7 @@ impl TextThread {
             thinking_allowed: true,
             bypass_rate_limit: false,
             thinking_effort: None,
+            speed: None,
         };
         for message in self.messages(cx) {
             if message.status != MessageStatus::Done {

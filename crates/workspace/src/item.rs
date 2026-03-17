@@ -15,7 +15,8 @@ use gpui::{
     EventEmitter, FocusHandle, Focusable, Font, HighlightStyle, Pixels, Point, Render,
     SharedString, Task, WeakEntity, Window,
 };
-use language::{Capability, HighlightedText};
+use language::Capability;
+pub use language::HighlightedText;
 use project::{Project, ProjectEntryId, ProjectPath};
 pub use settings::{
     ActivateOnClose, ClosePosition, RegisterSetting, Settings, SettingsLocation, ShowCloseButton,
@@ -247,6 +248,11 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
     fn discarded(&self, _project: Entity<Project>, _window: &mut Window, _cx: &mut Context<Self>) {}
     fn on_removed(&self, _cx: &mut Context<Self>) {}
     fn workspace_deactivated(&mut self, _window: &mut Window, _: &mut Context<Self>) {}
+
+    /// Pane 发生变化时的回调（例如 Item 被移动到新的 Pane）。
+    /// 默认不做任何处理。
+    fn pane_changed(&mut self, _new_pane_id: EntityId, _cx: &mut Context<Self>) {}
+
     fn navigate(
         &mut self,
         _: Arc<dyn Any + Send>,
@@ -258,6 +264,19 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
 
     fn telemetry_event_text(&self) -> Option<&'static str> {
         None
+    }
+
+    /// 处理拖拽放下（例如拖拽 Tab、外部文件路径等）。
+    ///
+    /// 返回 `true` 表示该 Item 接管了 drop 行为，Pane/Workspace 不再执行默认处理。
+    fn handle_drop(
+        &self,
+        _active_pane: &Pane,
+        _dropped: &dyn Any,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> bool {
+        false
     }
 
     /// (model id, Item)
@@ -356,7 +375,7 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized {
         ToolbarItemLocation::Hidden
     }
 
-    fn breadcrumbs(&self, _cx: &App) -> Option<Vec<BreadcrumbText>> {
+    fn breadcrumbs(&self, _cx: &App) -> Option<(Vec<HighlightedText>, Option<Font>)> {
         None
     }
 
@@ -563,7 +582,7 @@ pub trait ItemHandle: 'static + Send {
     ) -> gpui::Subscription;
     fn to_searchable_item_handle(&self, cx: &App) -> Option<Box<dyn SearchableItemHandle>>;
     fn breadcrumb_location(&self, cx: &App) -> ToolbarItemLocation;
-    fn breadcrumbs(&self, cx: &App) -> Option<Vec<BreadcrumbText>>;
+    fn breadcrumbs(&self, cx: &App) -> Option<(Vec<HighlightedText>, Option<Font>)>;
     fn breadcrumb_prefix(&self, window: &mut Window, cx: &mut App) -> Option<gpui::AnyElement>;
     fn show_toolbar(&self, cx: &App) -> bool;
     fn pixel_position_of_cursor(&self, cx: &App) -> Option<Point<Pixels>>;
@@ -581,6 +600,17 @@ pub trait ItemHandle: 'static + Send {
         let is_deleted = self.project_entry_ids(cx).is_empty();
         self.is_dirty(cx) && !self.has_conflict(cx) && self.can_save(cx) && !is_deleted
     }
+
+    /// 处理拖拽放下（例如拖拽 Tab、外部文件路径等）。
+    ///
+    /// 返回 `true` 表示该 Item 接管了 drop 行为，Pane/Workspace 不再执行默认处理。
+    fn handle_drop(
+        &self,
+        active_pane: &Pane,
+        dropped: &dyn Any,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool;
 }
 
 pub trait WeakItemHandle: Send + Sync {
@@ -682,6 +712,16 @@ impl<T: Item> ItemHandle for Entity<T> {
         } else {
             WorkspaceSettings::get_global(cx)
         }
+    }
+
+    fn handle_drop(
+        &self,
+        active_pane: &Pane,
+        dropped: &dyn Any,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        self.update(cx, |this, cx| this.handle_drop(active_pane, dropped, window, cx))
     }
 
     fn project_entry_ids(&self, cx: &App) -> SmallVec<[ProjectEntryId; 3]> {
@@ -1087,7 +1127,7 @@ impl<T: Item> ItemHandle for Entity<T> {
         self.read(cx).breadcrumb_location(cx)
     }
 
-    fn breadcrumbs(&self, cx: &App) -> Option<Vec<BreadcrumbText>> {
+    fn breadcrumbs(&self, cx: &App) -> Option<(Vec<HighlightedText>, Option<Font>)> {
         self.read(cx).breadcrumbs(cx)
     }
 

@@ -74,6 +74,10 @@ impl Mode {
             Self::Normal | Self::Insert | Self::Replace | Self::HelixNormal => false,
         }
     }
+
+    pub fn is_helix(&self) -> bool {
+        matches!(self, Self::HelixNormal | Self::HelixSelect)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -229,7 +233,15 @@ pub struct VimGlobals {
     pub recorded_actions: Vec<ReplayableAction>,
     pub recorded_selection: RecordedSelection,
 
+    /// The register being written to by the active `q{register}` macro
+    /// recording.
     pub recording_register: Option<char>,
+    /// The register that was selected at the start of the current
+    /// dot-recording, for example, `"ap`.
+    pub recording_register_for_dot: Option<char>,
+    /// The register from the last completed dot-recording. Used when replaying
+    /// with `.`.
+    pub recorded_register_for_dot: Option<char>,
     pub last_recorded_register: Option<char>,
     pub last_replayed_register: Option<char>,
     pub replayer: Option<Replayer>,
@@ -518,7 +530,7 @@ impl MarksState {
         cx: &mut Context<Self>,
     ) {
         let on_change = cx.subscribe(buffer_handle, move |this, buffer, event, cx| match event {
-            BufferEvent::Edited => {
+            BufferEvent::Edited { .. } => {
                 if let Some(path) = this.path_for_buffer(&buffer, cx) {
                     this.serialize_buffer_marks(path, &buffer, cx);
                 }
@@ -918,6 +930,7 @@ impl VimGlobals {
                 self.dot_recording = false;
                 self.recorded_actions = std::mem::take(&mut self.recording_actions);
                 self.recorded_count = self.recording_count.take();
+                self.recorded_register_for_dot = self.recording_register_for_dot.take();
                 self.stop_recording_after_next_action = false;
             }
         }
@@ -945,6 +958,7 @@ impl VimGlobals {
                 self.dot_recording = false;
                 self.recorded_actions = std::mem::take(&mut self.recording_actions);
                 self.recorded_count = self.recording_count.take();
+                self.recorded_register_for_dot = self.recording_register_for_dot.take();
                 self.stop_recording_after_next_action = false;
             }
         }

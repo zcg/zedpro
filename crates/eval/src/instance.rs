@@ -565,6 +565,7 @@ impl ExampleInstance {
                 thinking_allowed: true,
                 bypass_rate_limit: false,
                 thinking_effort: None,
+                speed: None,
             };
 
             let model = model.clone();
@@ -683,10 +684,7 @@ impl agent::ThreadEnvironment for EvalThreadEnvironment {
 
     fn create_subagent(
         &self,
-        _parent_thread: Entity<agent::Thread>,
         _label: String,
-        _initial_prompt: String,
-        _timeout_ms: Option<Duration>,
         _cx: &mut App,
     ) -> Result<Rc<dyn agent::SubagentHandle>> {
         unimplemented!()

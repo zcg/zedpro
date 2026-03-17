@@ -950,7 +950,7 @@ impl Copilot {
             && let Some(registered_buffer) = server.registered_buffers.get_mut(&buffer.entity_id())
         {
             match event {
-                language::BufferEvent::Edited => {
+                language::BufferEvent::Edited { .. } => {
                     drop(registered_buffer.report_changes(&buffer, cx));
                 }
                 language::BufferEvent::Saved => {
@@ -1036,10 +1036,9 @@ impl Copilot {
         };
         let buffer_entity = buffer.clone();
         let lsp = server.lsp.clone();
-        let registered_buffer = server
-            .registered_buffers
-            .get_mut(&buffer.entity_id())
-            .unwrap();
+        let Some(registered_buffer) = server.registered_buffers.get_mut(&buffer.entity_id()) else {
+            return Task::ready(Err(anyhow::anyhow!("buffer not registered")));
+        };
         let pending_snapshot = registered_buffer.report_changes(buffer, cx);
         let buffer = buffer.read(cx);
         let uri = registered_buffer.uri.clone();
@@ -1781,6 +1780,7 @@ mod tests {
         fn disk_state(&self) -> language::DiskState {
             language::DiskState::Present {
                 mtime: ::fs::MTime::from_seconds_and_nanos(100, 42),
+                size: 0,
             }
         }
 

@@ -946,7 +946,7 @@ impl RemoteConnection for DockerExecConnection {
         ] {
             if let Some(value) = std::env::var(env_var).ok() {
                 docker_args.push("-e".to_string());
-                docker_args.push(format!("{}='{}'", env_var, value));
+                docker_args.push(format!("{env_var}={value}"));
             }
         }
 

@@ -10,7 +10,7 @@ use language_models::AllLanguageModelSettings;
 use picker::popover_menu::PickerPopoverMenu;
 use settings::{Settings, update_settings_file};
 use std::sync::Arc;
-use ui::{ButtonLike, PopoverMenuHandle, TintColor, Tooltip, prelude::*};
+use ui::{PopoverMenuHandle, Tooltip, prelude::*};
 
 pub struct AgentModelSelector {
     selector: Entity<LanguageModelSelector>,
@@ -147,9 +147,11 @@ impl Render for AgentModelSelector {
 
         PickerPopoverMenu::new(
             self.selector.clone(),
-            ButtonLike::new("active-model")
+            Button::new("active-model", model_name)
+                .label_size(LabelSize::Small)
+                .color(color)
                 .when_some(provider_icon, |this, icon| {
-                    this.child(
+                    this.start_icon(
                         match icon {
                             IconOrSvg::Svg(path) => Icon::from_external_svg(path),
                             IconOrSvg::Icon(name) => Icon::new(name),
@@ -158,14 +160,7 @@ impl Render for AgentModelSelector {
                         .size(IconSize::XSmall),
                     )
                 })
-                .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-                .child(
-                    Label::new(model_name)
-                        .color(color)
-                        .size(LabelSize::Small)
-                        .ml_0p5(),
-                )
-                .child(
+                .end_icon(
                     Icon::new(IconName::ChevronDown)
                         .color(color)
                         .size(IconSize::XSmall),

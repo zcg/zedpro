@@ -26,11 +26,14 @@ use core_video::pixel_buffer::CVPixelBuffer;
 use derive_more::{Deref, DerefMut};
 use futures::FutureExt;
 use futures::channel::oneshot;
+use gpui_util::post_inc;
+use gpui_util::{ResultExt, measure};
 use itertools::FoldWhile::{Continue, Done};
 use itertools::Itertools;
 use parking_lot::RwLock;
 use raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
 use refineable::Refineable;
+use scheduler::Instant;
 use slotmap::SlotMap;
 use smallvec::SmallVec;
 use std::{
@@ -48,10 +51,8 @@ use std::{
         Arc, Weak,
         atomic::{AtomicUsize, Ordering::SeqCst},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
-use util::post_inc;
-use util::{ResultExt, measure};
 use uuid::Uuid;
 
 mod prompts;
@@ -565,6 +566,10 @@ impl HitboxId {
     ///
     /// See [`Hitbox::is_hovered`] for details.
     pub fn is_hovered(self, window: &Window) -> bool {
+        // If this hitbox has captured the pointer, it's always considered hovered
+        if window.captured_hitbox == Some(self) {
+            return true;
+        }
         let hit_test = &window.mouse_hit_test;
         for id in hit_test.ids.iter().take(hit_test.hover_hitbox_count) {
             if self == *id {
@@ -725,6 +730,7 @@ pub(crate) struct DeferredDraw {
     parent_node: DispatchNodeId,
     element_id_stack: SmallVec<[ElementId; 32]>,
     text_style_stack: Vec<TextStyleRefinement>,
+    content_mask: Option<ContentMask<Pixels>>,
     rem_size: Pixels,
     element: Option<AnyElement>,
     absolute_offset: Point<Pixels>,
@@ -819,6 +825,11 @@ impl Frame {
         self.deferred_draws.clear();
         self.tab_stops.clear();
         self.focus = None;
+
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.debug_bounds.clear();
+        }
 
         #[cfg(any(feature = "inspector", debug_assertions))]
         {
@@ -950,6 +961,9 @@ pub struct Window {
     pub(crate) pending_input_observers: SubscriberSet<(), AnyObserver>,
     prompt: Option<RenderablePromptHandle>,
     pub(crate) client_inset: Option<Pixels>,
+    /// The hitbox that has captured the pointer, if any.
+    /// While captured, mouse events route to this hitbox regardless of hit testing.
+    captured_hitbox: Option<HitboxId>,
     #[cfg(any(feature = "inspector", debug_assertions))]
     inspector: Option<Entity<Inspector>>,
 }
@@ -1028,16 +1042,13 @@ pub(crate) struct ElementStateBox {
 }
 
 fn default_bounds(display_id: Option<DisplayId>, cx: &mut App) -> WindowBounds {
-    // Use active window geometry as a cascade base, but always open the new window in windowed mode.
+    // TODO, BUG: if you open a window with the currently active window
+    // on the stack, this will erroneously fallback to `None`
+    //
+    // TODO these should be the initial window bounds not considering maximized/fullscreen
     let active_window_bounds = cx
         .active_window()
-        .and_then(|w| w.update(cx, |_, window, _| window.window_bounds()).ok())
-        .or_else(|| {
-            cx.windows()
-                .into_iter()
-                .rev()
-                .find_map(|w| w.update(cx, |_, window, _| window.window_bounds()).ok())
-        });
+        .and_then(|w| w.update(cx, |_, window, _| window.window_bounds()).ok());
 
     const CASCADE_OFFSET: f32 = 25.0;
 
@@ -1060,14 +1071,11 @@ fn default_bounds(display_id: Option<DisplayId>, cx: &mut App) -> WindowBounds {
         },
         window_bounds_ctor,
     ): (_, fn(Bounds<Pixels>) -> WindowBounds) = match active_window_bounds {
-        Some(bounds) => (
-            match bounds {
-                WindowBounds::Windowed(bounds)
-                | WindowBounds::Maximized(bounds)
-                | WindowBounds::Fullscreen(bounds) => bounds,
-            },
-            WindowBounds::Windowed,
-        ),
+        Some(bounds) => match bounds {
+            WindowBounds::Windowed(bounds) => (bounds, WindowBounds::Windowed),
+            WindowBounds::Maximized(bounds) => (bounds, WindowBounds::Maximized),
+            WindowBounds::Fullscreen(bounds) => (bounds, WindowBounds::Fullscreen),
+        },
         None => (
             display
                 .as_ref()
@@ -1118,10 +1126,7 @@ impl Window {
             app_id,
             window_min_size,
             window_decorations,
-            #[cfg_attr(
-                not(any(target_os = "macos", target_os = "windows")),
-                allow(unused_variables)
-            )]
+            #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
             tabbing_identifier,
         } = options;
 
@@ -1140,15 +1145,9 @@ impl Window {
                 display_id,
                 window_min_size,
                 #[cfg(target_os = "macos")]
-                tabbing_identifier: tabbing_identifier.clone(),
+                tabbing_identifier,
             },
         )?;
-
-        // On Windows, set the tabbing identifier after window creation
-        #[cfg(target_os = "windows")]
-        if tabbing_identifier.is_some() {
-            platform_window.set_tabbing_identifier(tabbing_identifier);
-        }
 
         let tab_bar_visible = platform_window.tab_bar_visible();
         SystemWindowTabController::init_visible(cx, tab_bar_visible);
@@ -1184,11 +1183,13 @@ impl Window {
         }
 
         platform_window.on_close(Box::new({
+            let window_id = handle.window_id();
             let mut cx = cx.to_async();
             move || {
-                // `SystemWindowTabController` cleanup is centralized in `App::update_window_id`
-                // when the window is actually removed.
-                let _ = handle.update(&mut cx, |_, window, _cx| window.remove_window());
+                let _ = handle.update(&mut cx, |_, window, _| window.remove_window());
+                let _ = cx.update(|cx| {
+                    SystemWindowTabController::remove_tab(cx, window_id);
+                });
             }
         }));
         platform_window.on_request_frame(Box::new({
@@ -1199,12 +1200,12 @@ impl Window {
             let next_frame_callbacks = next_frame_callbacks.clone();
             let input_rate_tracker = input_rate_tracker.clone();
             move |request_frame_options| {
-                #[cfg(target_os = "windows")]
-                let thermal_state = ThermalState::Nominal;
-                #[cfg(not(target_os = "windows"))]
-                let thermal_state = cx.update(|cx| cx.thermal_state());
+                let thermal_state = handle
+                    .update(&mut cx, |_, _, cx| cx.thermal_state())
+                    .log_err();
 
-                if thermal_state == ThermalState::Serious || thermal_state == ThermalState::Critical
+                if thermal_state == Some(ThermalState::Serious)
+                    || thermal_state == Some(ThermalState::Critical)
                 {
                     let now = Instant::now();
                     let last_frame_time = last_frame_time.replace(Some(now));
@@ -1224,7 +1225,7 @@ impl Window {
                                 callback(window, cx);
                             }
                         })
-                        .ok();
+                        .log_err();
                 }
 
                 // Keep presenting if input was recently arriving at a high rate (>= 60fps).
@@ -1242,17 +1243,19 @@ impl Window {
                                 window.present();
                                 arena_clear_needed.clear();
                             })
-                            .ok();
+                            .log_err();
                     })
                 } else if needs_present {
-                    handle.update(&mut cx, |_, window, _| window.present()).ok();
+                    handle
+                        .update(&mut cx, |_, window, _| window.present())
+                        .log_err();
                 }
 
                 handle
                     .update(&mut cx, |_, window, _| {
                         window.complete_frame();
                     })
-                    .ok();
+                    .log_err();
             }
         }));
         platform_window.on_resize(Box::new({
@@ -1260,7 +1263,7 @@ impl Window {
             move |_, _| {
                 handle
                     .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                    .ok();
+                    .log_err();
             }
         }));
         platform_window.on_moved(Box::new({
@@ -1268,7 +1271,7 @@ impl Window {
             move || {
                 handle
                     .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                    .ok();
+                    .log_err();
             }
         }));
         platform_window.on_appearance_changed(Box::new({
@@ -1276,7 +1279,7 @@ impl Window {
             move || {
                 handle
                     .update(&mut cx, |_, window, cx| window.appearance_changed(cx))
-                    .ok();
+                    .log_err();
             }
         }));
         platform_window.on_active_status_change(Box::new({
@@ -1297,7 +1300,7 @@ impl Window {
 
                         SystemWindowTabController::update_last_active(cx, window.handle.id);
                     })
-                    .ok();
+                    .log_err();
             }
         }));
         platform_window.on_hover_status_change(Box::new({
@@ -1308,7 +1311,7 @@ impl Window {
                         window.hovered.set(active);
                         window.refresh();
                     })
-                    .ok();
+                    .log_err();
             }
         }));
         platform_window.on_input({
@@ -1316,7 +1319,7 @@ impl Window {
             Box::new(move |event| {
                 handle
                     .update(&mut cx, |_, window, cx| window.dispatch_event(event, cx))
-                    .ok()
+                    .log_err()
                     .unwrap_or(DispatchEventResult::default())
             })
         });
@@ -1332,66 +1335,29 @@ impl Window {
                         }
                         None
                     })
-                    .ok()
+                    .log_err()
                     .unwrap_or(None)
             })
         });
         platform_window.on_move_tab_to_new_window({
-            // On Windows, Zed's custom tab bar updates the `SystemWindowTabController`
-            // directly at the call site (within the same `App` update), so we keep this
-            // callback as a no-op to avoid re-entrant `AsyncApp` borrows.
-            #[cfg(target_os = "windows")]
-            let callback: Box<dyn FnMut()> = Box::new(|| {});
-
-            #[cfg(not(target_os = "windows"))]
-            let callback: Box<dyn FnMut()> = {
-                let cx = cx.to_async();
-                Box::new(move || {
-                    let mut cx = cx.clone();
-                    cx.spawn(async move |cx| {
-                        handle
-                            .update(cx, |_, _window, cx| {
-                                SystemWindowTabController::move_tab_to_new_window(
-                                    cx,
-                                    handle.window_id(),
-                                );
-                                SystemWindowTabController::refresh_all_windows(cx);
-                            })
-                            .log_err();
+            let mut cx = cx.to_async();
+            Box::new(move || {
+                handle
+                    .update(&mut cx, |_, _window, cx| {
+                        SystemWindowTabController::move_tab_to_new_window(cx, handle.window_id());
                     })
-                    .detach();
-                })
-            };
-
-            callback
+                    .log_err();
+            })
         });
         platform_window.on_merge_all_windows({
-            // On Windows, Zed updates the controller at the call site; keep this a no-op
-            // to avoid re-entrant `AsyncApp` borrows during input handlers.
-            #[cfg(target_os = "windows")]
-            let callback: Box<dyn FnMut()> = Box::new(|| {});
-
-            #[cfg(not(target_os = "windows"))]
-            let callback: Box<dyn FnMut()> = {
-                let cx = cx.to_async();
-                Box::new(move || {
-                    let mut cx = cx.clone();
-                    cx.spawn(async move |cx| {
-                        handle
-                            .update(cx, |_, _window, cx| {
-                                SystemWindowTabController::merge_all_windows(
-                                    cx,
-                                    handle.window_id(),
-                                );
-                                SystemWindowTabController::refresh_all_windows(cx);
-                            })
-                            .log_err();
+            let mut cx = cx.to_async();
+            Box::new(move || {
+                handle
+                    .update(&mut cx, |_, _window, cx| {
+                        SystemWindowTabController::merge_all_windows(cx, handle.window_id());
                     })
-                    .detach();
-                })
-            };
-
-            callback
+                    .log_err();
+            })
         });
         platform_window.on_select_next_tab({
             let mut cx = cx.to_async();
@@ -1400,7 +1366,7 @@ impl Window {
                     .update(&mut cx, |_, _window, cx| {
                         SystemWindowTabController::select_next_tab(cx, handle.window_id());
                     })
-                    .ok();
+                    .log_err();
             })
         });
         platform_window.on_select_previous_tab({
@@ -1410,7 +1376,7 @@ impl Window {
                     .update(&mut cx, |_, _window, cx| {
                         SystemWindowTabController::select_previous_tab(cx, handle.window_id())
                     })
-                    .ok();
+                    .log_err();
             })
         });
         platform_window.on_toggle_tab_bar({
@@ -1421,7 +1387,7 @@ impl Window {
                         let tab_bar_visible = window.platform_window.tab_bar_visible();
                         SystemWindowTabController::set_visible(cx, tab_bar_visible);
                     })
-                    .ok();
+                    .log_err();
             })
         });
 
@@ -1485,6 +1451,7 @@ impl Window {
             prompt: None,
             client_inset: None,
             image_cache_stack: Vec::new(),
+            captured_hitbox: None,
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector: None,
         })
@@ -1934,7 +1901,12 @@ impl Window {
         })
     }
 
-    fn bounds_changed(&mut self, cx: &mut App) {
+    /// Notify the window that its bounds have changed.
+    ///
+    /// This updates internal state like `viewport_size` and `scale_factor` from
+    /// the platform window, then notifies observers. Normally called automatically
+    /// by the platform's resize callback, but exposed publicly for test infrastructure.
+    pub fn bounds_changed(&mut self, cx: &mut App) {
         self.scale_factor = self.platform_window.scale_factor();
         self.viewport_size = self.platform_window.content_size();
         self.display_id = self.platform_window.display().map(|display| display.id());
@@ -2188,6 +2160,26 @@ impl Window {
     /// The position of the mouse relative to the window.
     pub fn mouse_position(&self) -> Point<Pixels> {
         self.mouse_position
+    }
+
+    /// Captures the pointer for the given hitbox. While captured, all mouse move and mouse up
+    /// events will be routed to listeners that check this hitbox's `is_hovered` status,
+    /// regardless of actual hit testing. This enables drag operations that continue
+    /// even when the pointer moves outside the element's bounds.
+    ///
+    /// The capture is automatically released on mouse up.
+    pub fn capture_pointer(&mut self, hitbox_id: HitboxId) {
+        self.captured_hitbox = Some(hitbox_id);
+    }
+
+    /// Releases any active pointer capture.
+    pub fn release_pointer(&mut self) {
+        self.captured_hitbox = None;
+    }
+
+    /// Returns the hitbox that has captured the pointer, if any.
+    pub fn captured_hitbox(&self) -> Option<HitboxId> {
+        self.captured_hitbox
     }
 
     /// The current state of the keyboard's modifiers
@@ -2476,15 +2468,18 @@ impl Window {
                 .set_active_node(deferred_draw.parent_node);
 
             let prepaint_start = self.prepaint_index();
+            let content_mask = deferred_draw.content_mask.clone();
             if let Some(element) = deferred_draw.element.as_mut() {
                 self.with_rendered_view(deferred_draw.current_view, |window| {
-                    window.with_rem_size(Some(deferred_draw.rem_size), |window| {
-                        window.with_absolute_element_offset(
-                            deferred_draw.absolute_offset,
-                            |window| {
-                                element.prepaint(window, cx);
-                            },
-                        );
+                    window.with_content_mask(content_mask, |window| {
+                        window.with_rem_size(Some(deferred_draw.rem_size), |window| {
+                            window.with_absolute_element_offset(
+                                deferred_draw.absolute_offset,
+                                |window| {
+                                    element.prepaint(window, cx);
+                                },
+                            );
+                        });
                     });
                 })
             } else {
@@ -2516,10 +2511,13 @@ impl Window {
                 .set_active_node(deferred_draw.parent_node);
 
             let paint_start = self.paint_index();
+            let content_mask = deferred_draw.content_mask.clone();
             if let Some(element) = deferred_draw.element.as_mut() {
                 self.with_rendered_view(deferred_draw.current_view, |window| {
-                    window.with_rem_size(Some(deferred_draw.rem_size), |window| {
-                        element.paint(window, cx);
+                    window.with_content_mask(content_mask, |window| {
+                        window.with_rem_size(Some(deferred_draw.rem_size), |window| {
+                            element.paint(window, cx);
+                        });
                     })
                 })
             } else {
@@ -2583,6 +2581,7 @@ impl Window {
                     parent_node: reused_subtree.refresh_node_id(deferred_draw.parent_node),
                     element_id_stack: deferred_draw.element_id_stack.clone(),
                     text_style_stack: deferred_draw.text_style_stack.clone(),
+                    content_mask: deferred_draw.content_mask.clone(),
                     rem_size: deferred_draw.rem_size,
                     priority: deferred_draw.priority,
                     element: None,
@@ -3066,12 +3065,16 @@ impl Window {
     /// at a later time. The `priority` parameter determines the drawing order relative to other deferred elements,
     /// with higher values being drawn on top.
     ///
+    /// When `content_mask` is provided, the deferred element will be clipped to that region during
+    /// both prepaint and paint. When `None`, no additional clipping is applied.
+    ///
     /// This method should only be called as part of the prepaint phase of element drawing.
     pub fn defer_draw(
         &mut self,
         element: AnyElement,
         absolute_offset: Point<Pixels>,
         priority: usize,
+        content_mask: Option<ContentMask<Pixels>>,
     ) {
         self.invalidator.debug_assert_prepaint();
         let parent_node = self.next_frame.dispatch_tree.active_node_id().unwrap();
@@ -3080,6 +3083,7 @@ impl Window {
             parent_node,
             element_id_stack: self.element_id_stack.clone(),
             text_style_stack: self.text_style_stack.clone(),
+            content_mask,
             rem_size: self.rem_size(),
             priority,
             element: Some(element),
@@ -3325,6 +3329,100 @@ impl Window {
                     transformation: TransformationMatrix::unit(),
                 });
             }
+        }
+        Ok(())
+    }
+
+    /// Paints a monochrome glyph with pre-computed raster bounds.
+    ///
+    /// This is faster than `paint_glyph` because it skips the per-glyph cache lookup.
+    /// Use `ShapedLine::compute_glyph_raster_data` to batch-compute raster bounds during prepaint.
+    pub fn paint_glyph_with_raster_bounds(
+        &mut self,
+        origin: Point<Pixels>,
+        _font_id: FontId,
+        _glyph_id: GlyphId,
+        _font_size: Pixels,
+        color: Hsla,
+        raster_bounds: Bounds<DevicePixels>,
+        params: &RenderGlyphParams,
+    ) -> Result<()> {
+        self.invalidator.debug_assert_paint();
+
+        let element_opacity = self.element_opacity();
+        let scale_factor = self.scale_factor();
+        let glyph_origin = origin.scale(scale_factor);
+
+        if !raster_bounds.is_zero() {
+            let tile = self
+                .sprite_atlas
+                .get_or_insert_with(&params.clone().into(), &mut || {
+                    let (size, bytes) = self.text_system().rasterize_glyph(params)?;
+                    Ok(Some((size, Cow::Owned(bytes))))
+                })?
+                .expect("Callback above only errors or returns Some");
+            let bounds = Bounds {
+                origin: glyph_origin.map(|px| px.floor()) + raster_bounds.origin.map(Into::into),
+                size: tile.bounds.size.map(Into::into),
+            };
+            let content_mask = self.content_mask().scale(scale_factor);
+            self.next_frame.scene.insert_primitive(MonochromeSprite {
+                order: 0,
+                pad: 0,
+                bounds,
+                content_mask,
+                color: color.opacity(element_opacity),
+                tile,
+                transformation: TransformationMatrix::unit(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Paints an emoji glyph with pre-computed raster bounds.
+    ///
+    /// This is faster than `paint_emoji` because it skips the per-glyph cache lookup.
+    /// Use `ShapedLine::compute_glyph_raster_data` to batch-compute raster bounds during prepaint.
+    pub fn paint_emoji_with_raster_bounds(
+        &mut self,
+        origin: Point<Pixels>,
+        _font_id: FontId,
+        _glyph_id: GlyphId,
+        _font_size: Pixels,
+        raster_bounds: Bounds<DevicePixels>,
+        params: &RenderGlyphParams,
+    ) -> Result<()> {
+        self.invalidator.debug_assert_paint();
+
+        let scale_factor = self.scale_factor();
+        let glyph_origin = origin.scale(scale_factor);
+
+        if !raster_bounds.is_zero() {
+            let tile = self
+                .sprite_atlas
+                .get_or_insert_with(&params.clone().into(), &mut || {
+                    let (size, bytes) = self.text_system().rasterize_glyph(params)?;
+                    Ok(Some((size, Cow::Owned(bytes))))
+                })?
+                .expect("Callback above only errors or returns Some");
+
+            let bounds = Bounds {
+                origin: glyph_origin.map(|px| px.floor()) + raster_bounds.origin.map(Into::into),
+                size: tile.bounds.size.map(Into::into),
+            };
+            let content_mask = self.content_mask().scale(scale_factor);
+            let opacity = self.element_opacity();
+
+            self.next_frame.scene.insert_primitive(PolychromeSprite {
+                order: 0,
+                pad: 0,
+                grayscale: false,
+                bounds,
+                corner_radii: Default::default(),
+                content_mask,
+                tile,
+                opacity,
+            });
         }
         Ok(())
     }
@@ -3979,6 +4077,12 @@ impl Window {
                 self.modifiers = scroll_wheel.modifiers;
                 PlatformInput::ScrollWheel(scroll_wheel)
             }
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            PlatformInput::Pinch(pinch) => {
+                self.mouse_position = pinch.position;
+                self.modifiers = pinch.modifiers;
+                PlatformInput::Pinch(pinch)
+            }
             // Translate dragging and dropping of external files from the operating system
             // to internal drag and drop events.
             PlatformInput::FileDrop(file_drop) => match file_drop {
@@ -4090,6 +4194,11 @@ impl Window {
                 cx.active_drag = None;
                 self.refresh();
             }
+        }
+
+        // Auto-release pointer capture on mouse up
+        if event.is::<MouseUpEvent>() && self.captured_hitbox.is_some() {
+            self.captured_hitbox = None;
         }
     }
 
@@ -4847,28 +4956,26 @@ impl Window {
             .set_tabbing_identifier(tabbing_identifier)
     }
 
-    /// Returns the tabbing identifier for the window (if any).
-    ///
-    /// On Windows, windows with the same identifier are "virtually tabbed" together by the
-    /// platform layer. On other platforms this may return `None`.
+    /// Returns the current tabbing identifier for the window.
     pub fn tabbing_identifier(&self) -> Option<String> {
         self.platform_window.tabbing_identifier()
     }
 
-    /// Returns the raw Win32 window handle for this window.
+    /// Returns the native window handle used by the platform tab controller.
     #[cfg(target_os = "windows")]
-    pub fn raw_handle(&self) -> crate::HWND {
+    pub fn raw_handle(&self) -> windows::Win32::Foundation::HWND {
         self.platform_window.get_raw_handle()
     }
 
-    /// Merge this window into an existing tab group on Windows.
-    ///
-    /// This makes the current window behave like a "tab" under the target window by adopting its
-    /// tabbing identifier and then hiding/positioning it underneath the target.
+    /// Merges this window into the target platform tab group.
     #[cfg(target_os = "windows")]
-    pub fn merge_into_tabbing_group(&self, target_identifier: String, target_hwnd: crate::HWND) {
+    pub fn merge_into_tabbing_group(
+        &self,
+        target_identifier: String,
+        target_hwnd: windows::Win32::Foundation::HWND,
+    ) {
         self.platform_window
-            .merge_into_tabbing_group(target_identifier, target_hwnd)
+            .merge_into_tabbing_group(target_identifier, target_hwnd);
     }
 
     /// Toggles the inspector mode on this window.

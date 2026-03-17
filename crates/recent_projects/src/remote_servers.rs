@@ -5539,7 +5539,7 @@ impl RemoteServerProjects {
                             }))
                             .child(
                                 Button::new("devcontainer-progress-back-button", "Back")
-                                    .icon(IconName::ArrowLeft)
+                                    .start_icon(Icon::new(IconName::ArrowLeft))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         if let Mode::CreateRemoteDevContainer(state) =
                                             &mut this.mode
@@ -7150,9 +7150,12 @@ impl RemoteServerProjects {
                                     .child(
                                         Button::new("learn-more", "Learn More")
                                             .label_size(LabelSize::Small)
-                                            .icon(IconName::ArrowUpRight)
-                                            .icon_size(IconSize::XSmall)
-                                            .on_click(|_, _, cx| {
+                                            .end_icon(
+                                                Icon::new(IconName::ArrowUpRight)
+                                                    .size(IconSize::XSmall)
+                                                    .color(Color::Muted),
+                                            )
+                                            .on_click(|_, _window, cx| {
                                                 cx.open_url(
                                                     "https://zed.dev/docs/remote-development",
                                                 );
@@ -8021,7 +8024,9 @@ impl RemoteServerProjects {
                                     remote_servers
                                         .update_in(cx, |_, window, cx| {
                                             window.dispatch_action(
-                                                Box::new(workspace::Open),
+                                                Box::new(workspace::Open {
+                                                    create_new_window: false,
+                                                }),
                                                 cx,
                                             );
                                         })
@@ -8049,7 +8054,12 @@ impl RemoteServerProjects {
                         if confirmation.await.ok() == Some(0) {
                             remote_servers
                                 .update_in(cx, |_, window, cx| {
-                                    window.dispatch_action(Box::new(workspace::Open), cx);
+                                    window.dispatch_action(
+                                        Box::new(workspace::Open {
+                                            create_new_window: false,
+                                        }),
+                                        cx,
+                                    );
                                 })
                                 .ok();
                         }

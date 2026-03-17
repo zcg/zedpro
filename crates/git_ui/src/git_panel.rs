@@ -20,6 +20,7 @@ use editor::{
     actions::ExpandAllDiffHunks,
 };
 use editor::{EditorStyle, RewrapOptions};
+use file_icons::FileIcons;
 use futures::StreamExt as _;
 use git::commit::ParsedCommitMessage;
 use git::repository::{
@@ -28,7 +29,7 @@ use git::repository::{
     UpstreamTrackingStatus, get_git_committer,
 };
 use git::stash::GitStash;
-use git::status::StageStatus;
+use git::status::{DiffStat, StageStatus};
 use git::{Amend, Signoff, ToggleStaged, repository::RepoPath, status::FileStatus};
 use git::{
     ExpandCommitEditor, GitHostingProviderRegistry, RestoreTrackedFiles, StageAll, StashAll,
@@ -55,6 +56,7 @@ use project::{
     project_settings::{GitPathStyle, ProjectSettings},
 };
 use prompt_store::{BuiltInPrompt, PromptId, PromptStore, RULES_FILE_NAMES};
+use proto::RpcError;
 use serde::{Deserialize, Serialize};
 use settings::{Settings, SettingsStore, StatusStyle};
 use smallvec::SmallVec;
@@ -122,6 +124,13 @@ actions!(
         Open,
     ]
 );
+
+/// Opens the Git Graph Tab at a specific commit.
+#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, gpui::Action)]
+#[action(namespace = git_graph)]
+pub struct OpenAtCommit {
+    pub sha: String,
+}
 
 fn prompt<T>(
     msg: &str,
@@ -220,7 +229,8 @@ fn git_panel_context_menu(
 const GIT_PANEL_KEY: &str = "GitPanel";
 
 const UPDATE_DEBOUNCE: Duration = Duration::from_millis(50);
-const TREE_INDENT_LEFT_OFFSET: f32 = 3.0;
+// TODO: We should revise this part. It seems the indentation width is not aligned with the one in project panel
+const TREE_INDENT: f32 = 16.0;
 
 pub fn register(workspace: &mut Workspace) {
     workspace.register_action(|workspace, _: &ToggleFocus, window, cx| {
@@ -523,6 +533,7 @@ pub struct GitStatusEntry {
     pub(crate) repo_path: RepoPath,
     pub(crate) status: FileStatus,
     pub(crate) staging: StageStatus,
+    pub(crate) diff_stat: Option<DiffStat>,
 }
 
 impl GitStatusEntry {
@@ -643,6 +654,7 @@ pub struct GitPanel {
     local_committer_task: Option<Task<()>>,
     bulk_staging: Option<BulkStaging>,
     stash_entries: GitStash,
+
     _settings_subscription: Subscription,
 }
 
@@ -703,18 +715,41 @@ impl GitPanel {
 
             let mut was_sort_by_path = GitPanelSettings::get_global(cx).sort_by_path;
             let mut was_tree_view = GitPanelSettings::get_global(cx).tree_view;
+            let mut was_file_icons = GitPanelSettings::get_global(cx).file_icons;
+            let mut was_folder_icons = GitPanelSettings::get_global(cx).folder_icons;
+            let mut was_diff_stats = GitPanelSettings::get_global(cx).diff_stats;
             cx.observe_global_in::<SettingsStore>(window, move |this, window, cx| {
-                let sort_by_path = GitPanelSettings::get_global(cx).sort_by_path;
-                let tree_view = GitPanelSettings::get_global(cx).tree_view;
+                let settings = GitPanelSettings::get_global(cx);
+                let sort_by_path = settings.sort_by_path;
+                let tree_view = settings.tree_view;
+                let file_icons = settings.file_icons;
+                let folder_icons = settings.folder_icons;
+                let diff_stats = settings.diff_stats;
                 if tree_view != was_tree_view {
                     this.view_mode = GitPanelViewMode::from_settings(cx);
                 }
+
+                let mut update_entries = false;
                 if sort_by_path != was_sort_by_path || tree_view != was_tree_view {
                     this.bulk_staging.take();
+                    update_entries = true;
+                }
+                if (diff_stats != was_diff_stats) || update_entries {
                     this.update_visible_entries(window, cx);
+                }
+                if file_icons != was_file_icons || folder_icons != was_folder_icons {
+                    cx.notify();
                 }
                 was_sort_by_path = sort_by_path;
                 was_tree_view = tree_view;
+                was_file_icons = file_icons;
+                was_folder_icons = folder_icons;
+                was_diff_stats = diff_stats;
+            })
+            .detach();
+
+            cx.observe_global::<FileIcons>(|_, cx| {
+                cx.notify();
             })
             .detach();
 
@@ -746,9 +781,7 @@ impl GitPanel {
                 move |this, _git_store, event, window, cx| match event {
                     GitStoreEvent::RepositoryUpdated(
                         _,
-                        RepositoryEvent::StatusesChanged
-                        | RepositoryEvent::BranchChanged
-                        | RepositoryEvent::MergeHeadsChanged,
+                        RepositoryEvent::StatusesChanged | RepositoryEvent::BranchChanged,
                         true,
                     )
                     | GitStoreEvent::RepositoryAdded
@@ -1100,7 +1133,22 @@ impl GitPanel {
         }
 
         if matches!(self.entries.get(new_index), Some(GitListEntry::Header(..))) {
-            self.selected_entry = Some(new_index.saturating_sub(1));
+            self.selected_entry = match &self.view_mode {
+                GitPanelViewMode::Flat => Some(new_index.saturating_sub(1)),
+                GitPanelViewMode::Tree(tree_view_state) => {
+                    maybe!({
+                        let current_logical_index = tree_view_state
+                            .logical_indices
+                            .iter()
+                            .position(|&i| i == new_index)?;
+
+                        tree_view_state
+                            .logical_indices
+                            .get(current_logical_index.saturating_sub(1))
+                            .copied()
+                    })
+                }
+            };
         } else {
             self.selected_entry = Some(new_index);
         }
@@ -1326,6 +1374,7 @@ impl GitPanel {
                                 &snapshot,
                                 language::Point::new(0, 0),
                                 Direction::Next,
+                                true,
                                 window,
                                 cx,
                             );
@@ -2735,6 +2784,7 @@ impl GitPanel {
                     thinking_allowed: false,
                     bypass_rate_limit: false,
                     thinking_effort: None,
+                    speed: None,
                 };
 
                 let stream = model.stream_completion_text(request, cx);
@@ -3171,18 +3221,16 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AskPassDelegate {
-        let this = cx.weak_entity();
+        let workspace = self.workspace.clone();
         let operation = operation.into();
         let window = window.window_handle();
         AskPassDelegate::new(&mut cx.to_async(), move |prompt, tx, cx| {
             window
                 .update(cx, |_, window, cx| {
-                    this.update(cx, |this, cx| {
-                        this.workspace.update(cx, |workspace, cx| {
-                            workspace.toggle_modal(window, cx, |window, cx| {
-                                AskPassModal::new(operation.clone(), prompt.into(), tx, window, cx)
-                            });
-                        })
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.toggle_modal(window, cx, |window, cx| {
+                            AskPassModal::new(operation.clone(), prompt.into(), tx, window, cx)
+                        });
                     })
                 })
                 .ok();
@@ -3257,10 +3305,8 @@ impl GitPanel {
         let mut new_co_authors = Vec::new();
         let project = self.project.read(cx);
 
-        let Some(room) = self
-            .workspace
-            .upgrade()
-            .and_then(|workspace| workspace.read(cx).active_call()?.read(cx).room().cloned())
+        let Some(room) =
+            call::ActiveCall::try_global(cx).and_then(|call| call.read(cx).room().cloned())
         else {
             return Vec::default();
         };
@@ -3528,6 +3574,7 @@ impl GitPanel {
                 repo_path: entry.repo_path.clone(),
                 status: entry.status,
                 staging,
+                diff_stat: entry.diff_stat,
             };
 
             if staging.has_staged() {
@@ -3564,6 +3611,7 @@ impl GitPanel {
                             repo_path: ops.repo_path.clone(),
                             status: status.status,
                             staging: StageStatus::Staged,
+                            diff_stat: status.diff_stat,
                         });
             }
         }
@@ -4716,11 +4764,6 @@ impl GitPanel {
             GitPanelViewMode::Tree(state) => (true, state.logical_indices.len()),
             GitPanelViewMode::Flat => (false, self.entries.len()),
         };
-        let tree_indent = GitPanelSettings::get_global(cx).indent_size;
-        let tree_indent_px = px(tree_indent);
-        let tree_left_offset = px(tree_indent + TREE_INDENT_LEFT_OFFSET);
-        let indent_guide_colors = IndentGuideColors::panel(cx);
-        let entity = cx.entity();
         let repo = repo.downgrade();
 
         v_flex()
@@ -4798,21 +4841,21 @@ impl GitPanel {
                                 items
                             }),
                         )
-                        .when(is_tree_view, move |list| {
-                            let indent_size = tree_indent_px;
+                        .when(is_tree_view, |list| {
+                            let indent_size = px(TREE_INDENT);
                             list.with_decoration(
-                                ui::indent_guides(indent_size, indent_guide_colors)
+                                ui::indent_guides(indent_size, IndentGuideColors::panel(cx))
                                     .with_compute_indents_fn(
-                                        entity.clone(),
+                                        cx.entity(),
                                         |this, range, _window, _cx| {
                                             this.compute_visible_depths(range)
                                         },
                                     )
-                                    .with_render_fn(entity, move |_, params, _, _| {
+                                    .with_render_fn(cx.entity(), |_, params, _, _| {
                                         // Magic number to align the tree item is 3 here
                                         // because we're using 12px as the left-side padding
                                         // and 3 makes the alignment work with the bounding box of the icon
-                                        let left_offset = tree_left_offset;
+                                        let left_offset = px(TREE_INDENT + 3_f32);
                                         let indent_size = params.indent_size;
                                         let item_height = params.item_height;
 
@@ -5011,15 +5054,19 @@ impl GitPanel {
     ) -> AnyElement {
         let settings = GitPanelSettings::get_global(cx);
         let tree_view = settings.tree_view;
-        let tree_indent = settings.indent_size;
         let path_style = self.project.read(cx).path_style(cx);
         let git_path_style = ProjectSettings::get_global(cx).git.path_style;
         let display_name = entry.display_name(path_style);
 
         let selected = self.selected_entry == Some(ix);
         let marked = self.marked_entries.contains(&ix);
-        let status_style = GitPanelSettings::get_global(cx).status_style;
+        let status_style = settings.status_style;
         let status = entry.status;
+        let file_icon = if settings.file_icons {
+            FileIcons::get_icon(entry.repo_path.as_std_path(), cx)
+        } else {
+            None
+        };
 
         let has_conflict = status.is_conflicted();
         let is_modified = status.is_modified();
@@ -5096,10 +5143,25 @@ impl GitPanel {
             .min_w_0()
             .flex_1()
             .gap_1()
+            .when(settings.file_icons, |this| {
+                this.child(
+                    file_icon
+                        .map(|file_icon| {
+                            Icon::from_path(file_icon)
+                                .size(IconSize::Small)
+                                .color(Color::Muted)
+                        })
+                        .unwrap_or_else(|| {
+                            Icon::new(IconName::File)
+                                .size(IconSize::Small)
+                                .color(Color::Muted)
+                        }),
+                )
+            })
             .child(git_status_icon(status))
             .map(|this| {
                 if tree_view {
-                    this.pl(px(depth as f32 * tree_indent)).child(
+                    this.pl(px(depth as f32 * TREE_INDENT)).child(
                         self.entry_label(display_name, label_color)
                             .when(status.is_deleted(), Label::strikethrough)
                             .truncate(),
@@ -5117,6 +5179,8 @@ impl GitPanel {
                 }
             });
 
+        let id_for_diff_stat = id.clone();
+
         h_flex()
             .id(id)
             .h(self.list_item_height())
@@ -5133,6 +5197,16 @@ impl GitPanel {
             .hover(|s| s.bg(hover_bg))
             .active(|s| s.bg(active_bg))
             .child(name_row)
+            .when(GitPanelSettings::get_global(cx).diff_stats, |el| {
+                el.when_some(entry.diff_stat, move |this, stat| {
+                    let id = format!("diff-stat-{}", id_for_diff_stat);
+                    this.child(ui::DiffStat::new(
+                        id,
+                        stat.added as usize,
+                        stat.deleted as usize,
+                    ))
+                })
+            })
             .child(
                 div()
                     .id(checkbox_wrapper_id)
@@ -5222,9 +5296,8 @@ impl GitPanel {
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let tree_indent = GitPanelSettings::get_global(cx).indent_size;
+        // TODO: Have not yet plugin the self.marked_entries. Not sure when and why we need that
         let selected = self.selected_entry == Some(ix);
-        let marked = self.marked_entries.contains(&ix);
         let label_color = Color::Muted;
 
         let id: ElementId = ElementId::Name(format!("dir_{}_{}", entry.name, ix).into());
@@ -5234,31 +5307,43 @@ impl GitPanel {
             ElementId::Name(format!("dir_checkbox_wrapper_{}_{}", entry.name, ix).into());
 
         let selected_bg_alpha = 0.08;
-        let marked_bg_alpha = 0.12;
         let state_opacity_step = 0.04;
 
         let info_color = cx.theme().status().info;
         let colors = cx.theme().colors();
 
-        let base_bg = match (selected, marked) {
-            (true, true) => info_color.alpha(selected_bg_alpha + marked_bg_alpha),
-            (true, false) => info_color.alpha(selected_bg_alpha),
-            (false, true) => info_color.alpha(marked_bg_alpha),
-            _ => colors.ghost_element_background,
-        };
-        let (hover_bg, active_bg) = if selected {
+        let (base_bg, hover_bg, active_bg) = if selected {
             (
+                info_color.alpha(selected_bg_alpha),
                 info_color.alpha(selected_bg_alpha + state_opacity_step),
                 info_color.alpha(selected_bg_alpha + state_opacity_step * 2.0),
             )
         } else {
-            (colors.ghost_element_hover, colors.ghost_element_active)
+            (
+                colors.ghost_element_background,
+                colors.ghost_element_hover,
+                colors.ghost_element_active,
+            )
         };
 
-        let folder_icon = if entry.expanded {
-            IconName::FolderOpen
+        let settings = GitPanelSettings::get_global(cx);
+        let folder_icon = if settings.folder_icons {
+            FileIcons::get_folder_icon(entry.expanded, entry.key.path.as_std_path(), cx)
         } else {
-            IconName::Folder
+            FileIcons::get_chevron_icon(entry.expanded, cx)
+        };
+        let fallback_folder_icon = if settings.folder_icons {
+            if entry.expanded {
+                IconName::FolderOpen
+            } else {
+                IconName::Folder
+            }
+        } else {
+            if entry.expanded {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            }
         };
 
         let stage_status = if let Some(repo) = &self.active_repository {
@@ -5279,11 +5364,19 @@ impl GitPanel {
         let name_row = h_flex()
             .min_w_0()
             .gap_1()
-            .pl(px(entry.depth as f32 * tree_indent))
+            .pl(px(entry.depth as f32 * TREE_INDENT))
             .child(
-                Icon::new(folder_icon)
-                    .size(IconSize::Small)
-                    .color(Color::Muted),
+                folder_icon
+                    .map(|folder_icon| {
+                        Icon::from_path(folder_icon)
+                            .size(IconSize::Small)
+                            .color(Color::Muted)
+                    })
+                    .unwrap_or_else(|| {
+                        Icon::new(fallback_folder_icon)
+                            .size(IconSize::Small)
+                            .color(Color::Muted)
+                    }),
             )
             .child(self.entry_label(entry.name.clone(), label_color).truncate());
 
@@ -5526,14 +5619,28 @@ impl GitPanel {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+impl GitPanel {
+    pub fn new_test(
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Entity<Self> {
+        Self::new(workspace, window, cx)
+    }
+
+    pub fn active_repository(&self) -> Option<&Entity<Repository>> {
+        self.active_repository.as_ref()
+    }
+}
+
 impl Render for GitPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let project = self.project.read(cx);
         let has_entries = !self.entries.is_empty();
-        let room = self
-            .workspace
-            .upgrade()
-            .and_then(|workspace| workspace.read(cx).active_call()?.read(cx).room().cloned());
+        let room = self.workspace.upgrade().and_then(|_workspace| {
+            call::ActiveCall::try_global(cx).and_then(|call| call.read(cx).room().cloned())
+        });
 
         let has_write_access = self.has_write_access(cx);
 
@@ -5704,6 +5811,14 @@ impl Panel for GitPanel {
 
     fn icon_tooltip(&self, _window: &Window, _cx: &App) -> Option<&'static str> {
         Some("Git Panel")
+    }
+
+    fn icon_label(&self, _: &Window, cx: &App) -> Option<String> {
+        if !GitPanelSettings::get_global(cx).show_count_badge {
+            return None;
+        }
+        let total = self.changes_count;
+        (total > 0).then(|| total.to_string())
     }
 
     fn toggle_action(&self) -> Box<dyn Action> {
@@ -6319,7 +6434,7 @@ pub(crate) fn show_error_toast(
     cx: &mut App,
 ) {
     let action = action.into();
-    let message = e.to_string().trim().to_string();
+    let message = format_git_error_toast_message(&e);
     if message
         .matches(git::repository::REMOTE_CANCELLED_BY_USER)
         .next()
@@ -6342,6 +6457,20 @@ pub(crate) fn show_error_toast(
             });
             workspace.toggle_status_toast(toast, cx)
         });
+    }
+}
+
+fn rpc_error_raw_message_from_chain(error: &anyhow::Error) -> Option<&str> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<RpcError>().map(RpcError::raw_message))
+}
+
+fn format_git_error_toast_message(error: &anyhow::Error) -> String {
+    if let Some(message) = rpc_error_raw_message_from_chain(error) {
+        message.trim().to_string()
+    } else {
+        error.to_string().trim().to_string()
     }
 }
 
@@ -6374,6 +6503,47 @@ mod tests {
             editor::init(cx);
             crate::init(cx);
         });
+    }
+
+    #[test]
+    fn test_format_git_error_toast_message_prefers_raw_rpc_message() {
+        let rpc_error = RpcError::from_proto(
+            &proto::Error {
+                message:
+                    "Your local changes to the following files would be overwritten by merge\n"
+                        .to_string(),
+                code: proto::ErrorCode::Internal as i32,
+                tags: Default::default(),
+            },
+            "Pull",
+        );
+
+        let message = format_git_error_toast_message(&rpc_error);
+        assert_eq!(
+            message,
+            "Your local changes to the following files would be overwritten by merge"
+        );
+    }
+
+    #[test]
+    fn test_format_git_error_toast_message_prefers_raw_rpc_message_when_wrapped() {
+        let rpc_error = RpcError::from_proto(
+            &proto::Error {
+                message:
+                    "Your local changes to the following files would be overwritten by merge\n"
+                        .to_string(),
+                code: proto::ErrorCode::Internal as i32,
+                tags: Default::default(),
+            },
+            "Pull",
+        );
+        let wrapped = rpc_error.context("sending pull request");
+
+        let message = format_git_error_toast_message(&wrapped);
+        assert_eq!(
+            message,
+            "Your local changes to the following files would be overwritten by merge"
+        );
     }
 
     #[gpui::test]
@@ -6449,11 +6619,19 @@ mod tests {
                     repo_path: repo_path("crates/gpui/gpui.rs"),
                     status: StatusCode::Modified.worktree(),
                     staging: StageStatus::Unstaged,
+                    diff_stat: Some(DiffStat {
+                        added: 1,
+                        deleted: 1,
+                    }),
                 }),
                 GitListEntry::Status(GitStatusEntry {
                     repo_path: repo_path("crates/util/util.rs"),
                     status: StatusCode::Modified.worktree(),
                     staging: StageStatus::Unstaged,
+                    diff_stat: Some(DiffStat {
+                        added: 1,
+                        deleted: 1,
+                    }),
                 },),
             ],
         );
@@ -6474,11 +6652,19 @@ mod tests {
                     repo_path: repo_path("crates/gpui/gpui.rs"),
                     status: StatusCode::Modified.worktree(),
                     staging: StageStatus::Unstaged,
+                    diff_stat: Some(DiffStat {
+                        added: 1,
+                        deleted: 1,
+                    }),
                 }),
                 GitListEntry::Status(GitStatusEntry {
                     repo_path: repo_path("crates/util/util.rs"),
                     status: StatusCode::Modified.worktree(),
                     staging: StageStatus::Unstaged,
+                    diff_stat: Some(DiffStat {
+                        added: 1,
+                        deleted: 1,
+                    }),
                 },),
             ],
         );

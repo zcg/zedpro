@@ -284,6 +284,10 @@ impl LanguageModel for MistralLanguageModel {
         self.model.supports_tools()
     }
 
+    fn supports_streaming_tools(&self) -> bool {
+        true
+    }
+
     fn supports_tool_choice(&self, _choice: LanguageModelToolChoice) -> bool {
         self.model.supports_tools()
     }
@@ -513,6 +517,13 @@ pub fn into_mistral(
             model: model.id().to_string(),
             messages,
             stream,
+            stream_options: if stream {
+                Some(mistral::StreamOptions {
+                    stream_tool_calls: Some(true),
+                })
+            } else {
+                None
+            },
             max_tokens: max_output_tokens,
             temperature: request.temperature,
             response_format: None,
@@ -621,17 +632,38 @@ impl MistralEventMapper {
             for tool_call in tool_calls {
                 let entry = self.tool_calls_by_index.entry(tool_call.index).or_default();
 
-                if let Some(tool_id) = tool_call.id.clone() {
+                if let Some(tool_id) = tool_call.id.clone()
+                    && !tool_id.is_empty()
+                {
                     entry.id = tool_id;
                 }
 
                 if let Some(function) = tool_call.function.as_ref() {
-                    if let Some(name) = function.name.clone() {
+                    if let Some(name) = function.name.clone()
+                        && !name.is_empty()
+                    {
                         entry.name = name;
                     }
 
                     if let Some(arguments) = function.arguments.clone() {
                         entry.arguments.push_str(&arguments);
+                    }
+                }
+
+                if !entry.id.is_empty() && !entry.name.is_empty() {
+                    if let Ok(input) = serde_json::from_str::<serde_json::Value>(
+                        &partial_json_fixer::fix_json(&entry.arguments),
+                    ) {
+                        events.push(Ok(LanguageModelCompletionEvent::ToolUse(
+                            LanguageModelToolUse {
+                                id: entry.id.clone().into(),
+                                name: entry.name.as_str().into(),
+                                is_input_complete: false,
+                                input,
+                                raw_input: entry.arguments.clone(),
+                                thought_signature: None,
+                            },
+                        )));
                     }
                 }
             }
@@ -889,6 +921,7 @@ mod tests {
             thinking_allowed: true,
             bypass_rate_limit: false,
             thinking_effort: None,
+            speed: Default::default(),
         };
 
         let (mistral_request, affinity) =
@@ -926,6 +959,7 @@ mod tests {
             thinking_allowed: true,
             bypass_rate_limit: false,
             thinking_effort: None,
+            speed: None,
         };
 
         let (mistral_request, _) = into_mistral(request, mistral::Model::Pixtral12BLatest, None);

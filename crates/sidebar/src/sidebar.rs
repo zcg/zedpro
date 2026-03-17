@@ -31,9 +31,14 @@ use ui_input::ErasedEditor;
 use util::ResultExt as _;
 use workspace::{
     FocusWorkspaceSidebar, MultiWorkspace, NewWorkspaceInWindow, Sidebar as WorkspaceSidebar,
-    SidebarEvent, SidebarWorkspaceEntry, ToggleWorkspaceSidebar, Workspace,
+    SidebarWorkspaceEntry, ToggleWorkspaceSidebar, Workspace,
     OpenOptions, SerializedWorkspaceLocation, notifications::DetachAndPromptErr,
 };
+
+#[derive(Clone, Debug)]
+pub enum SidebarEvent {
+    Close,
+}
 
 #[derive(Clone, Debug)]
 struct AgentThreadInfo {
@@ -170,7 +175,7 @@ impl WorkspaceThreadEntry {
         let agent_panel = workspace.read(cx).panel::<AgentPanel>(cx)?;
         let agent_panel_ref = agent_panel.read(cx);
 
-        let thread_view = agent_panel_ref.as_active_thread_view(cx)?.read(cx);
+        let thread_view = agent_panel_ref.active_thread_view(cx)?.read(cx);
         let thread = thread_view.thread.read(cx);
 
         let title = thread.title();
@@ -577,11 +582,22 @@ fn open_recent_project(project: RecentProjectEntry, window: &mut Window, cx: &mu
 
         handle
             .update(cx, |multi_workspace, window, cx| {
-                let workspace = multi_workspace.workspace().clone();
-                workspace.update(cx, |workspace, cx| {
+                let workspace_handle = multi_workspace.workspace().clone();
+                workspace_handle.update(cx, |workspace, cx| {
                     match location {
                         SerializedWorkspaceLocation::Local => {
-                            workspace.open_workspace_for_paths(false, paths, window, cx)
+                            let workspace_handle = workspace_handle.clone();
+                            cx.spawn_in(window, async move |_, cx| {
+                                if let Some(task) = workspace_handle
+                                    .update_in(cx, |workspace, window, cx| {
+                                        workspace.open_workspace_for_paths(false, paths, window, cx)
+                                    })
+                                    .log_err()
+                                {
+                                    task.await.map(|_| ())?;
+                                }
+                                anyhow::Ok(())
+                            })
                         }
                         SerializedWorkspaceLocation::Remote(mut connection) => {
                             let app_state = workspace.app_state().clone();
@@ -635,7 +651,7 @@ impl PickerDelegate for WorkspacePickerDelegate {
     }
 
     fn can_select(
-        &mut self,
+        &self,
         ix: usize,
         _window: &mut Window,
         _cx: &mut Context<Picker<Self>>,
@@ -1420,7 +1436,7 @@ impl Render for Sidebar {
                     .border_color(cx.theme().colors().border)
                     .child({
                         let focus_handle = cx.focus_handle();
-                        IconButton::new("close-sidebar", IconName::WorkspaceNavOpen)
+                        IconButton::new("close-sidebar", IconName::ListCollapse)
                             .icon_size(IconSize::Small)
                             .tooltip(Tooltip::element(move |_, cx| {
                                 v_flex()

@@ -14,7 +14,7 @@ use ui::{
     LabelSize, Tab, h_flex, prelude::*, right_click_menu,
 };
 use workspace::{
-    CloseWindow, ItemSettings, Workspace, WorkspaceSettings,
+    CloseWindow, ItemSettings, MultiWorkspace, Workspace, WorkspaceSettings,
     item::{ClosePosition, ShowCloseButton},
 };
 
@@ -749,7 +749,7 @@ impl SystemWindowTabs {
                     continue;
                 };
 
-                if let Some(workspace_window) = handle.downcast::<Workspace>() {
+                if let Some(workspace_window) = handle.downcast::<MultiWorkspace>() {
                     workspace_window
                         .update(cx, |workspace, window, cx| {
                             workspace.close_window(&CloseWindow, window, cx);

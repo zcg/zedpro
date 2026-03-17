@@ -13,6 +13,7 @@ use ui::{
     Button, ButtonCommon, ButtonStyle, Clickable, Context, ElevationIndex, FluentBuilder, Headline,
     HeadlineSize, IconName, IconPosition, InteractiveElement, IntoElement, Label, Modal,
     ModalFooter, ModalHeader, ParentElement, Section, Styled, StyledExt, Window, div, h_flex, rems,
+    Icon,
 };
 use workspace::{
     ModalView, MultiWorkspace, OpenOptions, Workspace, notifications::DetachAndPromptErr,
@@ -433,8 +434,7 @@ impl Render for DisconnectedOverlay {
                                         Button::new("return-to-host", "Return to Host Folder")
                                             .style(ButtonStyle::Filled)
                                             .layer(ElevationIndex::ModalSurface)
-                                            .icon(IconName::ArrowLeft)
-                                            .icon_position(IconPosition::Start)
+                                            .start_icon(Icon::new(IconName::ArrowLeft))
                                             .on_click(cx.listener(Self::handle_return_to_host)),
                                     )
                                 })
@@ -443,8 +443,7 @@ impl Render for DisconnectedOverlay {
                                         Button::new("reconnect", "Reconnect")
                                             .style(ButtonStyle::Filled)
                                             .layer(ElevationIndex::ModalSurface)
-                                            .icon(IconName::ArrowCircle)
-                                            .icon_position(IconPosition::Start)
+                                            .start_icon(Icon::new(IconName::ArrowCircle))
                                             .on_click(cx.listener(Self::handle_reconnect)),
                                     )
                                 }),

@@ -527,7 +527,10 @@ impl LocalBufferStore {
             let new_file = if let Some(entry) = snapshot_entry {
                 File {
                     disk_state: match entry.mtime {
-                        Some(mtime) => DiskState::Present { mtime },
+                        Some(mtime) => DiskState::Present {
+                            mtime,
+                            size: entry.size,
+                        },
                         None => old_file.disk_state,
                     },
                     is_local: true,
@@ -870,16 +873,14 @@ impl BufferStore {
                 entry
                     .insert(
                         cx.spawn(async move |this, cx| {
-                            let load_result = cx
-                                .background_spawn(
-                                    async move { load_buffer.await.map_err(Arc::new) },
-                                )
-                                .await;
+                            let load_result = load_buffer.await;
                             this.update(cx, |this, _cx| {
                                 // Record the fact that the buffer is no longer loading.
                                 this.loading_buffers.remove(&project_path);
-                            })?;
-                            load_result
+
+                                let buffer = load_result.map_err(Arc::new)?;
+                                Ok(buffer)
+                            })?
                         })
                         .shared(),
                     )
@@ -1257,6 +1258,15 @@ impl BufferStore {
                         })
                         .log_err();
                 }
+
+                // TODO(max): do something
+                // client
+                //     .send(proto::UpdateStagedText {
+                //         project_id,
+                //         buffer_id: buffer_id.into(),
+                //         diff_base: buffer.diff_base().map(ToString::to_string),
+                //     })
+                //     .log_err();
 
                 client
                     .send(proto::BufferReloaded {

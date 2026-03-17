@@ -101,6 +101,12 @@ pub enum Model {
     FivePointTwo,
     #[serde(rename = "gpt-5.2-codex")]
     FivePointTwoCodex,
+    #[serde(rename = "gpt-5.3-codex")]
+    FivePointThreeCodex,
+    #[serde(rename = "gpt-5.4")]
+    FivePointFour,
+    #[serde(rename = "gpt-5.4-pro")]
+    FivePointFourPro,
     #[serde(rename = "custom")]
     Custom {
         name: String,
@@ -141,6 +147,9 @@ impl Model {
             "gpt-5.1" => Ok(Self::FivePointOne),
             "gpt-5.2" => Ok(Self::FivePointTwo),
             "gpt-5.2-codex" => Ok(Self::FivePointTwoCodex),
+            "gpt-5.3-codex" => Ok(Self::FivePointThreeCodex),
+            "gpt-5.4" => Ok(Self::FivePointFour),
+            "gpt-5.4-pro" => Ok(Self::FivePointFourPro),
             invalid_id => anyhow::bail!("invalid model id '{invalid_id}'"),
         }
     }
@@ -162,6 +171,9 @@ impl Model {
             Self::FivePointOne => "gpt-5.1",
             Self::FivePointTwo => "gpt-5.2",
             Self::FivePointTwoCodex => "gpt-5.2-codex",
+            Self::FivePointThreeCodex => "gpt-5.3-codex",
+            Self::FivePointFour => "gpt-5.4",
+            Self::FivePointFourPro => "gpt-5.4-pro",
             Self::Custom { name, .. } => name,
         }
     }
@@ -183,6 +195,9 @@ impl Model {
             Self::FivePointOne => "gpt-5.1",
             Self::FivePointTwo => "gpt-5.2",
             Self::FivePointTwoCodex => "gpt-5.2-codex",
+            Self::FivePointThreeCodex => "gpt-5.3-codex",
+            Self::FivePointFour => "gpt-5.4",
+            Self::FivePointFourPro => "gpt-5.4-pro",
             Self::Custom { display_name, .. } => display_name.as_deref().unwrap_or(&self.id()),
         }
     }
@@ -199,11 +214,14 @@ impl Model {
             Self::O3 => 200_000,
             Self::Five => 272_000,
             Self::FiveCodex => 272_000,
-            Self::FiveMini => 272_000,
-            Self::FiveNano => 272_000,
+            Self::FiveMini => 400_000,
+            Self::FiveNano => 400_000,
             Self::FivePointOne => 400_000,
             Self::FivePointTwo => 400_000,
             Self::FivePointTwoCodex => 400_000,
+            Self::FivePointThreeCodex => 400_000,
+            Self::FivePointFour => 1_050_000,
+            Self::FivePointFourPro => 1_050_000,
             Self::Custom { max_tokens, .. } => *max_tokens,
         }
     }
@@ -228,6 +246,9 @@ impl Model {
             Self::FivePointOne => Some(128_000),
             Self::FivePointTwo => Some(128_000),
             Self::FivePointTwoCodex => Some(128_000),
+            Self::FivePointThreeCodex => Some(128_000),
+            Self::FivePointFour => Some(128_000),
+            Self::FivePointFourPro => Some(128_000),
         }
     }
 
@@ -236,6 +257,7 @@ impl Model {
             Self::Custom {
                 reasoning_effort, ..
             } => reasoning_effort.to_owned(),
+            Self::FivePointThreeCodex | Self::FivePointFourPro => Some(ReasoningEffort::Medium),
             _ => None,
         }
     }
@@ -246,7 +268,10 @@ impl Model {
                 supports_chat_completions,
                 ..
             } => *supports_chat_completions,
-            Self::FiveCodex | Self::FivePointTwoCodex => false,
+            Self::FiveCodex
+            | Self::FivePointTwoCodex
+            | Self::FivePointThreeCodex
+            | Self::FivePointFourPro => false,
             _ => true,
         }
     }
@@ -267,6 +292,9 @@ impl Model {
             | Self::FivePointOne
             | Self::FivePointTwo
             | Self::FivePointTwoCodex
+            | Self::FivePointThreeCodex
+            | Self::FivePointFour
+            | Self::FivePointFourPro
             | Self::FiveNano => true,
             Self::O1 | Self::O3 | Self::O3Mini | Model::Custom { .. } => false,
         }
@@ -281,10 +309,25 @@ impl Model {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct StreamOptions {
+    pub include_usage: bool,
+}
+
+impl Default for StreamOptions {
+    fn default() -> Self {
+        Self {
+            include_usage: true,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Request {
     pub model: String,
     pub messages: Vec<RequestMessage>,
     pub stream: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_completion_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

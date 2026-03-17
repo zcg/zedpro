@@ -793,9 +793,7 @@ impl Render for ConfigurationView {
                         .child(
                             Button::new("reset-api-key", "Reset API Key")
                                 .label_size(LabelSize::Small)
-                                .icon(IconName::Undo)
-                                .icon_size(IconSize::Small)
-                                .icon_position(IconPosition::Start)
+                                .start_icon(Icon::new(IconName::Undo).size(IconSize::Small))
                                 .layer(ElevationIndex::ModalSurface)
                                 .when(env_var_set, |this| {
                                     this.tooltip(Tooltip::text(format!(
