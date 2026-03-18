@@ -51,6 +51,8 @@ pub trait Sidebar: Focusable + Render + Sized {
     fn has_notifications(&self, cx: &App) -> bool;
     fn toggle_recent_projects_popover(&self, window: &mut Window, cx: &mut App);
     fn is_recent_projects_popover_deployed(&self) -> bool;
+    /// Makes focus reset bac to the search editor upon toggling the sidebar from outside
+    fn prepare_for_focus(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
 }
 
 pub trait SidebarHandle: 'static + Send + Sync {
@@ -58,6 +60,7 @@ pub trait SidebarHandle: 'static + Send + Sync {
     fn set_width(&self, width: Option<Pixels>, cx: &mut App);
     fn focus_handle(&self, cx: &App) -> FocusHandle;
     fn focus(&self, window: &mut Window, cx: &mut App);
+    fn prepare_for_focus(&self, window: &mut Window, cx: &mut App);
     fn has_notifications(&self, cx: &App) -> bool;
     fn to_any(&self) -> AnyView;
     fn entity_id(&self) -> EntityId;
@@ -90,6 +93,10 @@ impl<T: Sidebar> SidebarHandle for Entity<T> {
     fn focus(&self, window: &mut Window, cx: &mut App) {
         let handle = self.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
+    }
+
+    fn prepare_for_focus(&self, window: &mut Window, cx: &mut App) {
+        self.update(cx, |this, cx| this.prepare_for_focus(window, cx));
     }
 
     fn has_notifications(&self, cx: &App) -> bool {
@@ -239,6 +246,7 @@ impl MultiWorkspace {
         } else {
             self.open_sidebar(cx);
             if let Some(sidebar) = &self.sidebar {
+                sidebar.prepare_for_focus(window, cx);
                 sidebar.focus(window, cx);
             }
         }
@@ -260,11 +268,13 @@ impl MultiWorkspace {
                 let pane_focus = pane.read(cx).focus_handle(cx);
                 window.focus(&pane_focus, cx);
             } else if let Some(sidebar) = &self.sidebar {
+                sidebar.prepare_for_focus(window, cx);
                 sidebar.focus(window, cx);
             }
         } else {
             self.open_sidebar(cx);
             if let Some(sidebar) = &self.sidebar {
+                sidebar.prepare_for_focus(window, cx);
                 sidebar.focus(window, cx);
             }
         }
@@ -613,7 +623,6 @@ impl MultiWorkspace {
 
         self.activate_previous_workspace(window, cx);
     }
-
     fn serialize(&mut self, cx: &mut App) {
         let window_id = self.window_id;
         let state = crate::persistence::model::MultiWorkspaceState {
@@ -912,6 +921,108 @@ impl MultiWorkspace {
         }));
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn create_test_workspace(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        let app_state = self.workspace().read(cx).app_state().clone();
+        if self.should_link_window_tabs(cx) {
+            #[cfg(target_os = "windows")]
+            {
+                let Some(target_window_handle) = window.window_handle().downcast::<Self>() else {
+                    return;
+                };
+                let create_window_task =
+                    Workspace::new_local(Vec::new(), app_state, None, None, None, true, cx);
+                cx.spawn_in(window, async move |_this, cx| {
+                    let open_result = create_window_task.await?;
+                    let source_window_handle = open_result.window;
+
+                    let Some(target_window_id) = target_window_handle
+                        .update(cx, |_, window, _| window.window_handle().window_id())
+                        .ok()
+                    else {
+                        return Ok::<(), anyhow::Error>(());
+                    };
+
+                    let source_window_id = source_window_handle.window_id();
+                    cx.update(|_, cx| {
+                        SystemWindowTabController::merge_window_into_group_and_sync_platform(
+                            cx,
+                            source_window_id,
+                            target_window_id,
+                            usize::MAX,
+                        );
+                    })?;
+
+                    source_window_handle
+                        .update(cx, |_, window, _| {
+                            window.activate_window();
+                        })
+                        .ok();
+                    target_window_handle
+                        .update(cx, |_, _window, cx| {
+                            cx.notify();
+                        })
+                        .ok();
+                    source_window_handle
+                        .update(cx, |_, _window, cx| {
+                            cx.notify();
+                        })
+                        .ok();
+
+                    Ok::<(), anyhow::Error>(())
+                })
+                .detach_and_log_err(cx);
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                crate::open_new(crate::OpenOptions::default(), app_state, cx, |_, _, _| {})
+                    .detach_and_log_err(cx);
+            }
+            return;
+        }
+
+        let project = Project::local(
+            app_state.client.clone(),
+            app_state.node_runtime.clone(),
+            app_state.user_store.clone(),
+            app_state.languages.clone(),
+            app_state.fs.clone(),
+            None,
+            project::LocalProjectFlags::default(),
+            cx,
+        );
+        let new_workspace = cx.new(|cx| Workspace::new(None, project, app_state, window, cx));
+        self.set_active_workspace(new_workspace.clone(), cx);
+        self.focus_active_workspace(window, cx);
+
+        let weak_workspace = new_workspace.downgrade();
+        cx.spawn_in(window, async move |this, cx| {
+            let workspace_id = crate::persistence::DB.next_id().await.unwrap();
+            let workspace = weak_workspace.upgrade().unwrap();
+            let task: Task<()> = this
+                .update_in(cx, |this, window, cx| {
+                    let session_id = workspace.read(cx).session_id();
+                    let window_id = window.window_handle().window_id().as_u64();
+                    workspace.update(cx, |workspace, _cx| {
+                        workspace.set_database_id(workspace_id);
+                    });
+                    this.serialize(cx);
+                    cx.background_spawn(async move {
+                        crate::persistence::DB
+                            .set_session_binding(workspace_id, session_id, Some(window_id))
+                            .await
+                            .log_err();
+                    })
+                })
+                .unwrap();
+            task.await
+        })
+    }
+
     pub fn remove_workspace(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.workspaces.len() <= 1 || index >= self.workspaces.len() {
             return;
@@ -929,8 +1040,10 @@ impl MultiWorkspace {
             self.pending_removal_tasks.retain(|task| !task.is_ready());
             self.pending_removal_tasks
                 .push(cx.background_spawn(async move {
+                    // Clear the session binding instead of deleting the row so
+                    // the workspace still appears in the recent-projects list.
                     crate::persistence::DB
-                        .delete_workspace_by_id(workspace_id)
+                        .set_session_binding(workspace_id, None, None)
                         .await
                         .log_err();
                 }));
