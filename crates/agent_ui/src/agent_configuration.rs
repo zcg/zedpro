@@ -2,7 +2,6 @@ mod add_llm_provider_modal;
 pub mod configure_context_server_modal;
 mod configure_context_server_tools_modal;
 mod manage_profiles_modal;
-mod test_llm_model_modal;
 mod tool_picker;
 
 use std::{ops::Range, sync::Arc};
@@ -49,7 +48,6 @@ pub(crate) use manage_profiles_modal::ManageProfilesModal;
 use crate::agent_configuration::add_llm_provider_modal::{
     AddLlmProviderModal, LlmCompatibleProvider,
 };
-use crate::agent_configuration::test_llm_model_modal::ModelAvailabilityTestModal;
 
 pub struct AgentConfiguration {
     fs: Arc<dyn Fs>,
@@ -472,7 +470,6 @@ impl AgentConfiguration {
                         };
                         let workspace = self.workspace.clone();
                         let provider_id: Arc<str> = Arc::from(provider_id);
-                        let model_name = model.model_name.clone();
                         let protocol = model.protocol;
 
                         div()
@@ -546,33 +543,6 @@ impl AgentConfiguration {
                                                             .log_err();
                                                     }
                                                 })),
-                                            )
-                                            .child(
-                                                Button::new(
-                                                    SharedString::from(format!(
-                                                        "test-provider-model-{}-{}",
-                                                        provider_id, index
-                                                    )),
-                                                    "Test Availability",
-                                                )
-                                                .style(ButtonStyle::Outlined)
-                                                .label_size(LabelSize::Small)
-                                                .on_click(cx.listener(
-                                                    move |_this, _event, window, cx| {
-                                                        workspace
-                                                            .update(cx, |workspace, cx| {
-                                                                ModelAvailabilityTestModal::toggle(
-                                                                    provider_id.clone(),
-                                                                    model_name.clone(),
-                                                                    protocol,
-                                                                    workspace,
-                                                                    window,
-                                                                    cx,
-                                                                );
-                                                            })
-                                                            .log_err();
-                                                    },
-                                                )),
                                             ),
                                     ),
                             )
@@ -1720,7 +1690,6 @@ fn compatible_provider_protocol(provider_id: &Arc<str>, cx: &App) -> Option<LlmC
 
 #[derive(Clone)]
 struct ProviderModelSummary {
-    model_name: SharedString,
     protocol: LlmCompatibleProvider,
     summary: SharedString,
     details: SharedString,
@@ -1734,7 +1703,6 @@ fn provider_models_summary(provider_id: &Arc<str>, cx: &App) -> Vec<ProviderMode
             .iter()
             .map(|model| {
                 ProviderModelSummary {
-                    model_name: SharedString::from(model.name.clone()),
                     protocol: LlmCompatibleProvider::OpenAi,
                     summary: SharedString::from(model.name.clone()),
                     details: SharedString::from(format!(
@@ -1754,7 +1722,6 @@ fn provider_models_summary(provider_id: &Arc<str>, cx: &App) -> Vec<ProviderMode
             .available_models
             .iter()
             .map(|model| ProviderModelSummary {
-                model_name: SharedString::from(model.name.clone()),
                 protocol: LlmCompatibleProvider::Anthropic,
                 summary: SharedString::from(model.name.clone()),
                 details: SharedString::from(format!(
@@ -1769,7 +1736,6 @@ fn provider_models_summary(provider_id: &Arc<str>, cx: &App) -> Vec<ProviderMode
             .available_models
             .iter()
             .map(|model| ProviderModelSummary {
-                model_name: SharedString::from(model.name.clone()),
                 protocol: LlmCompatibleProvider::Gemini,
                 summary: SharedString::from(model.name.clone()),
                 details: SharedString::from(format!(
