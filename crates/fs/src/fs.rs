@@ -1065,11 +1065,7 @@ impl Fs for RealFs {
             && let Some(parent) = path.parent()
             && let Err(parent_e) = watcher.add(parent)
         {
-            fs_watcher::log_watch_error(
-                fs_watcher::WatchOperation::Watch,
-                path,
-                &e.to_string(),
-            );
+            fs_watcher::log_watch_error(fs_watcher::WatchOperation::Watch, path, &e.to_string());
             fs_watcher::log_watch_error(
                 fs_watcher::WatchOperation::Watch,
                 parent,

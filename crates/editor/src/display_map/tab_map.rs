@@ -672,7 +672,6 @@ impl TabChunks<'_> {
         };
         self.inside_leading_tab = to_next_stop > 0;
     }
-
 }
 
 impl<'a> Iterator for TabChunks<'a> {

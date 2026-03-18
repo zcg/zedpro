@@ -696,8 +696,7 @@ impl ModelPickerDelegate {
                             .enumerate()
                             .skip(ix + 1)
                             .find_map(|(entry_ix, entry)| {
-                                matches!(entry, ModelPickerEntry::Model(_, _))
-                                    .then_some(entry_ix)
+                                matches!(entry, ModelPickerEntry::Model(_, _)).then_some(entry_ix)
                             })
                     })
                     .unwrap_or_else(|| first_selectable_index(&self.filtered_entries))

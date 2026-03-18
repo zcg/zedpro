@@ -17,7 +17,7 @@ contact: https://zed.dev/community-links#support-and-feedback
 parts:
   zed:
     plugin: dump
-    source: "https://github.com/zed-industries/zed/releases/download/v$RELEASE_VERSION/zed-linux-x86_64.tar.gz"
+    source: "https://github.com/zed-industries/zed/releases/download/v$RELEASE_VERSION/zedpro-linux-x86_64.tar.gz"
 
     organize:
       # These renames seem to not be necessary, but it's tidier.

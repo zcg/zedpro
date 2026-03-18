@@ -727,7 +727,7 @@ mod tests {
             Prettier::locate_prettier_installation(
                 fs.as_ref(),
                 &HashSet::default(),
-                Path::new("/root/.config/zed/settings.json"),
+                Path::new("/root/.config/zedpro/settings.json"),
             )
             .await
             .unwrap(),

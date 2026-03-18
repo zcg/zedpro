@@ -178,7 +178,14 @@ fn get_zed_install_folder() -> Option<PathBuf> {
 
 #[inline]
 fn get_zed_exe_path() -> Option<String> {
-    get_zed_install_folder().map(|path| path.join("Zed.exe").to_string_lossy().into_owned())
+    let install_folder = get_zed_install_folder()?;
+    [
+        install_folder.join("ZedPro.exe"),
+        install_folder.join("Zed.exe"),
+    ]
+    .into_iter()
+    .find(|path| path.exists())
+    .map(|path| path.to_string_lossy().into_owned())
 }
 
 #[inline]

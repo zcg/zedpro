@@ -671,7 +671,9 @@ impl SystemWindowTabController {
 
     #[cfg(target_os = "windows")]
     fn find_window_handle(cx: &App, id: WindowId) -> Option<AnyWindowHandle> {
-        cx.windows().into_iter().find(|handle| handle.window_id() == id)
+        cx.windows()
+            .into_iter()
+            .find(|handle| handle.window_id() == id)
     }
 
     /// Windows-only helper: merge tab state and trigger platform regrouping in one place.

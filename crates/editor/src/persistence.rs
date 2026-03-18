@@ -572,20 +572,24 @@ mod tests {
             )
         );
 
-    #[gpui::test]
-    async fn test_save_editor_selections_without_existing_editor_row() {
-        let workspace_id = workspace::WORKSPACE_DB.next_id().await.unwrap();
-        let editor_id = 4242;
-        let selections = vec![(10, 20), (30, 40)];
+        #[gpui::test]
+        async fn test_save_editor_selections_without_existing_editor_row() {
+            let workspace_id = workspace::WORKSPACE_DB.next_id().await.unwrap();
+            let editor_id = 4242;
+            let selections = vec![(10, 20), (30, 40)];
 
-        DB.save_editor_selections(editor_id, workspace_id, selections.clone())
-            .await
-            .unwrap();
+            DB.save_editor_selections(editor_id, workspace_id, selections.clone())
+                .await
+                .unwrap();
 
-        let retrieved = DB.get_editor_selections(editor_id, workspace_id).unwrap();
-        assert_eq!(retrieved, selections);
-        assert!(DB.get_serialized_editor(editor_id, workspace_id).unwrap().is_some());
-    }
+            let retrieved = DB.get_editor_selections(editor_id, workspace_id).unwrap();
+            assert_eq!(retrieved, selections);
+            assert!(
+                DB.get_serialized_editor(editor_id, workspace_id)
+                    .unwrap()
+                    .is_some()
+            );
+        }
         // Test delete
         DB.delete_file_folds(workspace_id, file_path.clone())
             .await

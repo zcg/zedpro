@@ -11,8 +11,8 @@ use settings::{DevContainerHost, Settings};
 use std::{collections::HashSet, path::PathBuf};
 use ui::{
     Button, ButtonCommon, ButtonStyle, Clickable, Context, ElevationIndex, FluentBuilder, Headline,
-    HeadlineSize, IconName, InteractiveElement, IntoElement, Label, Modal, ModalFooter,
-    ModalHeader, ParentElement, Section, Styled, StyledExt, Window, div, h_flex, rems, Icon,
+    HeadlineSize, Icon, IconName, InteractiveElement, IntoElement, Label, Modal, ModalFooter,
+    ModalHeader, ParentElement, Section, Styled, StyledExt, Window, div, h_flex, rems,
 };
 use workspace::{
     ModalView, MultiWorkspace, OpenOptions, Workspace, notifications::DetachAndPromptErr,

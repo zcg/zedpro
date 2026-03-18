@@ -164,10 +164,10 @@ if (user) {
 }
 
 let buildArgs = ["build"];
-let zedBinary = "target/debug/zed";
+let zedBinary = "target/debug/zedpro";
 if (isReleaseMode) {
   buildArgs.push("--release");
-  zedBinary = "target/release/zed";
+  zedBinary = "target/release/zedpro";
 }
 
 try {
@@ -194,9 +194,9 @@ setTimeout(() => {
     const size = [instanceWidth, instanceHeight].join(",");
     let binaryPath = zedBinary;
     if (i != 0 && othersOnStable) {
-      binaryPath = "/Applications/Zed.app/Contents/MacOS/zed";
+      binaryPath = "/Applications/ZedPro.app/Contents/MacOS/zedpro";
     } else if (i != 0 && othersOnPreview) {
-      binaryPath = "/Applications/Zed Preview.app/Contents/MacOS/zed";
+      binaryPath = "/Applications/ZedPro Preview.app/Contents/MacOS/zedpro";
     }
     spawn(binaryPath, i == 0 ? args : [], {
       stdio: "inherit",

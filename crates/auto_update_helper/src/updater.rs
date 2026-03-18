@@ -164,7 +164,7 @@ impl Job {
 }
 
 #[cfg(not(test))]
-pub(crate) static JOBS: LazyLock<[Job; 21]> = LazyLock::new(|| {
+pub(crate) static JOBS: LazyLock<[Job; 22]> = LazyLock::new(|| {
     fn p(value: &str) -> &Path {
         Path::new(value)
     }
@@ -172,10 +172,11 @@ pub(crate) static JOBS: LazyLock<[Job; 21]> = LazyLock::new(|| {
         // Move old files
         // Not deleting because installing new files can fail
         Job::mkdir(p("old")),
-        Job::move_file(p("Zed.exe"), p("old\\Zed.exe")),
+        Job::move_if_exists(p("Zed.exe"), p("old\\Zed.exe")),
+        Job::move_if_exists(p("ZedPro.exe"), p("old\\ZedPro.exe")),
         Job::mkdir(p("old\\bin")),
-        Job::move_file(p("bin\\Zed.exe"), p("old\\bin\\Zed.exe")),
-        Job::move_file(p("bin\\zed"), p("old\\bin\\zed")),
+        Job::move_if_exists(p("bin\\zed.exe"), p("old\\bin\\zed.exe")),
+        Job::move_if_exists(p("bin\\zed"), p("old\\bin\\zed")),
         Job::mkdir(p("old\\x64")),
         Job::mkdir(p("old\\arm64")),
         Job::move_if_exists(p("x64\\OpenConsole.exe"), p("old\\x64\\OpenConsole.exe")),
@@ -186,9 +187,9 @@ pub(crate) static JOBS: LazyLock<[Job; 21]> = LazyLock::new(|| {
         //
         Job::move_file(p("conpty.dll"), p("old\\conpty.dll")),
         // Copy new files
-        Job::move_file(p("install\\Zed.exe"), p("Zed.exe")),
-        Job::move_file(p("install\\bin\\Zed.exe"), p("bin\\Zed.exe")),
-        Job::move_file(p("install\\bin\\zed"), p("bin\\zed")),
+        Job::move_file(p("install\\ZedPro.exe"), p("ZedPro.exe")),
+        Job::move_file(p("install\\bin\\zed.exe"), p("bin\\zed.exe")),
+        Job::move_if_exists(p("install\\bin\\zed"), p("bin\\zed")),
         //
         Job::mkdir_if_exists(p("x64"), p("install\\x64")),
         Job::mkdir_if_exists(p("arm64"), p("install\\arm64")),
@@ -276,8 +277,9 @@ pub(crate) static JOBS: LazyLock<[Job; 9]> = LazyLock::new(|| {
 fn release_file_handles(app_dir: &Path) -> Result<()> {
     // Files that commonly get locked by Explorer or other processes
     let files_to_release = [
+        app_dir.join("ZedPro.exe"),
         app_dir.join("Zed.exe"),
-        app_dir.join("bin\\Zed.exe"),
+        app_dir.join("bin\\zed.exe"),
         app_dir.join("bin\\zed"),
         app_dir.join("conpty.dll"),
     ];
@@ -425,7 +427,12 @@ pub(crate) fn perform_update(app_dir: &Path, hwnd: Option<isize>, launch: bool) 
 
     if launch {
         #[allow(clippy::disallowed_methods, reason = "doesn't run in the main binary")]
-        let _ = std::process::Command::new(app_dir.join("Zed.exe")).spawn();
+        let _ = std::process::Command::new(if app_dir.join("ZedPro.exe").exists() {
+            app_dir.join("ZedPro.exe")
+        } else {
+            app_dir.join("Zed.exe")
+        })
+        .spawn();
     }
     log::info!("Update completed successfully");
     Ok(())

@@ -514,19 +514,18 @@ impl AgentConfiguration {
                                             ),
                                     )
                                     .child(
-                                        h_flex()
-                                            .gap_1()
-                                            .child(
-                                                Button::new(
-                                                    SharedString::from(format!(
-                                                        "edit-provider-model-{}-{}",
-                                                        provider_id, index
-                                                    )),
-                                                    "Edit",
-                                                )
-                                                .style(ButtonStyle::Outlined)
-                                                .label_size(LabelSize::Small)
-                                                .on_click(cx.listener({
+                                        h_flex().gap_1().child(
+                                            Button::new(
+                                                SharedString::from(format!(
+                                                    "edit-provider-model-{}-{}",
+                                                    provider_id, index
+                                                )),
+                                                "Edit",
+                                            )
+                                            .style(ButtonStyle::Outlined)
+                                            .label_size(LabelSize::Small)
+                                            .on_click(
+                                                cx.listener({
                                                     let workspace = workspace.clone();
                                                     let provider_id = provider_id.clone();
                                                     move |_this, _event, window, cx| {
@@ -542,8 +541,9 @@ impl AgentConfiguration {
                                                             })
                                                             .log_err();
                                                     }
-                                                })),
+                                                }),
                                             ),
+                                        ),
                                     ),
                             )
                             .into_any_element()

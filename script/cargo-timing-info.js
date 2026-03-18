@@ -8,23 +8,23 @@ function getZedDataDir() {
   const platform = process.platform;
 
   if (platform === "darwin") {
-    // macOS: ~/Library/Application Support/Zed
-    return path.join(os.homedir(), "Library", "Application Support", "Zed");
+    // macOS: ~/Library/Application Support/ZedPro
+    return path.join(os.homedir(), "Library", "Application Support", "ZedPro");
   } else if (platform === "linux" || platform === "freebsd") {
-    // Linux/FreeBSD: $FLATPAK_XDG_DATA_HOME or XDG_DATA_HOME/zed
+    // Linux/FreeBSD: $FLATPAK_XDG_DATA_HOME or XDG_DATA_HOME/zedpro
     if (process.env.FLATPAK_XDG_DATA_HOME) {
-      return path.join(process.env.FLATPAK_XDG_DATA_HOME, "zed");
+      return path.join(process.env.FLATPAK_XDG_DATA_HOME, "zedpro");
     }
     const xdgDataHome = process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share");
-    return path.join(xdgDataHome, "zed");
+    return path.join(xdgDataHome, "zedpro");
   } else if (platform === "win32") {
-    // Windows: LocalAppData/Zed
+    // Windows: LocalAppData/ZedPro
     const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
-    return path.join(localAppData, "Zed");
+    return path.join(localAppData, "ZedPro");
   } else {
     // Fallback to XDG config dir
     const xdgConfigHome = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
-    return path.join(xdgConfigHome, "zed");
+    return path.join(xdgConfigHome, "zedpro");
   }
 }
 

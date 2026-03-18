@@ -2233,7 +2233,11 @@ impl Session {
         self.session_state().loaded_sources.clone()
     }
 
-    pub fn source(&mut self, source: Source, _cx: &mut Context<Self>) -> Task<Result<dap::SourceResponse>> {
+    pub fn source(
+        &mut self,
+        source: Source,
+        _cx: &mut Context<Self>,
+    ) -> Task<Result<dap::SourceResponse>> {
         self.state.request_dap(SourceCommand { source })
     }
 

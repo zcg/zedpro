@@ -318,11 +318,11 @@ jobs:
       run: ./script/download-wasi-sdk
     - name: ./script/bundle-linux
       run: ./script/bundle-linux
-    - name: '@actions/upload-artifact zed-linux-aarch64.tar.gz'
+    - name: '@actions/upload-artifact zedpro-linux-aarch64.tar.gz'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
       with:
-        name: zed-linux-aarch64.tar.gz
-        path: target/release/zed-linux-aarch64.tar.gz
+        name: zedpro-linux-aarch64.tar.gz
+        path: target/release/zedpro-linux-aarch64.tar.gz
         if-no-files-found: error
     - name: '@actions/upload-artifact zed-remote-server-linux-aarch64.gz'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
@@ -358,11 +358,11 @@ jobs:
       run: ./script/download-wasi-sdk
     - name: ./script/bundle-linux
       run: ./script/bundle-linux
-    - name: '@actions/upload-artifact zed-linux-x86_64.tar.gz'
+    - name: '@actions/upload-artifact zedpro-linux-x86_64.tar.gz'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
       with:
-        name: zed-linux-x86_64.tar.gz
-        path: target/release/zed-linux-x86_64.tar.gz
+        name: zedpro-linux-x86_64.tar.gz
+        path: target/release/zedpro-linux-x86_64.tar.gz
         if-no-files-found: error
     - name: '@actions/upload-artifact zed-remote-server-linux-x86_64.gz'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
@@ -403,11 +403,11 @@ jobs:
       run: ./script/clear-target-dir-if-larger-than 300
     - name: run_bundling::bundle_mac::bundle_mac
       run: ./script/bundle-mac aarch64-apple-darwin
-    - name: '@actions/upload-artifact Zed-aarch64.dmg'
+    - name: '@actions/upload-artifact ZedPro-aarch64.dmg'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
       with:
-        name: Zed-aarch64.dmg
-        path: target/aarch64-apple-darwin/release/Zed-aarch64.dmg
+        name: ZedPro-aarch64.dmg
+        path: target/aarch64-apple-darwin/release/ZedPro-aarch64.dmg
         if-no-files-found: error
     - name: '@actions/upload-artifact zed-remote-server-macos-aarch64.gz'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
@@ -448,11 +448,11 @@ jobs:
       run: ./script/clear-target-dir-if-larger-than 300
     - name: run_bundling::bundle_mac::bundle_mac
       run: ./script/bundle-mac x86_64-apple-darwin
-    - name: '@actions/upload-artifact Zed-x86_64.dmg'
+    - name: '@actions/upload-artifact ZedPro-x86_64.dmg'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
       with:
-        name: Zed-x86_64.dmg
-        path: target/x86_64-apple-darwin/release/Zed-x86_64.dmg
+        name: ZedPro-x86_64.dmg
+        path: target/x86_64-apple-darwin/release/ZedPro-x86_64.dmg
         if-no-files-found: error
     - name: '@actions/upload-artifact zed-remote-server-macos-x86_64.gz'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
@@ -493,11 +493,11 @@ jobs:
       run: script/bundle-windows.ps1 -Architecture aarch64
       shell: pwsh
       working-directory: ${{ env.ZED_WORKSPACE }}
-    - name: '@actions/upload-artifact Zed-aarch64.exe'
+    - name: '@actions/upload-artifact ZedPro-aarch64.exe'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
       with:
-        name: Zed-aarch64.exe
-        path: target/Zed-aarch64.exe
+        name: ZedPro-aarch64.exe
+        path: target/ZedPro-aarch64.exe
         if-no-files-found: error
     - name: '@actions/upload-artifact zed-remote-server-windows-aarch64.zip'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
@@ -538,11 +538,11 @@ jobs:
       run: script/bundle-windows.ps1 -Architecture x86_64
       shell: pwsh
       working-directory: ${{ env.ZED_WORKSPACE }}
-    - name: '@actions/upload-artifact Zed-x86_64.exe'
+    - name: '@actions/upload-artifact ZedPro-x86_64.exe'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
       with:
-        name: Zed-x86_64.exe
-        path: target/Zed-x86_64.exe
+        name: ZedPro-x86_64.exe
+        path: target/ZedPro-x86_64.exe
         if-no-files-found: error
     - name: '@actions/upload-artifact zed-remote-server-windows-x86_64.zip'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
@@ -572,12 +572,12 @@ jobs:
       run: |-
         mkdir -p release-artifacts/
 
-        mv ./artifacts/Zed-aarch64.dmg/Zed-aarch64.dmg release-artifacts/Zed-aarch64.dmg
-        mv ./artifacts/Zed-x86_64.dmg/Zed-x86_64.dmg release-artifacts/Zed-x86_64.dmg
-        mv ./artifacts/zed-linux-aarch64.tar.gz/zed-linux-aarch64.tar.gz release-artifacts/zed-linux-aarch64.tar.gz
-        mv ./artifacts/zed-linux-x86_64.tar.gz/zed-linux-x86_64.tar.gz release-artifacts/zed-linux-x86_64.tar.gz
-        mv ./artifacts/Zed-x86_64.exe/Zed-x86_64.exe release-artifacts/Zed-x86_64.exe
-        mv ./artifacts/Zed-aarch64.exe/Zed-aarch64.exe release-artifacts/Zed-aarch64.exe
+        mv ./artifacts/ZedPro-aarch64.dmg/ZedPro-aarch64.dmg release-artifacts/ZedPro-aarch64.dmg
+        mv ./artifacts/ZedPro-x86_64.dmg/ZedPro-x86_64.dmg release-artifacts/ZedPro-x86_64.dmg
+        mv ./artifacts/zedpro-linux-aarch64.tar.gz/zedpro-linux-aarch64.tar.gz release-artifacts/zedpro-linux-aarch64.tar.gz
+        mv ./artifacts/zedpro-linux-x86_64.tar.gz/zedpro-linux-x86_64.tar.gz release-artifacts/zedpro-linux-x86_64.tar.gz
+        mv ./artifacts/ZedPro-x86_64.exe/ZedPro-x86_64.exe release-artifacts/ZedPro-x86_64.exe
+        mv ./artifacts/ZedPro-aarch64.exe/ZedPro-aarch64.exe release-artifacts/ZedPro-aarch64.exe
         mv ./artifacts/zed-remote-server-macos-aarch64.gz/zed-remote-server-macos-aarch64.gz release-artifacts/zed-remote-server-macos-aarch64.gz
         mv ./artifacts/zed-remote-server-macos-x86_64.gz/zed-remote-server-macos-x86_64.gz release-artifacts/zed-remote-server-macos-x86_64.gz
         mv ./artifacts/zed-remote-server-linux-aarch64.gz/zed-remote-server-linux-aarch64.gz release-artifacts/zed-remote-server-linux-aarch64.gz
@@ -595,7 +595,7 @@ jobs:
     steps:
     - name: release::validate_release_assets
       run: |
-        EXPECTED_ASSETS='["Zed-aarch64.dmg", "Zed-x86_64.dmg", "zed-linux-aarch64.tar.gz", "zed-linux-x86_64.tar.gz", "Zed-x86_64.exe", "Zed-aarch64.exe", "zed-remote-server-macos-aarch64.gz", "zed-remote-server-macos-x86_64.gz", "zed-remote-server-linux-aarch64.gz", "zed-remote-server-linux-x86_64.gz", "zed-remote-server-windows-aarch64.zip", "zed-remote-server-windows-x86_64.zip"]'
+        EXPECTED_ASSETS='["ZedPro-aarch64.dmg", "ZedPro-x86_64.dmg", "zedpro-linux-aarch64.tar.gz", "zedpro-linux-x86_64.tar.gz", "ZedPro-x86_64.exe", "ZedPro-aarch64.exe", "zed-remote-server-macos-aarch64.gz", "zed-remote-server-macos-x86_64.gz", "zed-remote-server-linux-aarch64.gz", "zed-remote-server-linux-x86_64.gz", "zed-remote-server-windows-aarch64.zip", "zed-remote-server-windows-x86_64.zip"]'
         TAG="$GITHUB_REF_NAME"
 
         ACTUAL_ASSETS=$(gh release view "$TAG" --repo=zed-industries/zed --json assets -q '[.assets[].name]')

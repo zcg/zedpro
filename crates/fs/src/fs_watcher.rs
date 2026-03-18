@@ -1,7 +1,7 @@
 use notify::EventKind;
 use parking_lot::Mutex;
 use std::{
-    collections::{hash_map::Entry, BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, hash_map::Entry},
     ops::DerefMut,
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
@@ -160,10 +160,7 @@ impl Watcher for FsWatcher {
     fn remove(&self, path: &std::path::Path) -> anyhow::Result<()> {
         log::trace!("remove watched path: {path:?}");
         let registration_path = normalize_registration_path(path);
-        let Some(registration) = self
-            .registrations
-            .lock()
-            .remove(registration_path.as_ref())
+        let Some(registration) = self.registrations.lock().remove(registration_path.as_ref())
         else {
             return Ok(());
         };
@@ -364,7 +361,10 @@ impl WatchErrorKind {
     }
 
     fn is_ignorable(&self) -> bool {
-        matches!(self, WatchErrorKind::InvalidArgument | WatchErrorKind::PathNotFound)
+        matches!(
+            self,
+            WatchErrorKind::InvalidArgument | WatchErrorKind::PathNotFound
+        )
     }
 
     fn as_str(&self) -> &'static str {
@@ -458,7 +458,8 @@ pub(crate) fn log_watch_error(operation: WatchOperation, path: &Path, error_mess
 
 fn should_log_watch_error(key: WatchErrorKey) -> Option<u32> {
     let now = Instant::now();
-    let limiter = WATCH_ERROR_RATE_LIMITER.get_or_init(|| Mutex::new(WatchErrorRateLimiter::default()));
+    let limiter =
+        WATCH_ERROR_RATE_LIMITER.get_or_init(|| Mutex::new(WatchErrorRateLimiter::default()));
     let mut limiter = limiter.lock();
 
     if limiter.entries.len() > WATCH_ERROR_LOG_MAX_KEYS {

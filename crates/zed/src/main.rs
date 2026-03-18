@@ -261,7 +261,7 @@ fn main() {
         Ok(path) => askpass::set_askpass_program(path),
         Err(err) => {
             eprintln!(
-                "Warning: zed-cli not found ({}). Falling back to zed.exe for askpass. \
+                "Warning: zed-cli not found ({}). Falling back to zedpro.exe for askpass. \
 To build it, run: cargo build -p cli",
                 err
             );
@@ -1601,7 +1601,7 @@ fn stdout_is_a_pty() -> bool {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "zed", disable_version_flag = true, max_term_width = 100)]
+#[command(name = "zedpro", disable_version_flag = true, max_term_width = 100)]
 struct Args {
     /// A sequence of space-separated paths or urls that you want to open.
     ///
@@ -1619,9 +1619,9 @@ struct Args {
     /// Sets a custom directory for all user data (e.g., database, extensions, logs).
     ///
     /// This overrides the default platform-specific data directory location.
-    /// On macOS, the default is `~/Library/Application Support/Zed`.
-    /// On Linux/FreeBSD, the default is `$XDG_DATA_HOME/zed`.
-    /// On Windows, the default is `%LOCALAPPDATA%\Zed`.
+    /// On macOS, the default is `~/Library/Application Support/ZedPro`.
+    /// On Linux/FreeBSD, the default is `$XDG_DATA_HOME/zedpro`.
+    /// On Windows, the default is `%LOCALAPPDATA%\ZedPro`.
     #[arg(long, value_name = "DIR", verbatim_doc_comment)]
     user_data_dir: Option<String>,
 

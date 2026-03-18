@@ -583,7 +583,8 @@ pub fn initialize_workspace(
                 }
             }
 
-            if let Some(multi_workspace_window) = window.window_handle().downcast::<MultiWorkspace>()
+            if let Some(multi_workspace_window) =
+                window.window_handle().downcast::<MultiWorkspace>()
             {
                 return multi_workspace_window
                     .update(cx, |multi_workspace, window, cx| {

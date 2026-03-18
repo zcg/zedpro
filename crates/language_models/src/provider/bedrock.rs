@@ -755,10 +755,12 @@ impl LanguageModel for BedrockModel {
                             retry_after: None,
                         }
                     }
-                    BedrockError::AccessDenied(msg) => LanguageModelCompletionError::PermissionError {
-                        provider: PROVIDER_NAME,
-                        message: msg,
-                    },
+                    BedrockError::AccessDenied(msg) => {
+                        LanguageModelCompletionError::PermissionError {
+                            provider: PROVIDER_NAME,
+                            message: msg,
+                        }
+                    }
                     BedrockError::InternalServer(msg) => {
                         LanguageModelCompletionError::ApiInternalServerError {
                             provider: PROVIDER_NAME,

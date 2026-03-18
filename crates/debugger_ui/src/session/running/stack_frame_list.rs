@@ -440,9 +440,7 @@ impl StackFrameList {
         let language_hint_path = Self::source_language_path(&source);
         cx.spawn_in(window, async move |this, cx| {
             let cache_entry = this.update(cx, |this, _| {
-                this.source_reference_cache
-                    .get(&source_reference)
-                    .cloned()
+                this.source_reference_cache.get(&source_reference).cloned()
             })?;
 
             if let Some(cache_entry) = cache_entry {
@@ -463,11 +461,9 @@ impl StackFrameList {
                     let thread_id = this.state.read_with(cx, |state, _| {
                         state.thread_id.context("No selected thread ID found")
                     })??;
-                    let position = cache_entry
-                        .buffer
-                        .read_with(cx, |buffer, _| {
-                            buffer.snapshot().anchor_after(PointUtf16::new(row, 0))
-                        });
+                    let position = cache_entry.buffer.read_with(cx, |buffer, _| {
+                        buffer.snapshot().anchor_after(PointUtf16::new(row, 0))
+                    });
 
                     this.workspace.update(cx, |workspace, cx| {
                         let breakpoint_store = workspace.project().read(cx).breakpoint_store();
@@ -508,7 +504,13 @@ impl StackFrameList {
                     if let Some(abs_path) = fallback_abs_path {
                         return this
                             .update_in(cx, |this, window, cx| {
-                                this.go_to_stack_frame_path(stack_frame_id, row, abs_path, window, cx)
+                                this.go_to_stack_frame_path(
+                                    stack_frame_id,
+                                    row,
+                                    abs_path,
+                                    window,
+                                    cx,
+                                )
                             })?
                             .await;
                     }
@@ -518,8 +520,9 @@ impl StackFrameList {
             };
 
             let language_registry = this.update(cx, |this, cx| {
-                this.workspace
-                    .update(cx, |workspace, cx| workspace.project().read(cx).languages().clone())
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.project().read(cx).languages().clone()
+                })
             })??;
             let mut language = None;
             if let Some(path) = language_hint_path.as_ref() {
@@ -532,15 +535,18 @@ impl StackFrameList {
                 && let Some(mime_type) = source_response.mime_type.as_deref()
                 && let Some(language_name) = Self::language_name_for_mime_type(mime_type)
             {
-                language = language_registry.language_for_name(language_name).await.ok();
+                language = language_registry
+                    .language_for_name(language_name)
+                    .await
+                    .ok();
             }
 
             let buffer = this
                 .update(cx, |this, cx| {
                     this.workspace.update(cx, |workspace, cx| {
-                        workspace
-                            .project()
-                            .update(cx, |project, cx| project.create_buffer(language.clone(), false, cx))
+                        workspace.project().update(cx, |project, cx| {
+                            project.create_buffer(language.clone(), false, cx)
+                        })
                     })
                 })??
                 .await?;
@@ -754,7 +760,9 @@ impl StackFrameList {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<Entity<Editor>> {
-        let project = self.workspace.update(cx, |workspace, _| workspace.project().clone())?;
+        let project = self
+            .workspace
+            .update(cx, |workspace, _| workspace.project().clone())?;
         let multibuffer =
             cx.new(|cx| MultiBuffer::singleton(buffer, cx).with_title(source_title.into()));
         Ok(cx.new(|cx| {
@@ -766,10 +774,11 @@ impl StackFrameList {
     }
 
     fn source_reference_from_stack_frame(stack_frame: &dap::StackFrame) -> Option<u64> {
-        stack_frame
-            .source
-            .as_ref()
-            .and_then(|source| source.source_reference.filter(|source_reference| *source_reference > 0))
+        stack_frame.source.as_ref().and_then(|source| {
+            source
+                .source_reference
+                .filter(|source_reference| *source_reference > 0)
+        })
     }
 
     fn can_open_stack_frame_source(stack_frame: &dap::StackFrame) -> bool {
