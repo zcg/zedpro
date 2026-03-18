@@ -4219,7 +4219,11 @@ impl AgentPanel {
         Some(
             div()
                 .when(text_thread_view, |this| {
-                    this.bg(cx.theme().colors().editor_background)
+                    this.bg(workspace::material_surface_color(
+                        cx.theme().colors().editor_background,
+                        0.72,
+                        cx,
+                    ))
                 })
                 .child(self.onboarding.clone()),
         )
@@ -4381,7 +4385,11 @@ impl AgentPanel {
                             .p(DynamicSpacing::Base08.rems(cx))
                             .border_b_1()
                             .border_color(cx.theme().colors().border_variant)
-                            .bg(cx.theme().colors().editor_background)
+                            .bg(workspace::material_surface_color(
+                                cx.theme().colors().editor_background,
+                                0.72,
+                                cx,
+                            ))
                             .child(buffer_search_bar.render(window, cx)),
                     )
                 })

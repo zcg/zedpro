@@ -2,12 +2,14 @@ use std::num::NonZeroUsize;
 
 use crate::DockPosition;
 use collections::HashMap;
+use gpui::{App, Hsla, WindowBackgroundAppearance};
 use serde::Deserialize;
 pub use settings::{
     AutosaveSetting, BottomDockLayout, EncodingDisplayOptions, InactiveOpacity,
     PaneSplitDirectionHorizontal, PaneSplitDirectionVertical, RegisterSetting,
     RestoreOnStartupBehavior, Settings,
 };
+use theme::ActiveTheme;
 
 #[derive(RegisterSetting)]
 pub struct WorkspaceSettings {
@@ -38,6 +40,7 @@ pub struct WorkspaceSettings {
     pub window_tab_link_mode: settings::WindowTabLinkMode,
     pub zoomed_padding: bool,
     pub window_decorations: settings::WindowDecorations,
+    pub window_background_material: settings::WindowBackgroundMaterial,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -120,7 +123,53 @@ impl Settings for WorkspaceSettings {
             window_tab_link_mode: workspace.window_tab_link_mode.unwrap(),
             zoomed_padding: workspace.zoomed_padding.unwrap(),
             window_decorations: workspace.window_decorations.unwrap(),
+            window_background_material: workspace.window_background_material.unwrap(),
         }
+    }
+}
+
+pub fn effective_window_background_appearance(cx: &App) -> WindowBackgroundAppearance {
+    #[cfg(target_os = "windows")]
+    {
+        match WorkspaceSettings::get_global(cx).window_background_material {
+            settings::WindowBackgroundMaterial::Theme => cx.theme().window_background_appearance(),
+            settings::WindowBackgroundMaterial::Acrylic => WindowBackgroundAppearance::Blurred,
+            settings::WindowBackgroundMaterial::Mica => WindowBackgroundAppearance::MicaBackdrop,
+            settings::WindowBackgroundMaterial::MicaAlt => {
+                WindowBackgroundAppearance::MicaAltBackdrop
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        cx.theme().window_background_appearance()
+    }
+}
+
+pub fn has_custom_window_background_material(cx: &App) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        WorkspaceSettings::get_global(cx).window_background_material
+            != settings::WindowBackgroundMaterial::Theme
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = cx;
+        false
+    }
+}
+
+pub fn material_surface_color(color: Hsla, factor: f32, cx: &App) -> Hsla {
+    if has_custom_window_background_material(cx) {
+        let panel = cx.theme().colors().panel_background;
+        let chrome = cx.theme().colors().title_bar_background;
+        let base = panel.blend(chrome.opacity(0.35));
+        let tint = color.opacity((1.0 - factor.clamp(0.0, 1.0)) * color.a * 0.6);
+        base.blend(tint)
+    } else {
+        color
     }
 }
 

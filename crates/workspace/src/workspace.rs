@@ -27,9 +27,9 @@ mod workspace_settings;
 pub use crate::notifications::NotificationFrame;
 pub use dock::Panel;
 pub use multi_workspace::{
-    DraggedSidebar, FocusWorkspaceSidebar, MultiWorkspace, NewWorkspaceInWindow,
-    NextWorkspaceInWindow, PreviousWorkspaceInWindow, Sidebar, SidebarHandle, SidebarWorkspaceEntry,
-    ToggleWorkspaceSidebar, MultiWorkspaceEvent,
+    DraggedSidebar, FocusWorkspaceSidebar, MultiWorkspace, MultiWorkspaceEvent,
+    NewWorkspaceInWindow, NextWorkspaceInWindow, PreviousWorkspaceInWindow, Sidebar, SidebarHandle,
+    SidebarWorkspaceEntry, ToggleWorkspaceSidebar,
 };
 pub use path_list::{PathList, SerializedPathList};
 pub use toast_layer::{ToastAction, ToastLayer, ToastView};
@@ -144,7 +144,8 @@ use util::{
 use uuid::Uuid;
 pub use workspace_settings::{
     AutosaveSetting, BottomDockLayout, RestoreOnStartupBehavior, StatusBarSettings, TabBarSettings,
-    WorkspaceSettings,
+    WorkspaceSettings, effective_window_background_appearance,
+    has_custom_window_background_material, material_surface_color,
 };
 use zed_actions::{Spawn, feedback::FileBugReport, theme::ToggleMode};
 

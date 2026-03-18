@@ -194,6 +194,19 @@
   //
   // Default: "client"
   "window_decorations": "client",
+  // Windows-only override for the window background material.
+  //
+  // 1. Follow the active theme's background appearance:
+  //    "theme"
+  // 2. Force Acrylic:
+  //    "acrylic"
+  // 3. Force Mica:
+  //    "mica"
+  // 4. Force Mica Alt:
+  //    "mica_alt"
+  //
+  // Default: "theme"
+  "window_background_material": "theme",
   // Whether to use the system provided dialogs for Open and Save As.
   // When set to false, Zed will use the built-in keyboard-first pickers.
   "use_system_path_prompts": true,

@@ -4122,6 +4122,26 @@ fn window_and_layout_page() -> SettingsPage {
             ],
         }));
 
+        #[cfg(target_os = "windows")]
+        items.push(SettingsPageItem::SettingItem(SettingItem {
+            title: "Window Background Material",
+            description: "(Windows only) choose whether to follow the theme backdrop or force Acrylic, Mica, or Mica Alt.",
+            field: Box::new(SettingField {
+                json_path: Some("window_background_material"),
+                pick: |settings_content| {
+                    settings_content
+                        .workspace
+                        .window_background_material
+                        .as_ref()
+                },
+                write: |settings_content, value| {
+                    settings_content.workspace.window_background_material = value;
+                },
+            }),
+            metadata: None,
+            files: USER,
+        }));
+
         #[cfg(target_os = "linux")]
         items.push(SettingsPageItem::SettingItem(SettingItem {
             title: "Window Decorations",

@@ -77,7 +77,7 @@ use std::{
     sync::atomic::{self, AtomicBool},
 };
 use terminal_view::terminal_panel::{self, TerminalPanel};
-use theme::{ActiveTheme, GlobalTheme, SystemAppearance, ThemeRegistry, ThemeSettings};
+use theme::{GlobalTheme, SystemAppearance, ThemeRegistry, ThemeSettings};
 use ui::{PopoverMenuHandle, prelude::*};
 use util::markdown::MarkdownString;
 use util::rel_path::RelPath;
@@ -345,7 +345,7 @@ pub fn build_window_options(display_uuid: Option<Uuid>, cx: &mut App) -> WindowO
         kind: WindowKind::Normal,
         is_movable: true,
         display_id: display.map(|display| display.id()),
-        window_background: cx.theme().window_background_appearance(),
+        window_background: workspace::effective_window_background_appearance(cx),
         app_id: Some(app_id.to_owned()),
         window_decorations: Some(window_decorations),
         window_min_size: Some(gpui::Size {

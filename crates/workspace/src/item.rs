@@ -721,7 +721,9 @@ impl<T: Item> ItemHandle for Entity<T> {
         window: &mut Window,
         cx: &mut App,
     ) -> bool {
-        self.update(cx, |this, cx| this.handle_drop(active_pane, dropped, window, cx))
+        self.update(cx, |this, cx| {
+            this.handle_drop(active_pane, dropped, window, cx)
+        })
     }
 
     fn project_entry_ids(&self, cx: &App) -> SmallVec<[ProjectEntryId; 3]> {

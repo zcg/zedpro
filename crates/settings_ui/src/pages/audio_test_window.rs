@@ -291,7 +291,7 @@ pub fn open_audio_test_window(_window: &mut Window, cx: &mut App) {
             show: true,
             is_movable: true,
             kind: WindowKind::Normal,
-            window_background: cx.theme().window_background_appearance(),
+            window_background: workspace::effective_window_background_appearance(cx),
             app_id: Some(app_id.to_owned()),
             window_decorations: Some(gpui::WindowDecorations::Client),
             window_bounds: Some(WindowBounds::centered(window_size, cx)),

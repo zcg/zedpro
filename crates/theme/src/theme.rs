@@ -25,6 +25,7 @@ use std::sync::Arc;
 use ::settings::DEFAULT_DARK_THEME;
 use ::settings::IntoGpui;
 use ::settings::Settings;
+use ::settings::SettingsContent;
 use ::settings::SettingsStore;
 use anyhow::Result;
 use fallback_themes::apply_status_color_defaults;
@@ -120,6 +121,7 @@ pub fn init(themes_to_load: LoadThemes, cx: &mut App) {
     }
 
     FontFamilyCache::init_global(cx);
+    WindowMaterialThemeSettings::register(cx);
 
     let theme = GlobalTheme::configured_theme(cx);
     let icon_theme = GlobalTheme::configured_icon_theme(cx);
@@ -133,6 +135,8 @@ pub fn init(themes_to_load: LoadThemes, cx: &mut App) {
     let mut prev_agent_buffer_font_size_settings = settings.agent_buffer_font_size_settings();
     let mut prev_theme_name = settings.theme.name(SystemAppearance::global(cx).0);
     let mut prev_icon_theme_name = settings.icon_theme.name(SystemAppearance::global(cx).0);
+    let mut prev_window_background_material =
+        WindowMaterialThemeSettings::get_global(cx).window_background_material;
     let mut prev_theme_overrides = (
         settings.experimental_theme_overrides.clone(),
         settings.theme_overrides.clone(),
@@ -147,6 +151,8 @@ pub fn init(themes_to_load: LoadThemes, cx: &mut App) {
         let agent_buffer_font_size_settings = settings.agent_buffer_font_size_settings();
         let theme_name = settings.theme.name(SystemAppearance::global(cx).0);
         let icon_theme_name = settings.icon_theme.name(SystemAppearance::global(cx).0);
+        let window_background_material =
+            WindowMaterialThemeSettings::get_global(cx).window_background_material;
         let theme_overrides = (
             settings.experimental_theme_overrides.clone(),
             settings.theme_overrides.clone(),
@@ -172,8 +178,12 @@ pub fn init(themes_to_load: LoadThemes, cx: &mut App) {
             reset_agent_buffer_font_size(cx);
         }
 
-        if theme_name != prev_theme_name || theme_overrides != prev_theme_overrides {
+        if theme_name != prev_theme_name
+            || theme_overrides != prev_theme_overrides
+            || window_background_material != prev_window_background_material
+        {
             prev_theme_name = theme_name;
+            prev_window_background_material = window_background_material;
             prev_theme_overrides = theme_overrides;
             GlobalTheme::reload_theme(cx);
         }
@@ -195,6 +205,19 @@ pub trait ActiveTheme {
 impl ActiveTheme for App {
     fn theme(&self) -> &Arc<Theme> {
         GlobalTheme::theme(self)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct WindowMaterialThemeSettings {
+    window_background_material: ::settings::WindowBackgroundMaterial,
+}
+
+impl Settings for WindowMaterialThemeSettings {
+    fn from_settings(content: &SettingsContent) -> Self {
+        Self {
+            window_background_material: content.workspace.window_background_material.unwrap(),
+        }
     }
 }
 
@@ -476,7 +499,16 @@ impl GlobalTheme {
                     .unwrap_or_else(|_| themes.get(DEFAULT_DARK_THEME).unwrap())
             }
         };
-        theme_settings.apply_theme_overrides(theme)
+        let theme = theme_settings.apply_theme_overrides(theme);
+        #[cfg(target_os = "windows")]
+        {
+            let material = WindowMaterialThemeSettings::get_global(cx).window_background_material;
+            apply_window_material_theme_overrides(theme, material)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            theme
+        }
     }
 
     /// Reloads the current theme.
@@ -525,5 +557,109 @@ impl GlobalTheme {
     /// the active icon theme
     pub fn icon_theme(cx: &App) -> &Arc<IconTheme> {
         &cx.global::<Self>().icon_theme
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_window_material_theme_overrides(
+    theme: Arc<Theme>,
+    material: ::settings::WindowBackgroundMaterial,
+) -> Arc<Theme> {
+    use ::settings::WindowBackgroundMaterial;
+
+    if material == WindowBackgroundMaterial::Theme {
+        return theme;
+    }
+
+    let mut theme = (*theme).clone();
+    theme.styles.window_background_appearance = match material {
+        WindowBackgroundMaterial::Theme => theme.styles.window_background_appearance,
+        WindowBackgroundMaterial::Acrylic => WindowBackgroundAppearance::Blurred,
+        WindowBackgroundMaterial::Mica => WindowBackgroundAppearance::MicaBackdrop,
+        WindowBackgroundMaterial::MicaAlt => WindowBackgroundAppearance::MicaAltBackdrop,
+    };
+
+    let (chrome_alpha, surface_alpha, elevated_alpha, content_alpha, overlay_alpha) = match material
+    {
+        WindowBackgroundMaterial::Acrylic => (0.54, 0.46, 0.88, 0.36, 0.30),
+        WindowBackgroundMaterial::Mica => (0.64, 0.56, 0.92, 0.44, 0.34),
+        WindowBackgroundMaterial::MicaAlt => (0.60, 0.52, 0.90, 0.40, 0.32),
+        WindowBackgroundMaterial::Theme => unreachable!(),
+    };
+
+    let colors = &mut theme.styles.colors;
+    colors.background = set_alpha(colors.background, surface_alpha);
+    colors.surface_background = set_alpha(colors.surface_background, surface_alpha);
+    colors.elevated_surface_background =
+        set_alpha(colors.elevated_surface_background, elevated_alpha);
+    colors.element_background = set_alpha(colors.element_background, elevated_alpha);
+    colors.element_hover = cap_alpha(colors.element_hover, overlay_alpha);
+    colors.element_active = cap_alpha(colors.element_active, overlay_alpha);
+    colors.element_selected = cap_alpha(colors.element_selected, overlay_alpha);
+    colors.element_disabled = cap_alpha(colors.element_disabled, overlay_alpha);
+    colors.ghost_element_background = cap_alpha(colors.ghost_element_background, surface_alpha);
+    colors.ghost_element_hover = cap_alpha(colors.ghost_element_hover, overlay_alpha);
+    colors.ghost_element_active = cap_alpha(colors.ghost_element_active, overlay_alpha);
+    colors.ghost_element_selected = cap_alpha(colors.ghost_element_selected, overlay_alpha);
+    colors.ghost_element_disabled = cap_alpha(colors.ghost_element_disabled, overlay_alpha);
+    colors.title_bar_background = set_alpha(colors.title_bar_background, chrome_alpha);
+    colors.title_bar_inactive_background =
+        set_alpha(colors.title_bar_inactive_background, chrome_alpha);
+    colors.toolbar_background = set_alpha(colors.toolbar_background, surface_alpha);
+    colors.tab_bar_background = set_alpha(colors.tab_bar_background, surface_alpha);
+    colors.tab_inactive_background = set_alpha(colors.tab_inactive_background, surface_alpha);
+    colors.tab_active_background = set_alpha(colors.tab_active_background, elevated_alpha);
+    colors.status_bar_background = set_alpha(colors.status_bar_background, surface_alpha);
+    colors.panel_background = set_alpha(colors.panel_background, surface_alpha);
+    colors.panel_overlay_background = set_alpha(colors.panel_overlay_background, elevated_alpha);
+    colors.panel_overlay_hover = cap_alpha(colors.panel_overlay_hover, overlay_alpha);
+    colors.scrollbar_track_background = set_alpha(colors.scrollbar_track_background, surface_alpha);
+    colors.editor_background = set_alpha(colors.editor_background, content_alpha);
+    colors.editor_gutter_background = set_alpha(colors.editor_gutter_background, content_alpha);
+    colors.editor_subheader_background =
+        set_alpha(colors.editor_subheader_background, elevated_alpha);
+    colors.editor_active_line_background =
+        cap_alpha(colors.editor_active_line_background, overlay_alpha);
+    colors.editor_highlighted_line_background =
+        cap_alpha(colors.editor_highlighted_line_background, overlay_alpha);
+    colors.editor_debugger_active_line_background =
+        cap_alpha(colors.editor_debugger_active_line_background, overlay_alpha);
+    colors.terminal_background = set_alpha(colors.terminal_background, content_alpha);
+    colors.terminal_ansi_background = set_alpha(colors.terminal_ansi_background, content_alpha);
+    colors.drop_target_background = cap_alpha(colors.drop_target_background, overlay_alpha);
+    colors.search_match_background = cap_alpha(colors.search_match_background, elevated_alpha);
+    colors.search_active_match_background =
+        cap_alpha(colors.search_active_match_background, elevated_alpha);
+    colors.vim_yank_background = cap_alpha(colors.vim_yank_background, overlay_alpha);
+    colors.editor_document_highlight_read_background = cap_alpha(
+        colors.editor_document_highlight_read_background,
+        overlay_alpha,
+    );
+    colors.editor_document_highlight_write_background = cap_alpha(
+        colors.editor_document_highlight_write_background,
+        overlay_alpha,
+    );
+    colors.editor_document_highlight_bracket_background = cap_alpha(
+        colors.editor_document_highlight_bracket_background,
+        overlay_alpha,
+    );
+
+    Arc::new(theme)
+}
+
+#[cfg(target_os = "windows")]
+fn set_alpha(color: Hsla, alpha: f32) -> Hsla {
+    Hsla { a: alpha, ..color }
+}
+
+#[cfg(target_os = "windows")]
+fn cap_alpha(color: Hsla, max_alpha: f32) -> Hsla {
+    if color.a <= max_alpha {
+        color
+    } else {
+        Hsla {
+            a: max_alpha,
+            ..color
+        }
     }
 }

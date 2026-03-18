@@ -92,7 +92,7 @@ fn open_performance_profiler(
         return;
     }
 
-    let window_background = cx.theme().window_background_appearance();
+    let window_background = workspace::effective_window_background_appearance(cx);
     let default_bounds = size(px(1280.), px(720.));
 
     cx.defer(move |cx| {

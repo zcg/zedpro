@@ -940,7 +940,11 @@ impl Element for TerminalElement {
                     font_size: font_size.into(),
                     font_style: FontStyle::Normal,
                     line_height: px(line_height).into(),
-                    background_color: Some(theme.colors().terminal_ansi_background),
+                    background_color: Some(workspace::material_surface_color(
+                        theme.colors().terminal_ansi_background,
+                        0.58,
+                        cx,
+                    )),
                     white_space: WhiteSpace::Normal,
                     // These are going to be overridden per-cell
                     color: theme.colors().terminal_foreground,
@@ -984,7 +988,8 @@ impl Element for TerminalElement {
 
                 let search_matches = self.terminal.read(cx).matches.clone();
 
-                let background_color = theme.colors().terminal_background;
+                let background_color =
+                    workspace::material_surface_color(theme.colors().terminal_background, 0.58, cx);
 
                 let (last_hovered_word, hover_tooltip) =
                     self.terminal.update(cx, |terminal, cx| {

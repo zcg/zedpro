@@ -1121,7 +1121,11 @@ impl<T: 'static> PromptEditor<T> {
             .size_full()
             .p_2()
             .pl_1()
-            .bg(colors.editor_background)
+            .bg(workspace::material_surface_color(
+                colors.editor_background,
+                0.74,
+                cx,
+            ))
             .child({
                 let settings = ThemeSettings::get_global(cx);
                 let font_size = settings.buffer_font_size(cx);
@@ -1138,7 +1142,11 @@ impl<T: 'static> PromptEditor<T> {
                 EditorElement::new(
                     &self.editor,
                     EditorStyle {
-                        background: colors.editor_background,
+                        background: workspace::material_surface_color(
+                            colors.editor_background,
+                            0.74,
+                            cx,
+                        ),
                         local_player: cx.theme().players().local(),
                         syntax: cx.theme().syntax().clone(),
                         text: text_style,

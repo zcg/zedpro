@@ -552,6 +552,7 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::EditPredictionsMode>(render_dropdown)
         .add_basic_renderer::<settings::RelativeLineNumbers>(render_dropdown)
         .add_basic_renderer::<settings::WindowDecorations>(render_dropdown)
+        .add_basic_renderer::<settings::WindowBackgroundMaterial>(render_dropdown)
         .add_basic_renderer::<settings::WindowTabLinkMode>(render_dropdown)
         .add_basic_renderer::<settings::FontSize>(render_editable_number_field)
         .add_basic_renderer::<settings::OllamaModelName>(render_ollama_model_picker)
@@ -671,7 +672,7 @@ pub fn open_settings_editor(
                 show: true,
                 is_movable: true,
                 kind: gpui::WindowKind::Normal,
-                window_background: cx.theme().window_background_appearance(),
+                window_background: workspace::effective_window_background_appearance(cx),
                 app_id: Some(app_id.to_owned()),
                 window_decorations: Some(window_decorations),
                 window_min_size: Some(gpui::Size {

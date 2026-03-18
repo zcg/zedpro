@@ -754,14 +754,7 @@ To build it, run: cargo build -p cli",
             let http = app_state.client.http_client();
             let client = app_state.client.clone();
             move |cx| {
-                for &mut window in cx.windows().iter_mut() {
-                    let background_appearance = cx.theme().window_background_appearance();
-                    window
-                        .update(cx, |_, window, _| {
-                            window.set_background_appearance(background_appearance)
-                        })
-                        .ok();
-                }
+                refresh_window_background_appearance(cx);
 
                 cx.set_text_rendering_mode(
                     match WorkspaceSettings::get_global(cx).text_rendering_mode {
@@ -790,6 +783,7 @@ To build it, run: cargo build -p cli",
             let languages = app_state.languages.clone();
             move |cx| {
                 languages.set_theme(cx.theme().clone());
+                refresh_window_background_appearance(cx);
             }
         })
         .detach();
@@ -1823,6 +1817,17 @@ fn watch_themes(fs: Arc<dyn fs::Fs>, cx: &mut App) {
         }
     })
     .detach()
+}
+
+fn refresh_window_background_appearance(cx: &mut App) {
+    let background_appearance = workspace::effective_window_background_appearance(cx);
+    for &mut window in cx.windows().iter_mut() {
+        window
+            .update(cx, |_, window, _| {
+                window.set_background_appearance(background_appearance)
+            })
+            .ok();
+    }
 }
 
 #[cfg(debug_assertions)]

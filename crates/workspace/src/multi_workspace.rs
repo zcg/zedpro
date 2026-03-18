@@ -19,8 +19,8 @@ const SIDEBAR_RESIZE_HANDLE_SIZE: Pixels = px(6.0);
 
 use crate::{
     CloseIntent, CloseWindow, DockPosition, Event as WorkspaceEvent, Item, ModalView, Panel, Toast,
-    Workspace, WorkspaceId, client_side_decorations, notifications::NotificationId,
-    WorkspaceSettings,
+    Workspace, WorkspaceId, WorkspaceSettings, client_side_decorations,
+    notifications::NotificationId,
 };
 
 actions!(
@@ -140,8 +140,7 @@ impl MultiWorkspace {
     pub fn new(workspace: Entity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut was_use_system_window_tabs =
             WorkspaceSettings::get_global(cx).use_system_window_tabs;
-        let mut was_window_tab_link_mode =
-            WorkspaceSettings::get_global(cx).window_tab_link_mode;
+        let mut was_window_tab_link_mode = WorkspaceSettings::get_global(cx).window_tab_link_mode;
 
         let window_tab_settings_subscription = cx.observe_global::<SettingsStore>(move |_, cx| {
             let settings = WorkspaceSettings::get_global(cx);

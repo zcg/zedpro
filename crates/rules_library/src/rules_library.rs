@@ -129,7 +129,7 @@ pub fn open_rules_library(
                     }),
                     app_id: Some(app_id.to_owned()),
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    window_background: cx.theme().window_background_appearance(),
+                    window_background: workspace::effective_window_background_appearance(cx),
                     window_decorations: Some(window_decorations),
                     window_min_size: Some(DEFAULT_ADDITIONAL_WINDOW_SIZE),
                     kind: gpui::WindowKind::Floating,

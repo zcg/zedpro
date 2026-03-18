@@ -2662,7 +2662,11 @@ impl Render for TextThreadEditor {
             .child(
                 div()
                     .flex_grow()
-                    .bg(cx.theme().colors().editor_background)
+                    .bg(workspace::material_surface_color(
+                        cx.theme().colors().editor_background,
+                        0.74,
+                        cx,
+                    ))
                     .child(self.editor.clone()),
             )
             .children(self.render_last_error(cx))
@@ -2676,7 +2680,11 @@ impl Render for TextThreadEditor {
                     .justify_between()
                     .border_t_1()
                     .border_color(cx.theme().colors().border_variant)
-                    .bg(cx.theme().colors().editor_background)
+                    .bg(workspace::material_surface_color(
+                        cx.theme().colors().editor_background,
+                        0.74,
+                        cx,
+                    ))
                     .child(
                         h_flex()
                             .gap_0p5()

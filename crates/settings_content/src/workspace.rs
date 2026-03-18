@@ -126,6 +126,15 @@ pub struct WorkspaceSettingsContent {
     /// What draws window decorations/titlebar, the client application (Zed) or display server
     /// Default: client
     pub window_decorations: Option<WindowDecorations>,
+    /// Windows-only override for the window background material.
+    ///
+    /// - `theme`: Follow the current theme's `background.appearance`.
+    /// - `acrylic`: Force the Windows acrylic-like blurred backdrop.
+    /// - `mica`: Force the Windows Mica backdrop.
+    /// - `mica_alt`: Force the Windows Mica Alt backdrop.
+    ///
+    /// Default: theme
+    pub window_background_material: Option<WindowBackgroundMaterial>,
 }
 
 #[with_fallible_options]
@@ -191,6 +200,28 @@ pub struct PreviewTabsSettingsContent {
     ///
     /// Default: false
     pub enable_keep_preview_on_code_navigation: Option<bool>,
+}
+
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    PartialEq,
+    Default,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowBackgroundMaterial {
+    #[default]
+    Theme,
+    Acrylic,
+    Mica,
+    MicaAlt,
 }
 
 #[derive(

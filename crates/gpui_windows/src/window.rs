@@ -885,22 +885,24 @@ impl PlatformWindow for WindowsWindow {
         // using Dwm APIs for Mica and MicaAlt backdrops.
         // others follow the set_window_composition_attribute approach
         match background_appearance {
-            WindowBackgroundAppearance::Opaque => {
-                set_window_composition_attribute(hwnd, None, 0);
-            }
+            WindowBackgroundAppearance::Opaque => set_window_composition_attribute(hwnd, None, 0),
             WindowBackgroundAppearance::Transparent => {
                 set_window_composition_attribute(hwnd, None, 2);
             }
             WindowBackgroundAppearance::Blurred => {
-                set_window_composition_attribute(hwnd, Some((0, 0, 0, 0)), 4);
+                let acrylic_tint = match self.state.appearance.get() {
+                    WindowAppearance::Dark | WindowAppearance::VibrantDark => (32, 32, 32, 72),
+                    WindowAppearance::Light | WindowAppearance::VibrantLight => (252, 252, 252, 60),
+                };
+                set_window_composition_attribute(hwnd, Some(acrylic_tint), 4);
             }
             WindowBackgroundAppearance::MicaBackdrop => {
                 // DWMSBT_MAINWINDOW => MicaBase
-                dwm_set_window_composition_attribute(hwnd, 2);
+                dwm_set_window_composition_attribute(hwnd, DWMSBT_MAINWINDOW);
             }
             WindowBackgroundAppearance::MicaAltBackdrop => {
                 // DWMSBT_TABBEDWINDOW => MicaAlt
-                dwm_set_window_composition_attribute(hwnd, 4);
+                dwm_set_window_composition_attribute(hwnd, DWMSBT_TABBEDWINDOW);
             }
         }
     }
@@ -1630,35 +1632,40 @@ fn retrieve_window_placement(
     Ok(placement)
 }
 
-fn dwm_set_window_composition_attribute(hwnd: HWND, backdrop_type: u32) {
+fn windows_build_number() -> Option<u32> {
     let mut version = unsafe { std::mem::zeroed() };
     let status = unsafe { windows::Wdk::System::SystemServices::RtlGetVersion(&mut version) };
-
-    // DWMWA_SYSTEMBACKDROP_TYPE is available only on version 22621 or later
-    // using SetWindowCompositionAttributeType as a fallback
-    if !status.is_ok() || version.dwBuildNumber < 22621 {
-        return;
+    if !status.is_ok() {
+        return None;
     }
 
-    unsafe {
-        let result = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_SYSTEMBACKDROP_TYPE,
-            &backdrop_type as *const _ as *const _,
-            std::mem::size_of_val(&backdrop_type) as u32,
-        );
+    Some(version.dwBuildNumber)
+}
 
-        if !result.is_ok() {
-            return;
-        }
+fn dwm_set_window_attribute<T>(hwnd: HWND, attribute: DWMWINDOWATTRIBUTE, value: &T) {
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            attribute,
+            value as *const _ as *const _,
+            std::mem::size_of::<T>() as u32,
+        )
+        .log_err();
     }
 }
 
-fn set_window_composition_attribute(hwnd: HWND, color: Option<Color>, state: u32) {
-    let mut version = unsafe { std::mem::zeroed() };
-    let status = unsafe { windows::Wdk::System::SystemServices::RtlGetVersion(&mut version) };
+fn dwm_set_window_composition_attribute(hwnd: HWND, backdrop_type: DWM_SYSTEMBACKDROP_TYPE) {
+    // DWMWA_SYSTEMBACKDROP_TYPE is available only on version 22621 or later
+    // using SetWindowCompositionAttributeType as a fallback
+    if windows_build_number().is_none_or(|build| build < 22621) {
+        return;
+    }
 
-    if !status.is_ok() || version.dwBuildNumber < 17763 {
+    dwm_set_window_attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop_type);
+}
+
+fn set_window_composition_attribute(hwnd: HWND, color: Option<Color>, state: u32) {
+    if windows_build_number().is_none_or(|build| build < 17763) {
         return;
     }
 
