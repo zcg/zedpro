@@ -856,6 +856,28 @@ impl PlatformWindow for WindowsWindow {
             .ok();
     }
 
+    fn get_title(&self) -> String {
+        if self.0.hwnd.is_invalid() {
+            return String::new();
+        }
+
+        unsafe {
+            let len = GetWindowTextLengthW(self.0.hwnd);
+            if len <= 0 {
+                return String::new();
+            }
+
+            let mut buf = vec![0u16; (len as usize) + 1];
+            let copied = GetWindowTextW(self.0.hwnd, &mut buf);
+            if copied <= 0 {
+                return String::new();
+            }
+
+            buf.truncate(copied as usize);
+            String::from_utf16_lossy(&buf)
+        }
+    }
+
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         self.state.background_appearance.set(background_appearance);
         let hwnd = self.0.hwnd;

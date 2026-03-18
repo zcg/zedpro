@@ -9,7 +9,6 @@ use dap::{StackFrameId, client::SessionId};
 use gpui::{
     App, AppContext, AsyncApp, Context, Entity, EntityId, EventEmitter, Subscription, Task,
 };
-use itertools::Itertools;
 use language::{Buffer, BufferSnapshot, proto::serialize_anchor as serialize_text_anchor};
 use rpc::{
     AnyProtoClient, TypedEnvelope,

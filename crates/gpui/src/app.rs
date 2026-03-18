@@ -553,6 +553,30 @@ impl SystemWindowTabController {
         controller.tab_groups.insert(new_group_id, tabs);
     }
 
+    #[cfg(target_os = "windows")]
+    fn sync_window_snapshot_from_platform(cx: &mut App, id: WindowId) {
+        let Some(handle) = Self::find_window_handle(cx, id) else {
+            return;
+        };
+
+        let Ok(tabs) = handle.update(cx, |_, window, _| {
+            window.tabbed_windows().unwrap_or_else(|| {
+                vec![SystemWindowTab::new(
+                    SharedString::from(window.window_title()),
+                    window.window_handle(),
+                )]
+            })
+        }) else {
+            return;
+        };
+
+        if tabs.is_empty() {
+            return;
+        }
+
+        Self::add_tab(cx, id, tabs);
+    }
+
     /// Remove a tab from a tab group.
     pub fn remove_tab(cx: &mut App, id: WindowId) -> Option<SystemWindowTab> {
         let mut controller = cx.global_mut::<SystemWindowTabController>();
@@ -682,6 +706,9 @@ impl SystemWindowTabController {
         let Some(source_handle) = Self::find_window_handle(cx, source_id) else {
             return;
         };
+
+        Self::sync_window_snapshot_from_platform(cx, source_id);
+        Self::sync_window_snapshot_from_platform(cx, target_id);
 
         let mut to_refresh = Self::tab_group_window_ids(cx, source_id);
         to_refresh.extend(Self::tab_group_window_ids(cx, target_id));

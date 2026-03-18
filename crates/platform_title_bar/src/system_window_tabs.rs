@@ -50,6 +50,29 @@ pub struct SystemWindowTabs {
 }
 
 impl SystemWindowTabs {
+    fn fallback_tabs(window: &Window) -> Vec<SystemWindowTab> {
+        vec![SystemWindowTab::new(
+            SharedString::from(window.window_title()),
+            window.window_handle(),
+        )]
+    }
+
+    fn sync_window_tab_state(window: &mut Window, cx: &mut App) {
+        let use_system_window_tabs = WorkspaceSettings::get_global(cx).use_system_window_tabs;
+
+        #[cfg(target_os = "windows")]
+        window.set_tabbing_identifier(use_system_window_tabs.then(|| String::from("zed")));
+
+        if !use_system_window_tabs {
+            return;
+        }
+
+        let tabs = window
+            .tabbed_windows()
+            .unwrap_or_else(|| Self::fallback_tabs(window));
+        SystemWindowTabController::add_tab(cx, window.window_handle().window_id(), tabs);
+    }
+
     fn pseudo_random_active_border_color(window_id: WindowId, cx: &mut App) -> Hsla {
         // Derive a stable "random-ish" color from the window id. This avoids flicker while still
         // helping the active tab stand out visually.
@@ -86,6 +109,13 @@ impl SystemWindowTabs {
             SystemWindowTabController::init(cx);
             #[cfg(target_os = "windows")]
             SystemWindowTabController::set_visible(cx, true);
+            cx.windows().iter().for_each(|handle| {
+                handle
+                    .update(cx, |_, window, cx| {
+                        Self::sync_window_tab_state(window, cx);
+                    })
+                    .ok();
+            });
         }
 
         cx.observe_global::<SettingsStore>(move |cx| {
@@ -106,15 +136,7 @@ impl SystemWindowTabs {
                     cx.windows().iter().for_each(|handle| {
                         handle
                             .update(cx, |_, window, cx| {
-                                let tabs = if let Some(tabs) = window.tabbed_windows() {
-                                    tabs
-                                } else {
-                                    vec![SystemWindowTab::new(
-                                        SharedString::from(window.window_title()),
-                                        window.window_handle(),
-                                    )]
-                                };
-                                SystemWindowTabController::add_tab(cx, handle.window_id(), tabs);
+                                Self::sync_window_tab_state(window, cx);
                             })
                             .ok();
                     });
@@ -129,12 +151,6 @@ impl SystemWindowTabs {
                 return;
             }
 
-            let tabbing_identifier = if use_system_window_tabs {
-                Some(String::from("zed"))
-            } else {
-                None
-            };
-
             // Reset controller snapshots whenever the setting toggles to avoid
             // stale tab-group UI leaking across modes.
             SystemWindowTabController::init(cx);
@@ -146,22 +162,24 @@ impl SystemWindowTabs {
             cx.windows().iter().for_each(|handle| {
                 handle
                     .update(cx, |_, window, cx| {
-                        window.set_tabbing_identifier(tabbing_identifier.clone());
-                        if use_system_window_tabs {
-                            let tabs = if let Some(tabs) = window.tabbed_windows() {
-                                tabs
-                            } else {
-                                vec![SystemWindowTab::new(
-                                    SharedString::from(window.window_title()),
-                                    window.window_handle(),
-                                )]
-                            };
-
-                            SystemWindowTabController::add_tab(cx, handle.window_id(), tabs);
-                        }
+                        Self::sync_window_tab_state(window, cx);
                     })
                     .ok();
             });
+        })
+        .detach();
+
+        cx.observe_new(|_multi_workspace: &mut MultiWorkspace, window, cx| {
+            let Some(window) = window else {
+                return;
+            };
+
+            if !WorkspaceSettings::get_global(cx).use_system_window_tabs {
+                return;
+            }
+
+            Self::sync_window_tab_state(window, cx);
+            SystemWindowTabController::refresh_window_ids(cx, [window.window_handle().window_id()]);
         })
         .detach();
 
@@ -820,25 +838,69 @@ impl Render for SystemWindowTabs {
 
         let window_id = window.window_handle().window_id();
         let visible = cx.global::<SystemWindowTabController>().is_visible();
-        let current_window_tab = vec![SystemWindowTab::new(
-            SharedString::from(window.window_title()),
-            window.window_handle(),
-        )];
+        let current_window_tab = Self::fallback_tabs(window);
         let live_window_ids = cx
             .windows()
             .into_iter()
             .map(|handle| handle.window_id())
             .collect::<std::collections::HashSet<_>>();
-        let mut tabs = cx
-            .global::<SystemWindowTabController>()
-            .tabs(window_id)
-            .unwrap_or(&current_window_tab)
-            .iter()
-            .filter(|tab| live_window_ids.contains(&tab.id))
-            .cloned()
-            .collect::<Vec<_>>();
-        if tabs.is_empty() {
-            tabs = current_window_tab;
+        let live_tabs = window.tabbed_windows().map(|tabs| {
+            tabs.into_iter()
+                .filter(|tab| live_window_ids.contains(&tab.id))
+                .collect::<Vec<_>>()
+        });
+        let mut tabs = if let Some(live_tabs) = live_tabs.filter(|tabs| !tabs.is_empty()) {
+            let needs_sync = {
+                let controller = cx.global::<SystemWindowTabController>();
+                controller.tabs(window_id).is_none_or(|snapshot| {
+                    snapshot.len() != live_tabs.len()
+                        || snapshot
+                            .iter()
+                            .zip(live_tabs.iter())
+                            .any(|(snapshot, live)| {
+                                snapshot.id != live.id || snapshot.title != live.title
+                            })
+                })
+            };
+
+            if needs_sync {
+                SystemWindowTabController::add_tab(cx, window_id, live_tabs.clone());
+            }
+
+            live_tabs
+        } else {
+            let mut tabs = cx
+                .global::<SystemWindowTabController>()
+                .tabs(window_id)
+                .unwrap_or(&current_window_tab)
+                .iter()
+                .filter(|tab| live_window_ids.contains(&tab.id))
+                .cloned()
+                .collect::<Vec<_>>();
+            if tabs.is_empty() {
+                tabs = current_window_tab;
+            }
+
+            tabs
+        };
+
+        // On Windows, tab controller snapshots can be created before the native
+        // title is populated. Refresh titles from the live windows during render
+        // so the custom tab strip heals itself as soon as the window title exists.
+        for tab in &mut tabs {
+            let live_title = tab
+                .handle
+                .update(cx, |_, window, _| window.window_title())
+                .ok()
+                .filter(|title| !title.is_empty());
+
+            if let Some(live_title) = live_title {
+                let live_title = SharedString::from(live_title);
+                if tab.title != live_title {
+                    tab.title = live_title.clone();
+                    SystemWindowTabController::update_tab_title(cx, tab.id, live_title);
+                }
+            }
         }
 
         let tab_width = self.measured_tab_width.max(window.rem_size() * 10.);
@@ -1132,7 +1194,7 @@ impl Render for SystemWindowTabs {
                             .on_click(|_event, window, cx| {
                                 window.dispatch_action(
                                     Box::new(zed_actions::OpenRecent {
-                                        create_new_window: true,
+                                        create_new_window: false,
                                     }),
                                     cx,
                                 );
