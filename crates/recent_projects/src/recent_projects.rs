@@ -46,7 +46,7 @@ use ui::{
 use util::{ResultExt, paths::PathExt};
 use workspace::{
     HistoryManager, ModalView, MultiWorkspace, OpenOptions, OpenVisible, PathList,
-    SerializedWorkspaceLocation, WORKSPACE_DB, Workspace, WorkspaceId,
+    SerializedWorkspaceLocation, Workspace, WorkspaceDb, WorkspaceId,
     notifications::DetachAndPromptErr, with_active_or_new_workspace,
 };
 use zed_actions::{OpenDevContainer, OpenRecent, OpenRemote};
@@ -89,8 +89,9 @@ pub async fn get_recent_projects(
     current_workspace_id: Option<WorkspaceId>,
     limit: Option<usize>,
     fs: Arc<dyn fs::Fs>,
+    db: &WorkspaceDb,
 ) -> Vec<RecentProjectEntry> {
-    let workspaces = WORKSPACE_DB
+    let workspaces = db
         .recent_workspaces_on_disk(fs.as_ref())
         .await
         .unwrap_or_default();
@@ -145,8 +146,8 @@ pub async fn get_recent_projects(
     }
 }
 
-pub async fn delete_recent_project(workspace_id: WorkspaceId) {
-    let _ = WORKSPACE_DB.delete_workspace_by_id(workspace_id).await;
+pub async fn delete_recent_project(workspace_id: WorkspaceId, db: &WorkspaceDb) {
+    let _ = db.delete_workspace_by_id(workspace_id).await;
 }
 
 fn get_open_folders(workspace: &Workspace, cx: &App) -> Vec<OpenFolderEntry> {
@@ -500,13 +501,15 @@ impl RecentProjects {
         let _subscription = cx.subscribe(&picker, |_, _, _, cx| cx.emit(DismissEvent));
         // We do not want to block the UI on a potentially lengthy call to DB, so we're gonna swap
         // out workspace locations once the future runs to completion.
+        let db = WorkspaceDb::global(cx);
         cx.spawn_in(window, async move |this, cx| {
             let Some(fs) = fs else { return };
-            let workspaces = WORKSPACE_DB
+            let workspaces = db
                 .recent_workspaces_on_disk(fs.as_ref())
                 .await
                 .log_err()
                 .unwrap_or_default();
+            let workspaces = workspace::resolve_worktree_workspaces(workspaces, fs.as_ref()).await;
             this.update_in(cx, move |this, window, cx| {
                 this.picker.update(cx, move |picker, cx| {
                     picker.delegate.set_workspaces(workspaces);
@@ -704,32 +707,14 @@ impl PickerDelegate for RecentProjectsDelegate {
         window: &mut Window,
         cx: &mut Context<Picker<Self>>,
     ) -> Div {
-        let focus_handle = self.focus_handle.clone();
-
         h_flex()
             .flex_none()
             .h_9()
-            .pl_2p5()
-            .pr_1p5()
+            .px_2p5()
             .justify_between()
             .border_b_1()
             .border_color(cx.theme().colors().border_variant)
             .child(editor.render(window, cx))
-            .child(
-                IconButton::new("add_folder", IconName::Plus)
-                    .icon_size(IconSize::Small)
-                    .tooltip(move |_, cx| {
-                        Tooltip::for_action_in(
-                            "Add Project to Workspace",
-                            &workspace::AddFolderToProject,
-                            &focus_handle,
-                            cx,
-                        )
-                    })
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(workspace::AddFolderToProject.boxed_clone(), cx)
-                    }),
-            )
     }
 
     fn match_count(&self) -> usize {
@@ -1161,9 +1146,9 @@ impl PickerDelegate for RecentProjectsDelegate {
                     .gap_px()
                     .when(is_local, |this| {
                         this.child(
-                            IconButton::new("add_to_workspace", IconName::Plus)
+                            IconButton::new("add_to_workspace", IconName::FolderPlus)
                                 .icon_size(IconSize::Small)
-                                .tooltip(Tooltip::text("Add Project to Workspace"))
+                                .tooltip(Tooltip::text("Add Project to this Workspace"))
                                 .on_click({
                                     let paths_to_add = paths_to_add.clone();
                                     cx.listener(move |picker, _event, window, cx| {
@@ -1510,16 +1495,16 @@ impl RecentProjectsDelegate {
                 .workspace
                 .upgrade()
                 .map(|ws| ws.read(cx).app_state().fs.clone());
+            let db = WorkspaceDb::global(cx);
             cx.spawn_in(window, async move |this, cx| {
-                WORKSPACE_DB
-                    .delete_workspace_by_id(workspace_id)
-                    .await
-                    .log_err();
+                db.delete_workspace_by_id(workspace_id).await.log_err();
                 let Some(fs) = fs else { return };
-                let workspaces = WORKSPACE_DB
+                let workspaces = db
                     .recent_workspaces_on_disk(fs.as_ref())
                     .await
                     .unwrap_or_default();
+                let workspaces =
+                    workspace::resolve_worktree_workspaces(workspaces, fs.as_ref()).await;
                 this.update_in(cx, move |picker, window, cx| {
                     picker.delegate.set_workspaces(workspaces);
                     picker

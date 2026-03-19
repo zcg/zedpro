@@ -643,7 +643,7 @@ fn unstable_version_notification(cx: &mut App) {
     }
     let db_key = "zed_windows_nightly_notif_shown_at".to_owned();
     let time = chrono::Utc::now();
-    if let Some(last_shown) = db::kvp::KEY_VALUE_STORE
+    if let Some(last_shown) = db::kvp::GlobalKeyValueStore::global()
         .read_kvp(&db_key)
         .log_err()
         .flatten()
@@ -654,7 +654,7 @@ fn unstable_version_notification(cx: &mut App) {
         }
     }
     cx.spawn(async move |_| {
-        db::kvp::KEY_VALUE_STORE
+        db::kvp::GlobalKeyValueStore::global()
             .write_kvp(db_key, time.to_rfc3339())
             .await
     })
@@ -6127,9 +6127,11 @@ mod tests {
         cx.run_until_parked();
 
         // Verify all workspaces retained their session_ids.
-        let locations = workspace::last_session_workspace_locations(&session_id, None, fs.as_ref())
-            .await
-            .expect("expected session workspace locations");
+        let db = cx.update(|cx| workspace::WorkspaceDb::global(cx));
+        let locations =
+            workspace::last_session_workspace_locations(&db, &session_id, None, fs.as_ref())
+                .await
+                .expect("expected session workspace locations");
         assert_eq!(
             locations.len(),
             3,
@@ -6156,9 +6158,10 @@ mod tests {
         });
 
         // --- Read back from DB and verify grouping ---
-        let locations = workspace::last_session_workspace_locations(&session_id, None, fs.as_ref())
-            .await
-            .expect("expected session workspace locations");
+        let locations =
+            workspace::last_session_workspace_locations(&db, &session_id, None, fs.as_ref())
+                .await
+                .expect("expected session workspace locations");
 
         assert_eq!(locations.len(), 3, "expected 3 session workspaces");
 

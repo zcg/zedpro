@@ -14,6 +14,7 @@ pub use platform_title_bar::{
     self, DraggedWindowTab, MergeAllWindows, MoveTabToNewWindow, PlatformTitleBar,
     ShowNextWindowTab, ShowPreviousWindowTab,
 };
+use project::linked_worktree_short_name;
 
 #[cfg(not(target_os = "macos"))]
 use crate::application_menu::{
@@ -158,6 +159,7 @@ pub struct TitleBar {
     banner: Entity<OnboardingBanner>,
     update_version: Entity<UpdateVersion>,
     screen_share_popover_handle: PopoverMenuHandle<ContextMenu>,
+    _diagnostics_subscription: Option<gpui::Subscription>,
 }
 
 impl Render for TitleBar {
@@ -167,6 +169,26 @@ impl Render for TitleBar {
         let show_menus = show_menus(cx);
 
         let mut children = Vec::new();
+
+        let mut project_name = None;
+        let mut repository = None;
+        let mut linked_worktree_name = None;
+        if let Some(worktree) = self.effective_active_worktree(cx) {
+            repository = self.get_repository_for_worktree(&worktree, cx);
+            let worktree = worktree.read(cx);
+            project_name = worktree
+                .root_name()
+                .file_name()
+                .map(|name| SharedString::from(name.to_string()));
+            linked_worktree_name = repository.as_ref().and_then(|repo| {
+                let repo = repo.read(cx);
+                linked_worktree_short_name(
+                    repo.original_repo_abs_path.as_ref(),
+                    repo.work_directory_abs_path.as_ref(),
+                )
+                .filter(|name| Some(name) != project_name.as_ref())
+            });
+        }
 
         children.push(
             h_flex()
@@ -189,11 +211,18 @@ impl Render for TitleBar {
                                 .when(title_bar_settings.show_project_items, |title_bar| {
                                     title_bar
                                         .children(self.render_project_host(cx))
-                                        .child(self.render_project_name(window, cx))
+                                        .child(self.render_project_name(project_name, window, cx))
                                 })
-                                .when(title_bar_settings.show_branch_name, |title_bar| {
-                                    title_bar.children(self.render_project_branch(cx))
-                                })
+                                .when_some(
+                                    repository.filter(|_| title_bar_settings.show_branch_name),
+                                    |title_bar, repository| {
+                                        title_bar.children(self.render_project_branch(
+                                            repository,
+                                            linked_worktree_name,
+                                            cx,
+                                        ))
+                                    },
+                                )
                         })
                 })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -369,7 +398,7 @@ impl TitleBar {
             .detach();
         }
 
-        Self {
+        let mut this = Self {
             platform_titlebar,
             application_menu,
             workspace: workspace.weak_handle(),
@@ -381,7 +410,12 @@ impl TitleBar {
             banner,
             update_version,
             screen_share_popover_handle: PopoverMenuHandle::default(),
-        }
+            _diagnostics_subscription: None,
+        };
+
+        this.observe_diagnostics(cx);
+
+        this
     }
 
     fn worktree_count(&self, cx: &App) -> usize {
@@ -702,13 +736,13 @@ impl TitleBar {
         )
     }
 
-    pub fn render_project_name(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_project_name(
+        &self,
+        name: Option<SharedString>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let workspace = self.workspace.clone();
-
-        let name = self.effective_active_worktree(cx).map(|worktree| {
-            let worktree = worktree.read(cx);
-            SharedString::from(worktree.root_name().as_unix_str().to_string())
-        });
 
         let is_project_selected = name.is_some();
 
@@ -828,13 +862,17 @@ impl TitleBar {
             })
     }
 
-    pub fn render_project_branch(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let effective_worktree = self.effective_active_worktree(cx)?;
-        let repository = self.get_repository_for_worktree(&effective_worktree, cx)?;
+    fn render_project_branch(
+        &self,
+        repository: Entity<project::git_store::Repository>,
+        linked_worktree_name: Option<SharedString>,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
         let workspace = self.workspace.upgrade()?;
 
         let (branch_name, icon_info) = {
             let repo = repository.read(cx);
+
             let branch_name = repo
                 .branch
                 .as_ref()
@@ -867,6 +905,13 @@ impl TitleBar {
             (branch_name, icon_info)
         };
 
+        let branch_name = branch_name?;
+        let button_text = if let Some(worktree_name) = linked_worktree_name {
+            format!("{}/{}", worktree_name, branch_name)
+        } else {
+            branch_name
+        };
+
         let settings = TitleBarSettings::get_global(cx);
 
         let effective_repository = Some(repository);
@@ -884,7 +929,7 @@ impl TitleBar {
                     ))
                 })
                 .trigger_with_tooltip(
-                    Button::new("project_branch_trigger", branch_name?)
+                    Button::new("project_branch_trigger", button_text)
                         .selected_style(ButtonStyle::Tinted(TintColor::Accent))
                         .label_size(LabelSize::Small)
                         .color(Color::Muted)
@@ -925,7 +970,21 @@ impl TitleBar {
     }
 
     fn active_call_changed(&mut self, cx: &mut Context<Self>) {
+        self.observe_diagnostics(cx);
         cx.notify();
+    }
+
+    fn observe_diagnostics(&mut self, cx: &mut Context<Self>) {
+        let diagnostics = ActiveCall::global(cx)
+            .read(cx)
+            .room()
+            .and_then(|room| room.read(cx).diagnostics().cloned());
+
+        if let Some(diagnostics) = diagnostics {
+            self._diagnostics_subscription = Some(cx.observe(&diagnostics, |_, _, cx| cx.notify()));
+        } else {
+            self._diagnostics_subscription = None;
+        }
     }
 
     fn share_project(&mut self, cx: &mut Context<Self>) {

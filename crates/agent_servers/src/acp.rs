@@ -7,7 +7,7 @@ use action_log::ActionLog;
 use agent_client_protocol::{self as acp, Agent as _, ErrorCode};
 use anyhow::anyhow;
 use collections::HashMap;
-use db::kvp::KEY_VALUE_STORE;
+use db::kvp::GlobalKeyValueStore;
 use futures::AsyncBufReadExt as _;
 use futures::io::BufReader;
 use project::agent_server_store::AgentServerCommand;
@@ -143,10 +143,9 @@ impl AgentSessionList for AcpSessionList {
     ) -> Task<Result<AgentSessionListResponse>> {
         let conn = self.connection.clone();
         let tombstone_key = self.tombstone_key.clone();
+        let kvp = GlobalKeyValueStore::global();
         let deleted_ids_task =
-            cx.background_spawn(
-                async move { KEY_VALUE_STORE.read_kvp(&tombstone_key).ok().flatten() },
-            );
+            cx.background_spawn(async move { kvp.read_kvp(&tombstone_key).ok().flatten() });
 
         cx.foreground_executor().spawn(async move {
             let deleted_ids = deleted_ids_task.await;
@@ -190,12 +189,12 @@ impl AgentSessionList for AcpSessionList {
         let tombstone_key = self.tombstone_key.clone();
         let id = session_id.to_string();
         let updates_tx = self.updates_tx.clone();
+        let kvp = GlobalKeyValueStore::global();
         cx.background_spawn(async move {
-            let existing = KEY_VALUE_STORE.read_kvp(&tombstone_key).ok().flatten();
+            let existing = kvp.read_kvp(&tombstone_key).ok().flatten();
             let mut deleted = parse_deleted_sessions(existing);
             deleted.insert(id);
-            KEY_VALUE_STORE
-                .write_kvp(tombstone_key, serialize_deleted_sessions(deleted))
+            kvp.write_kvp(tombstone_key, serialize_deleted_sessions(deleted))
                 .await?;
             updates_tx
                 .try_send(acp_thread::SessionListUpdate::Refresh)
@@ -209,17 +208,15 @@ impl AgentSessionList for AcpSessionList {
         let tombstone_key = self.tombstone_key.clone();
         let tombstone_key_for_read = tombstone_key.clone();
         let updates_tx = self.updates_tx.clone();
+        let kvp = GlobalKeyValueStore::global();
 
-        let existing_task = cx.background_spawn(async move {
-            KEY_VALUE_STORE
-                .read_kvp(&tombstone_key_for_read)
-                .ok()
-                .flatten()
-        });
+        let existing_task =
+            cx.background_spawn(async move { kvp.read_kvp(&tombstone_key_for_read).ok().flatten() });
 
         cx.foreground_executor().spawn(async move {
             let existing = existing_task.await;
             let mut deleted = parse_deleted_sessions(existing);
+            let kvp = GlobalKeyValueStore::global();
 
             let mut cursor: Option<String> = None;
             loop {
@@ -242,8 +239,7 @@ impl AgentSessionList for AcpSessionList {
                 }
             }
 
-            KEY_VALUE_STORE
-                .write_kvp(tombstone_key, serialize_deleted_sessions(deleted))
+            kvp.write_kvp(tombstone_key, serialize_deleted_sessions(deleted))
                 .await?;
             updates_tx
                 .try_send(acp_thread::SessionListUpdate::Refresh)

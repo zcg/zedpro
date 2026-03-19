@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
-use util::{ResultExt, paths::SanitizedPath};
+use util::{ResultExt, normalize_path, paths::SanitizedPath};
 
 use crate::{PathEvent, PathEventKind, Watcher};
 
@@ -508,7 +508,7 @@ fn summarize_error_message_for_key(message: &str) -> Arc<str> {
 }
 
 fn normalize_registration_path(path: &Path) -> Arc<Path> {
-    crate::normalize_path(path).into()
+    normalize_path(path).into()
 }
 
 fn normalize_watch_path(path: &Path) -> Arc<Path> {
@@ -516,7 +516,7 @@ fn normalize_watch_path(path: &Path) -> Arc<Path> {
 }
 
 fn normalize_watch_path_buf(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| crate::normalize_path(path))
+    std::fs::canonicalize(path).unwrap_or_else(|_| normalize_path(path))
 }
 
 static FS_WATCHER_INSTANCE: OnceLock<anyhow::Result<GlobalWatcher, notify::Error>> =

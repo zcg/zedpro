@@ -15,7 +15,7 @@ use gpui::{
 };
 use itertools::Itertools;
 use menu;
-use persistence::TERMINAL_DB;
+use persistence::TerminalDb;
 use project::{Project, ProjectEntryId, search::SearchQuery};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -1684,11 +1684,11 @@ impl Item for TerminalView {
                 log::debug!(
                     "Updating workspace id for the terminal, old: {old_id:?}, new: {new_id:?}",
                 );
-                cx.background_spawn(TERMINAL_DB.update_workspace_id(
-                    new_id,
-                    old_id,
-                    cx.entity_id().as_u64(),
-                ))
+                let db = TerminalDb::global(cx);
+                let entity_id = cx.entity_id().as_u64();
+                cx.background_spawn(async move {
+                    db.update_workspace_id(new_id, old_id, entity_id).await
+                })
                 .detach();
             }
             self.workspace_id = workspace.database_id();
@@ -1711,7 +1711,8 @@ impl SerializableItem for TerminalView {
         _window: &mut Window,
         cx: &mut App,
     ) -> Task<anyhow::Result<()>> {
-        delete_unloaded_items(alive_items, workspace_id, "terminals", &TERMINAL_DB, cx)
+        let db = TerminalDb::global(cx);
+        delete_unloaded_items(alive_items, workspace_id, "terminals", &db, cx)
     }
 
     fn serialize(
@@ -1736,14 +1737,13 @@ impl SerializableItem for TerminalView {
         let custom_title = self.custom_title.clone();
         self.needs_serialize = false;
 
+        let db = TerminalDb::global(cx);
         Some(cx.background_spawn(async move {
             if let Some(cwd) = cwd {
-                TERMINAL_DB
-                    .save_working_directory(item_id, workspace_id, cwd)
+                db.save_working_directory(item_id, workspace_id, cwd)
                     .await?;
             }
-            TERMINAL_DB
-                .save_custom_title(item_id, workspace_id, custom_title)
+            db.save_custom_title(item_id, workspace_id, custom_title)
                 .await?;
             Ok(())
         }))
@@ -1764,7 +1764,8 @@ impl SerializableItem for TerminalView {
         window.spawn(cx, async move |cx| {
             let (cwd, custom_title) = cx
                 .update(|_window, cx| {
-                    let from_db = TERMINAL_DB
+                    let db = TerminalDb::global(cx);
+                    let from_db = db
                         .get_working_directory(item_id, workspace_id)
                         .log_err()
                         .flatten();
@@ -1778,7 +1779,7 @@ impl SerializableItem for TerminalView {
                             .upgrade()
                             .and_then(|workspace| default_working_directory(workspace.read(cx), cx))
                     };
-                    let custom_title = TERMINAL_DB
+                    let custom_title = db
                         .get_custom_title(item_id, workspace_id)
                         .log_err()
                         .flatten()

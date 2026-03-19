@@ -78,14 +78,14 @@ pub use pane_group::{
     SplitDirection,
 };
 pub use settings_sync::*;
-use persistence::{DB, SerializedWindowBounds, model::SerializedWorkspace};
+use persistence::{SerializedWindowBounds, model::SerializedWorkspace};
 pub use persistence::{
-    DB as WORKSPACE_DB, WorkspaceDb, delete_unloaded_items,
+    WorkspaceDb, delete_unloaded_items,
     model::{
         DockStructure, ItemId, SerializedMultiWorkspace, SerializedWorkspaceLocation,
         SessionWorkspace,
     },
-    read_serialized_multi_workspaces,
+    read_serialized_multi_workspaces, resolve_worktree_workspaces,
 };
 use postage::stream::Stream;
 use project::{
@@ -1344,6 +1344,7 @@ pub struct Workspace {
     last_open_dock_positions: Vec<DockPosition>,
     removing: bool,
     _panels_task: Option<Task<Result<()>>>,
+    sidebar_focus_handle: Option<FocusHandle>,
 }
 
 impl EventEmitter<Event> for Workspace {}
@@ -1385,10 +1386,10 @@ impl Workspace {
                                 |new_trusted_worktrees, cx| {
                                     let timeout =
                                         cx.background_executor().timer(SERIALIZATION_THROTTLE_TIME);
+                                    let db = WorkspaceDb::global(cx);
                                     cx.background_spawn(async move {
                                         timeout.await;
-                                        persistence::DB
-                                            .save_trusted_worktrees(new_trusted_worktrees)
+                                        db.save_trusted_worktrees(new_trusted_worktrees)
                                             .await
                                             .log_err();
                                     })
@@ -1749,6 +1750,7 @@ impl Workspace {
             scheduled_tasks: Vec::new(),
             last_open_dock_positions: Vec::new(),
             removing: false,
+            sidebar_focus_handle: None,
         }
     }
 
@@ -1772,6 +1774,8 @@ impl Workspace {
             cx,
         );
 
+        let db = WorkspaceDb::global(cx);
+        let kvp = db::kvp::KeyValueStore::global(cx);
         cx.spawn(async move |cx| {
             let mut paths_to_open = Vec::with_capacity(abs_paths.len());
             for path in abs_paths.into_iter() {
@@ -1782,8 +1786,7 @@ impl Workspace {
                 }
             }
 
-            let serialized_workspace =
-                persistence::DB.workspace_for_roots(paths_to_open.as_slice());
+            let serialized_workspace = db.workspace_for_roots(paths_to_open.as_slice());
 
             if let Some(paths) = serialized_workspace.as_ref().map(|ws| &ws.paths) {
                 paths_to_open = paths.ordered_paths().cloned().collect();
@@ -1815,10 +1818,10 @@ impl Workspace {
             let workspace_id = if let Some(serialized_workspace) = serialized_workspace.as_ref() {
                 serialized_workspace.id
             } else {
-                DB.next_id().await.unwrap_or_else(|_| Default::default())
+                db.next_id().await.unwrap_or_else(|_| Default::default())
             };
 
-            let toolchains = DB.toolchains(workspace_id).await?;
+            let toolchains = db.toolchains(workspace_id).await?;
 
             for (toolchain, worktree_path, path) in toolchains {
                 let toolchain_path = PathBuf::from(toolchain.path.clone().to_string());
@@ -1901,7 +1904,7 @@ impl Workspace {
                         // Reopening an existing workspace - restore its saved bounds
                         (Some(bounds.0), Some(display))
                     } else if let Some((display, bounds)) =
-                        persistence::read_default_window_bounds()
+                        persistence::read_default_window_bounds(&kvp)
                     {
                         // New or empty workspace - use the last known window bounds
                         (Some(bounds), Some(display))
@@ -1972,7 +1975,7 @@ impl Workspace {
             // 1. This is an empty workspace (no paths), AND
             // 2. The serialized workspace either doesn't exist or has no paths
             if is_empty_workspace && !serialized_workspace_has_paths {
-                if let Some(default_docks) = persistence::read_default_dock_state() {
+                if let Some(default_docks) = persistence::read_default_dock_state(&kvp) {
                     window
                         .update(cx, |_, window, cx| {
                             workspace.update(cx, |workspace, cx| {
@@ -2165,6 +2168,10 @@ impl Workspace {
         self.status_bar.update(cx, |status_bar, cx| {
             status_bar.set_workspace_sidebar_open(open, cx);
         });
+    }
+
+    pub fn set_sidebar_focus_handle(&mut self, handle: Option<FocusHandle>) {
+        self.sidebar_focus_handle = handle;
     }
 
     pub fn status_bar_visible(&self, cx: &App) -> bool {
@@ -4507,26 +4514,35 @@ impl Workspace {
     ) {
         use ActivateInDirectionTarget as Target;
         enum Origin {
+            Sidebar,
             LeftDock,
             RightDock,
             BottomDock,
             Center,
         }
 
-        let origin: Origin = [
-            (&self.left_dock, Origin::LeftDock),
-            (&self.right_dock, Origin::RightDock),
-            (&self.bottom_dock, Origin::BottomDock),
-        ]
-        .into_iter()
-        .find_map(|(dock, origin)| {
-            if dock.focus_handle(cx).contains_focused(window, cx) && dock.read(cx).is_open() {
-                Some(origin)
-            } else {
-                None
-            }
-        })
-        .unwrap_or(Origin::Center);
+        let origin: Origin = if self
+            .sidebar_focus_handle
+            .as_ref()
+            .is_some_and(|h| h.contains_focused(window, cx))
+        {
+            Origin::Sidebar
+        } else {
+            [
+                (&self.left_dock, Origin::LeftDock),
+                (&self.right_dock, Origin::RightDock),
+                (&self.bottom_dock, Origin::BottomDock),
+            ]
+            .into_iter()
+            .find_map(|(dock, origin)| {
+                if dock.focus_handle(cx).contains_focused(window, cx) && dock.read(cx).is_open() {
+                    Some(origin)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(Origin::Center)
+        };
 
         let get_last_active_pane = || {
             let pane = self
@@ -4545,7 +4561,20 @@ impl Workspace {
         let try_dock =
             |dock: &Entity<Dock>| dock.read(cx).is_open().then(|| Target::Dock(dock.clone()));
 
+        let sidebar_target = self
+            .sidebar_focus_handle
+            .as_ref()
+            .map(|h| Target::Sidebar(h.clone()));
+
         let target = match (origin, direction) {
+            // From the sidebar, only Right navigates into the workspace.
+            (Origin::Sidebar, SplitDirection::Right) => try_dock(&self.left_dock)
+                .or_else(|| get_last_active_pane().map(Target::Pane))
+                .or_else(|| try_dock(&self.bottom_dock))
+                .or_else(|| try_dock(&self.right_dock)),
+
+            (Origin::Sidebar, _) => None,
+
             // We're in the center, so we first try to go to a different pane,
             // otherwise try to go to a dock.
             (Origin::Center, direction) => {
@@ -4555,7 +4584,7 @@ impl Workspace {
                     match direction {
                         SplitDirection::Up => None,
                         SplitDirection::Down => try_dock(&self.bottom_dock),
-                        SplitDirection::Left => try_dock(&self.left_dock),
+                        SplitDirection::Left => try_dock(&self.left_dock).or(sidebar_target),
                         SplitDirection::Right => try_dock(&self.right_dock),
                     }
                 }
@@ -4569,18 +4598,24 @@ impl Workspace {
                 }
             }
 
+            (Origin::LeftDock, SplitDirection::Left) => sidebar_target,
+
             (Origin::LeftDock, SplitDirection::Down)
             | (Origin::RightDock, SplitDirection::Down) => try_dock(&self.bottom_dock),
 
             (Origin::BottomDock, SplitDirection::Up) => get_last_active_pane().map(Target::Pane),
-            (Origin::BottomDock, SplitDirection::Left) => try_dock(&self.left_dock),
+            (Origin::BottomDock, SplitDirection::Left) => {
+                try_dock(&self.left_dock).or(sidebar_target)
+            }
             (Origin::BottomDock, SplitDirection::Right) => try_dock(&self.right_dock),
 
             (Origin::RightDock, SplitDirection::Left) => {
                 if let Some(last_active_pane) = get_last_active_pane() {
                     Some(Target::Pane(last_active_pane))
                 } else {
-                    try_dock(&self.bottom_dock).or_else(|| try_dock(&self.left_dock))
+                    try_dock(&self.bottom_dock)
+                        .or_else(|| try_dock(&self.left_dock))
+                        .or(sidebar_target)
                 }
             }
 
@@ -4608,6 +4643,9 @@ impl Workspace {
                         log::error!("Could not find a focus target when in switching focus in {direction} direction for a {:?} dock", dock.position());
                     }
                 })
+            }
+            Some(ActivateInDirectionTarget::Sidebar(focus_handle)) => {
+                focus_handle.focus(window, cx);
             }
             None => {}
         }
@@ -5980,7 +6018,8 @@ impl Workspace {
             self.update_active_view_for_followers(window, cx);
 
             if let Some(database_id) = self.database_id {
-                cx.background_spawn(persistence::DB.update_timestamp(database_id))
+                let db = WorkspaceDb::global(cx);
+                cx.background_spawn(async move { db.update_timestamp(database_id).await })
                     .detach();
             }
         } else {
@@ -6048,15 +6087,17 @@ impl Workspace {
         let window_bounds = window.inner_window_bounds();
         let database_id = self.database_id;
         let has_paths = !self.root_paths(cx).is_empty();
+        let db = WorkspaceDb::global(cx);
+        let kvp = db::kvp::KeyValueStore::global(cx);
 
         cx.background_executor().spawn(async move {
             if !has_paths {
-                persistence::write_default_window_bounds(window_bounds, display_uuid)
+                persistence::write_default_window_bounds(&kvp, window_bounds, display_uuid)
                     .await
                     .log_err();
             }
             if let Some(database_id) = database_id {
-                DB.set_window_open_status(
+                db.set_window_open_status(
                     database_id,
                     SerializedWindowBounds(window_bounds),
                     display_uuid,
@@ -6064,7 +6105,7 @@ impl Workspace {
                 .await
                 .log_err();
             } else {
-                persistence::write_default_window_bounds(window_bounds, display_uuid)
+                persistence::write_default_window_bounds(&kvp, window_bounds, display_uuid)
                     .await
                     .log_err();
             }
@@ -6253,8 +6294,9 @@ impl Workspace {
                     user_toolchains,
                 };
 
+                let db = WorkspaceDb::global(cx);
                 window.spawn(cx, async move |_| {
-                    persistence::DB.save_workspace(serialized_workspace).await;
+                    db.save_workspace(serialized_workspace).await;
                 })
             }
             WorkspaceLocation::DetachFromSession => {
@@ -6262,27 +6304,30 @@ impl Workspace {
                 let display = window.display(cx).and_then(|d| d.uuid().ok());
                 // Save dock state for empty local workspaces
                 let docks = build_serialized_docks(self, window, cx);
+                let db = WorkspaceDb::global(cx);
+                let kvp = db::kvp::KeyValueStore::global(cx);
                 window.spawn(cx, async move |_| {
-                    persistence::DB
-                        .set_window_open_status(
-                            database_id,
-                            window_bounds,
-                            display.unwrap_or_default(),
-                        )
+                    db.set_window_open_status(
+                        database_id,
+                        window_bounds,
+                        display.unwrap_or_default(),
+                    )
+                    .await
+                    .log_err();
+                    db.set_session_id(database_id, None).await.log_err();
+                    persistence::write_default_dock_state(&kvp, docks)
                         .await
                         .log_err();
-                    persistence::DB
-                        .set_session_id(database_id, None)
-                        .await
-                        .log_err();
-                    persistence::write_default_dock_state(docks).await.log_err();
                 })
             }
             WorkspaceLocation::None => {
                 // Save dock state for empty non-local workspaces
                 let docks = build_serialized_docks(self, window, cx);
+                let kvp = db::kvp::KeyValueStore::global(cx);
                 window.spawn(cx, async move |_| {
-                    persistence::write_default_dock_state(docks).await.log_err();
+                    persistence::write_default_dock_state(&kvp, docks)
+                        .await
+                        .log_err();
                 })
             }
         }
@@ -6712,9 +6757,9 @@ impl Workspace {
                         trusted_worktrees.update(cx, |trusted_worktrees, _| {
                             trusted_worktrees.clear_trusted_paths()
                         });
-                        let clear_task = persistence::DB.clear_trusted_worktrees();
+                        let db = WorkspaceDb::global(cx);
                         cx.spawn(async move |_, cx| {
-                            if clear_task.await.log_err().is_some() {
+                            if db.clear_trusted_worktrees().await.log_err().is_some() {
                                 cx.update(|cx| reload(cx));
                             }
                         })
@@ -7030,8 +7075,12 @@ impl Workspace {
     ) {
         self.centered_layout = !self.centered_layout;
         if let Some(database_id) = self.database_id() {
-            cx.background_spawn(DB.set_centered_layout(database_id, self.centered_layout))
-                .detach_and_log_err(cx);
+            let db = WorkspaceDb::global(cx);
+            let centered_layout = self.centered_layout;
+            cx.background_spawn(async move {
+                db.set_centered_layout(database_id, centered_layout).await
+            })
+            .detach_and_log_err(cx);
         }
         cx.notify();
     }
@@ -7541,9 +7590,11 @@ fn open_items(
     })
 }
 
+#[derive(Clone)]
 enum ActivateInDirectionTarget {
     Pane(Entity<Pane>),
     Dock(Entity<Dock>),
+    Sidebar(FocusHandle),
 }
 
 fn notify_if_database_failed(window: WindowHandle<MultiWorkspace>, cx: &mut AsyncApp) {
@@ -8253,9 +8304,10 @@ impl WorkspaceHandle for Entity<Workspace> {
 }
 
 pub async fn last_opened_workspace_location(
+    db: &WorkspaceDb,
     fs: &dyn fs::Fs,
 ) -> Option<(WorkspaceId, SerializedWorkspaceLocation, PathList)> {
-    DB.last_workspace(fs)
+    db.last_workspace(fs)
         .await
         .log_err()
         .flatten()
@@ -8263,11 +8315,12 @@ pub async fn last_opened_workspace_location(
 }
 
 pub async fn last_session_workspace_locations(
+    db: &WorkspaceDb,
     last_session_id: &str,
     last_session_window_stack: Option<Vec<WindowId>>,
     fs: &dyn fs::Fs,
 ) -> Option<Vec<SessionWorkspace>> {
-    DB.last_session_workspace_locations(last_session_id, last_session_window_stack, fs)
+    db.last_session_workspace_locations(last_session_id, last_session_window_stack, fs)
         .await
         .log_err()
 }
@@ -8889,8 +8942,10 @@ pub fn open_workspace_by_id(
         cx,
     );
 
+    let db = WorkspaceDb::global(cx);
+    let kvp = db::kvp::KeyValueStore::global(cx);
     cx.spawn(async move |cx| {
-        let serialized_workspace = persistence::DB
+        let serialized_workspace = db
             .workspace_for_id(workspace_id)
             .with_context(|| format!("Workspace {workspace_id:?} not found"))?;
 
@@ -8922,7 +8977,7 @@ pub fn open_workspace_by_id(
                 && let Some(bounds) = serialized_workspace.window_bounds.as_ref()
             {
                 (Some(bounds.0), Some(display))
-            } else if let Some((display, bounds)) = persistence::read_default_window_bounds() {
+            } else if let Some((display, bounds)) = persistence::read_default_window_bounds(&kvp) {
                 (Some(bounds), Some(display))
             } else {
                 (None, None)
@@ -9290,7 +9345,8 @@ async fn open_remote_project_inner(
     window: WindowHandle<MultiWorkspace>,
     cx: &mut AsyncApp,
 ) -> Result<Vec<Option<Box<dyn ItemHandle>>>> {
-    let toolchains = DB.toolchains(workspace_id).await?;
+    let db = cx.update(|cx| WorkspaceDb::global(cx));
+    let toolchains = db.toolchains(workspace_id).await?;
     for (toolchain, worktree_path, path) in toolchains {
         project
             .update(cx, |this, cx| {
@@ -9380,20 +9436,20 @@ fn deserialize_remote_project(
     paths: Vec<PathBuf>,
     cx: &AsyncApp,
 ) -> Task<Result<(WorkspaceId, Option<SerializedWorkspace>)>> {
+    let db = cx.update(|cx| WorkspaceDb::global(cx));
     cx.background_spawn(async move {
-        let remote_connection_id = persistence::DB
+        let remote_connection_id = db
             .get_or_create_remote_connection(connection_options)
             .await?;
 
-        let serialized_workspace =
-            persistence::DB.remote_workspace_for_roots(&paths, remote_connection_id);
+        let serialized_workspace = db.remote_workspace_for_roots(&paths, remote_connection_id);
 
         let workspace_id = if let Some(workspace_id) =
             serialized_workspace.as_ref().map(|workspace| workspace.id)
         {
             workspace_id
         } else {
-            persistence::DB.next_id().await?
+            db.next_id().await?
         };
 
         Ok((workspace_id, serialized_workspace))
@@ -10012,14 +10068,15 @@ pub fn remote_workspace_position_from_db(
     cx: &App,
 ) -> Task<Result<WorkspacePosition>> {
     let paths = paths_to_open.to_vec();
+    let db = WorkspaceDb::global(cx);
+    let kvp = db::kvp::KeyValueStore::global(cx);
 
     cx.background_spawn(async move {
-        let remote_connection_id = persistence::DB
+        let remote_connection_id = db
             .get_or_create_remote_connection(connection_options)
             .await
             .context("fetching serialized ssh project")?;
-        let serialized_workspace =
-            persistence::DB.remote_workspace_for_roots(&paths, remote_connection_id);
+        let serialized_workspace = db.remote_workspace_for_roots(&paths, remote_connection_id);
 
         let (window_bounds, display) = if let Some(bounds) = window_bounds_env_override() {
             (Some(WindowBounds::Windowed(bounds)), None)
@@ -10029,7 +10086,7 @@ pub fn remote_workspace_position_from_db(
                 .and_then(|workspace| {
                     Some((workspace.display?, workspace.window_bounds.map(|b| b.0)?))
                 })
-                .or_else(|| persistence::read_default_window_bounds());
+                .or_else(|| persistence::read_default_window_bounds(&kvp));
 
             if let Some((serialized_display, serialized_bounds)) = restorable_bounds {
                 (Some(serialized_bounds), Some(serialized_display))
@@ -13659,6 +13716,7 @@ mod tests {
         cx.update(|cx| {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
+            cx.set_global(db::AppDatabase::test_new());
             theme::init(theme::LoadThemes::JustBase, cx);
         });
     }
