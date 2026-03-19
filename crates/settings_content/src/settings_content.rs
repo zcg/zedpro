@@ -7,6 +7,7 @@ mod language_model;
 pub mod merge_from;
 mod project;
 mod serde_helper;
+mod settings_sync;
 mod terminal;
 mod theme;
 mod workspace;
@@ -23,6 +24,7 @@ use serde::de::DeserializeOwned;
 pub use serde_helper::{
     serialize_f32_with_two_decimal_places, serialize_optional_f32_with_two_decimal_places,
 };
+pub use settings_sync::*;
 use settings_json::parse_json_with_comments;
 pub use terminal::*;
 pub use theme::*;
@@ -199,6 +201,9 @@ pub struct SettingsContent {
 
     /// Settings for the which-key popup.
     pub which_key: Option<WhichKeySettingsContent>,
+
+    /// GitHub-backed account settings sync.
+    pub settings_sync: Option<SettingsSyncSettingsContent>,
 
     /// Settings related to Vim mode in Zed.
     pub vim: Option<VimSettingsContent>,

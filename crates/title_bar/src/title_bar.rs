@@ -51,7 +51,7 @@ use workspace::{
     MultiWorkspace, ToggleWorkspaceSidebar, ToggleWorktreeSecurity, Workspace, WorkspaceId,
     notifications::NotifyResultExt,
 };
-use zed_actions::OpenRemote;
+use zed_actions::{OpenRemote, OpenSettingsAt};
 
 pub use onboarding_banner::restore_banner;
 
@@ -1167,6 +1167,17 @@ impl TitleBar {
                         "Extensions",
                         zed_actions::Extensions::default().boxed_clone(),
                     )
+                    .when(is_signed_in, |this| {
+                        this.entry("Sync Settings…", None, move |window, cx| {
+                            window.dispatch_action(
+                                OpenSettingsAt {
+                                    path: "settings_sync".to_string(),
+                                }
+                                .boxed_clone(),
+                                cx,
+                            );
+                        })
+                    })
                     .when(is_signed_in, |this| {
                         this.separator()
                             .action("Sign Out", client::SignOut.boxed_clone())

@@ -623,6 +623,7 @@ To build it, run: cargo build -p cli",
             session: app_session,
         });
         AppState::set_global(Arc::downgrade(&app_state), cx);
+        workspace::SettingsSyncState::init_global(Arc::downgrade(&app_state), cx);
 
         auto_update::init(client.clone(), cx);
         dap_adapters::init(cx);

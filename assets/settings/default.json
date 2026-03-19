@@ -478,6 +478,25 @@
     // Whether to show the menus in the titlebar.
     "show_menus": false,
   },
+  // GitHub-backed account settings sync.
+  "settings_sync": {
+    // Whether account sync is enabled.
+    "enabled": false,
+    // The private repository used for synced settings.
+    "repo_name": "zed_settings",
+    // Whether local settings changes automatically trigger a sync push.
+    "auto_sync_on_change": false,
+    // Whether Windows should participate in sync.
+    "sync_windows": true,
+    // Whether macOS should participate in sync.
+    "sync_macos": true,
+    // Whether Linux should participate in sync.
+    "sync_linux": true,
+    // Whether to sync settings.json.
+    "include_settings": true,
+    // Whether to sync keymap.json.
+    "include_keymap": true
+  },
   "audio": {
     // Opt into the new audio system.
     "experimental.rodio_audio": false,

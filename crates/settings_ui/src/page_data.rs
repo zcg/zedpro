@@ -14,6 +14,7 @@ use crate::{
     SettingsPage, SettingsPageItem, SubPageLink, USER, active_language, all_language_names,
     pages::{
         open_audio_test_window, render_edit_prediction_setup_page,
+        render_settings_sync_setup_page,
         render_tool_permissions_setup_page,
     },
 };
@@ -369,6 +370,237 @@ fn general_page() -> SettingsPage {
         ]
     }
 
+    fn account_sync_section() -> Box<[SettingsPageItem]> {
+        vec![
+            SettingsPageItem::SectionHeader("Account Sync"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Enable Account Sync",
+                description: "Enable GitHub private-repository sync for your user settings.",
+                field: Box::new(SettingField {
+                    json_path: Some("settings_sync.enabled"),
+                    pick: |settings_content| settings_content.settings_sync.as_ref()?.enabled.as_ref(),
+                    write: |settings_content, value| {
+                        settings_content.settings_sync.get_or_insert_default().enabled = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Sync Repository Name",
+                description: "The private GitHub repository name used to store synced settings.",
+                field: Box::new(SettingField {
+                    json_path: Some("settings_sync.repo_name"),
+                    pick: |settings_content| {
+                        settings_content
+                            .settings_sync
+                            .as_ref()?
+                            .repo_name
+                            .as_ref()
+                            .or(DEFAULT_EMPTY_STRING)
+                    },
+                    write: |settings_content, value| {
+                        settings_content.settings_sync.get_or_insert_default().repo_name =
+                            value.filter(|value| !value.trim().is_empty());
+                    },
+                }),
+                metadata: Some(Box::new(SettingsFieldMetadata {
+                    placeholder: Some("zed_settings"),
+                    ..Default::default()
+                })),
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Auto Sync On Change",
+                description: "Automatically push local settings changes to GitHub.",
+                field: Box::new(SettingField {
+                    json_path: Some("settings_sync.auto_sync_on_change"),
+                    pick: |settings_content| {
+                        settings_content
+                            .settings_sync
+                            .as_ref()?
+                            .auto_sync_on_change
+                            .as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .settings_sync
+                            .get_or_insert_default()
+                            .auto_sync_on_change = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Include settings.json",
+                description: "Sync the main user settings file.",
+                field: Box::new(SettingField {
+                    json_path: Some("settings_sync.include_settings"),
+                    pick: |settings_content| {
+                        settings_content
+                            .settings_sync
+                            .as_ref()?
+                            .include_settings
+                            .as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .settings_sync
+                            .get_or_insert_default()
+                            .include_settings = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Include keymap.json",
+                description: "Sync the user keymap file.",
+                field: Box::new(SettingField {
+                    json_path: Some("settings_sync.include_keymap"),
+                    pick: |settings_content| {
+                        settings_content
+                            .settings_sync
+                            .as_ref()?
+                            .include_keymap
+                            .as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .settings_sync
+                            .get_or_insert_default()
+                            .include_keymap = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Allow Windows Sync",
+                description: "Use the `windows/` directory when syncing on Windows.",
+                field: Box::new(SettingField {
+                    json_path: Some("settings_sync.sync_windows"),
+                    pick: |settings_content| {
+                        settings_content
+                            .settings_sync
+                            .as_ref()?
+                            .sync_windows
+                            .as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .settings_sync
+                            .get_or_insert_default()
+                            .sync_windows = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Allow macOS Sync",
+                description: "Use the `mac/` directory when syncing on macOS.",
+                field: Box::new(SettingField {
+                    json_path: Some("settings_sync.sync_macos"),
+                    pick: |settings_content| {
+                        settings_content
+                            .settings_sync
+                            .as_ref()?
+                            .sync_macos
+                            .as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .settings_sync
+                            .get_or_insert_default()
+                            .sync_macos = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Allow Linux Sync",
+                description: "Use the `linux/` directory when syncing on Linux.",
+                field: Box::new(SettingField {
+                    json_path: Some("settings_sync.sync_linux"),
+                    pick: |settings_content| {
+                        settings_content
+                            .settings_sync
+                            .as_ref()?
+                            .sync_linux
+                            .as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .settings_sync
+                            .get_or_insert_default()
+                            .sync_linux = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SubPageLink(SubPageLink {
+                title: "Configure GitHub Sync".into(),
+                r#type: Default::default(),
+                json_path: Some("settings_sync"),
+                description: Some("Manage the GitHub token, inspect sync status, and run sync actions without leaving Settings.".into()),
+                in_json: true,
+                files: USER,
+                render: render_settings_sync_setup_page,
+            }),
+            SettingsPageItem::ActionLink(ActionLink {
+                title: "Push Now".into(),
+                description: Some("Push the current platform's settings files to the configured GitHub private repository.".into()),
+                button_text: "Push".into(),
+                on_click: Arc::new(|settings_window, _window, cx| {
+                    let Some(original_window) = settings_window.original_window else {
+                        return;
+                    };
+                    original_window
+                        .update(cx, |multi_workspace, _window, cx| {
+                            multi_workspace.workspace().update(cx, |_workspace, cx| {
+                                if let Some(sync_state) = workspace::SettingsSyncState::try_global(cx)
+                                {
+                                    sync_state.update(cx, |sync_state, cx| {
+                                        sync_state.sync_now(cx);
+                                    });
+                                }
+                            });
+                        })
+                        .ok();
+                }),
+                files: USER,
+            }),
+            SettingsPageItem::ActionLink(ActionLink {
+                title: "Pull Now".into(),
+                description: Some("Restore the current platform's settings files from the configured GitHub private repository.".into()),
+                button_text: "Pull".into(),
+                on_click: Arc::new(|settings_window, _window, cx| {
+                    let Some(original_window) = settings_window.original_window else {
+                        return;
+                    };
+                    original_window
+                        .update(cx, |multi_workspace, _window, cx| {
+                            multi_workspace.workspace().update(cx, |_workspace, cx| {
+                                if let Some(sync_state) = workspace::SettingsSyncState::try_global(cx)
+                                {
+                                    sync_state.update(cx, |sync_state, cx| {
+                                        sync_state.pull_now(cx);
+                                    });
+                                }
+                            });
+                        })
+                        .ok();
+                }),
+                files: USER,
+            }),
+        ]
+        .into_boxed_slice()
+    }
+
     SettingsPage {
         title: "General",
         items: concat_sections!(
@@ -377,6 +609,7 @@ fn general_page() -> SettingsPage {
             workspace_restoration_section(),
             scoped_settings_section(),
             privacy_section(),
+            account_sync_section(),
             auto_update_section(),
         ),
     }

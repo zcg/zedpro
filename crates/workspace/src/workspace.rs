@@ -13,6 +13,7 @@ pub mod path_list {
 mod persistence;
 pub mod searchable;
 mod security_modal;
+mod settings_sync;
 pub mod shared_screen;
 use db::smol::future::yield_now;
 pub use shared_screen::SharedScreen;
@@ -76,6 +77,7 @@ pub use pane_group::{
     ActivePaneDecorator, HANDLE_HITBOX_SIZE, Member, PaneAxis, PaneGroup, PaneRenderContext,
     SplitDirection,
 };
+pub use settings_sync::*;
 use persistence::{DB, SerializedWindowBounds, model::SerializedWorkspace};
 pub use persistence::{
     DB as WORKSPACE_DB, WorkspaceDb, delete_unloaded_items,

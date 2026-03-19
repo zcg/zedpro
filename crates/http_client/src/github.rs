@@ -1,8 +1,8 @@
-use crate::{HttpClient, HttpRequestExt};
+use crate::{AsyncBody, HttpClient, HttpRequestExt};
 use anyhow::{Context as _, Result, anyhow, bail};
 use futures::AsyncReadExt;
-use http::Request;
-use serde::Deserialize;
+use http::{Method, Request, StatusCode};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::sync::Arc;
 use url::Url;
 
@@ -29,6 +29,34 @@ pub struct GithubReleaseAsset {
     pub name: String,
     pub browser_download_url: String,
     pub digest: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct GithubUser {
+    pub login: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct GithubRepoOwner {
+    pub login: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct GithubRepo {
+    pub name: String,
+    pub private: bool,
+    pub html_url: String,
+    pub default_branch: String,
+    pub owner: GithubRepoOwner,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct GithubContentFile {
+    pub path: String,
+    pub sha: String,
+    pub encoding: Option<String>,
+    pub content: Option<String>,
+    pub download_url: Option<String>,
 }
 
 pub async fn latest_github_release(
@@ -165,6 +193,200 @@ pub fn build_asset_url(repo_name_with_owner: &str, tag: &str, kind: AssetKind) -
     url.path_segments_mut()
         .map_err(|()| anyhow!("cannot modify url path segments"))?
         .push(&asset_filename);
+    Ok(url.to_string())
+}
+
+pub async fn current_user(token: &str, http: Arc<dyn HttpClient>) -> anyhow::Result<GithubUser> {
+    send_github_request(Method::GET, &format!("{GITHUB_API_URL}/user"), token, None::<()>, http)
+        .await
+}
+
+pub async fn get_repo(
+    owner: &str,
+    repo: &str,
+    token: &str,
+    http: Arc<dyn HttpClient>,
+) -> anyhow::Result<Option<GithubRepo>> {
+    send_optional_github_request(
+        Method::GET,
+        &format!("{GITHUB_API_URL}/repos/{owner}/{repo}"),
+        token,
+        None::<()>,
+        http,
+    )
+    .await
+}
+
+pub async fn create_private_repo(
+    repo: &str,
+    token: &str,
+    http: Arc<dyn HttpClient>,
+) -> anyhow::Result<GithubRepo> {
+    #[derive(Serialize)]
+    struct CreateRepoBody<'a> {
+        name: &'a str,
+        private: bool,
+        auto_init: bool,
+        description: &'a str,
+    }
+
+    send_github_request(
+        Method::POST,
+        &format!("{GITHUB_API_URL}/user/repos"),
+        token,
+        Some(CreateRepoBody {
+            name: repo,
+            private: true,
+            auto_init: true,
+            description: "ZedPro settings sync repository",
+        }),
+        http,
+    )
+    .await
+}
+
+pub async fn get_repo_content(
+    owner: &str,
+    repo: &str,
+    path: &str,
+    token: &str,
+    http: Arc<dyn HttpClient>,
+) -> anyhow::Result<Option<GithubContentFile>> {
+    send_optional_github_request(
+        Method::GET,
+        &github_contents_url(owner, repo, path)?,
+        token,
+        None::<()>,
+        http,
+    )
+    .await
+}
+
+pub async fn put_repo_content(
+    owner: &str,
+    repo: &str,
+    path: &str,
+    message: &str,
+    content_base64: String,
+    sha: Option<String>,
+    token: &str,
+    http: Arc<dyn HttpClient>,
+) -> anyhow::Result<()> {
+    #[derive(Serialize)]
+    struct PutContentBody<'a> {
+        message: &'a str,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sha: Option<String>,
+    }
+
+    let _: serde_json::Value = send_github_request(
+        Method::PUT,
+        &github_contents_url(owner, repo, path)?,
+        token,
+        Some(PutContentBody {
+            message,
+            content: content_base64,
+            sha,
+        }),
+        http,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn send_optional_github_request<T, B>(
+    method: Method,
+    url: &str,
+    token: &str,
+    body: Option<B>,
+    http: Arc<dyn HttpClient>,
+) -> anyhow::Result<Option<T>>
+where
+    T: DeserializeOwned,
+    B: Serialize,
+{
+    match send_github_request(method, url, token, body, http).await {
+        Ok(value) => Ok(Some(value)),
+        Err(err) if is_not_found_error(&err) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
+async fn send_github_request<T, B>(
+    method: Method,
+    url: &str,
+    token: &str,
+    body: Option<B>,
+    http: Arc<dyn HttpClient>,
+) -> anyhow::Result<T>
+where
+    T: DeserializeOwned,
+    B: Serialize,
+{
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(url)
+        .follow_redirects(crate::RedirectPolicy::FollowAll)
+        .header("Accept", "application/vnd.github+json")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("X-GitHub-Api-Version", "2022-11-28");
+
+    if let Some(user_agent) = http.user_agent() {
+        builder = builder.header("User-Agent", user_agent.clone());
+    }
+
+    let request = builder.body(match body {
+        Some(body) => AsyncBody::from(serde_json::to_vec(&body)?),
+        None => AsyncBody::default(),
+    })?;
+
+    let mut response = http
+        .send(request)
+        .await
+        .with_context(|| format!("error sending GitHub API request to {url}"))?;
+    let status = response.status();
+
+    let mut raw_body = Vec::new();
+    response
+        .body_mut()
+        .read_to_end(&mut raw_body)
+        .await
+        .with_context(|| format!("error reading GitHub API response from {url}"))?;
+
+    if status.is_client_error() || status.is_server_error() {
+        let text = String::from_utf8_lossy(raw_body.as_slice());
+        let prefix = if status == StatusCode::NOT_FOUND {
+            "github_not_found"
+        } else {
+            "github_request_failed"
+        };
+        bail!("{prefix}: status {}, response: {text}", status.as_u16());
+    }
+
+    serde_json::from_slice::<T>(raw_body.as_slice()).map_err(|err| {
+        log::error!("Error deserializing GitHub API response: {err:?}");
+        log::error!(
+            "GitHub API response text: {:?}",
+            String::from_utf8_lossy(raw_body.as_slice())
+        );
+        anyhow!("error deserializing GitHub API response: {err:?}")
+    })
+}
+
+fn is_not_found_error(err: &anyhow::Error) -> bool {
+    err.to_string().contains("github_not_found")
+}
+
+fn github_contents_url(owner: &str, repo: &str, path: &str) -> Result<String> {
+    let mut url = Url::parse(&format!("{GITHUB_API_URL}/repos/{owner}/{repo}/contents"))?;
+    let mut segments = url
+        .path_segments_mut()
+        .map_err(|()| anyhow!("cannot modify GitHub contents URL path"))?;
+    for segment in path.split('/') {
+        segments.push(segment);
+    }
+    drop(segments);
     Ok(url.to_string())
 }
 
