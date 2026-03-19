@@ -204,7 +204,7 @@ use task::TaskVariables;
 use text::{BufferId, FromAnchor, OffsetUtf16, Rope, ToOffset as _, ToPoint as _};
 use theme::{
     AccentColors, ActiveTheme, GlobalTheme, PlayerColor, StatusColors, SyntaxTheme, Theme,
-    ThemeSettings, observe_buffer_font_size_adjustment,
+    ThemeSettings, material_surface_color, observe_buffer_font_size_adjustment,
 };
 use ui::{
     Avatar, ButtonSize, ButtonStyle, ContextMenu, Disclosure, IconButton, IconButtonShape,
@@ -25688,8 +25688,12 @@ impl Editor {
         let background = match self.mode {
             EditorMode::SingleLine => cx.theme().system().transparent,
             EditorMode::AutoHeight { .. } => cx.theme().system().transparent,
-            EditorMode::Full { .. } => cx.theme().colors().editor_background,
-            EditorMode::Minimap { .. } => cx.theme().colors().editor_background.opacity(0.7),
+            EditorMode::Full { .. } => {
+                material_surface_color(cx.theme().colors().editor_background, 0.86, cx)
+            }
+            EditorMode::Minimap { .. } => {
+                material_surface_color(cx.theme().colors().editor_background, 0.82, cx).opacity(0.7)
+            }
         };
 
         EditorStyle {

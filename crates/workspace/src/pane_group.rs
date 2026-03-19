@@ -1380,7 +1380,8 @@ mod element {
                 .clamp(0.0, 1.0);
             let overlay_opacity = (overlay_opacity <= 1.).then_some(overlay_opacity);
 
-            let mut overlay_background = cx.theme().colors().editor_background;
+            let mut overlay_background =
+                theme::material_surface_color(cx.theme().colors().editor_background, 0.9, cx);
             if let Some(opacity) = overlay_opacity {
                 overlay_background.fade_out(opacity);
             }

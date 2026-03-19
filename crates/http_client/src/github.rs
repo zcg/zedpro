@@ -197,8 +197,14 @@ pub fn build_asset_url(repo_name_with_owner: &str, tag: &str, kind: AssetKind) -
 }
 
 pub async fn current_user(token: &str, http: Arc<dyn HttpClient>) -> anyhow::Result<GithubUser> {
-    send_github_request(Method::GET, &format!("{GITHUB_API_URL}/user"), token, None::<()>, http)
-        .await
+    send_github_request(
+        Method::GET,
+        &format!("{GITHUB_API_URL}/user"),
+        token,
+        None::<()>,
+        http,
+    )
+    .await
 }
 
 pub async fn get_repo(

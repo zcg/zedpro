@@ -15,6 +15,7 @@ use ui::{
     ElementId, HighlightedLabel, IconButtonShape, ListItem, ListItemSpacing, Tab, Tooltip,
     WithScrollbar, prelude::*,
 };
+use workspace::material_root_surface_color;
 
 const DEFAULT_TITLE: &SharedString = &SharedString::new_static("New Thread");
 
@@ -511,7 +512,10 @@ impl Render for ThreadHistoryView {
         v_flex()
             .key_context("ThreadHistory")
             .size_full()
-            .bg(cx.theme().colors().panel_background)
+            .bg(material_root_surface_color(
+                cx.theme().colors().panel_background,
+                cx,
+            ))
             .on_action(cx.listener(Self::select_previous))
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_first))

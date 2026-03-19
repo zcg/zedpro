@@ -851,7 +851,10 @@ impl Render for Dock {
                 .key_context(dispatch_context)
                 .track_focus(&self.focus_handle(cx))
                 .flex()
-                .bg(cx.theme().colors().panel_background)
+                .bg(crate::material_root_surface_color(
+                    cx.theme().colors().panel_background,
+                    cx,
+                ))
                 .border_color(cx.theme().colors().border)
                 .overflow_hidden()
                 .map(|this| match self.position().axis() {

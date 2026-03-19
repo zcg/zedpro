@@ -24,8 +24,8 @@ use serde::de::DeserializeOwned;
 pub use serde_helper::{
     serialize_f32_with_two_decimal_places, serialize_optional_f32_with_two_decimal_places,
 };
-pub use settings_sync::*;
 use settings_json::parse_json_with_comments;
+pub use settings_sync::*;
 pub use terminal::*;
 pub use theme::*;
 pub use workspace::*;

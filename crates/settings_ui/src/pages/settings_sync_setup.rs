@@ -22,11 +22,9 @@ pub(crate) fn render_settings_sync_setup_page(
             .pt_8()
             .gap_1p5()
             .child(SettingsSectionHeader::new("GitHub Settings Sync").no_padding(true))
-            .child(
-                div()
-                    .px_8()
-                    .child(Label::new("Settings sync is unavailable in this workspace.").color(Color::Muted)),
-            )
+            .child(div().px_8().child(
+                Label::new("Settings sync is unavailable in this workspace.").color(Color::Muted),
+            ))
             .into_any_element();
     };
     let synced_files = if snapshot.synced_files.is_empty() {

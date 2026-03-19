@@ -6,8 +6,8 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, anyhow};
 use dap::StackFrameId;
 use dap::adapters::DebugAdapterName;
-use editor::{Editor, MultiBuffer};
 use db::kvp::KeyValueStore;
+use editor::{Editor, MultiBuffer};
 use gpui::{
     Action, AnyElement, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, ListState,
     Subscription, Task, WeakEntity, list,

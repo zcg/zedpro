@@ -579,53 +579,131 @@ fn apply_window_material_theme_overrides(
         WindowBackgroundMaterial::MicaAlt => WindowBackgroundAppearance::MicaAltBackdrop,
     };
 
-    let (chrome_alpha, surface_alpha, elevated_alpha, content_alpha, overlay_alpha) = match material
-    {
-        WindowBackgroundMaterial::Acrylic => (0.54, 0.46, 0.88, 0.36, 0.30),
-        WindowBackgroundMaterial::Mica => (0.64, 0.56, 0.92, 0.44, 0.34),
-        WindowBackgroundMaterial::MicaAlt => (0.60, 0.52, 0.90, 0.40, 0.32),
-        WindowBackgroundMaterial::Theme => unreachable!(),
-    };
+    let (chrome_alpha, surface_alpha, elevated_alpha, _content_alpha, overlay_alpha) =
+        match material {
+            WindowBackgroundMaterial::Acrylic => (0.56, 0.86, 0.91, 0.93, 0.90),
+            WindowBackgroundMaterial::Mica => (0.65, 0.88, 0.93, 0.95, 0.92),
+            WindowBackgroundMaterial::MicaAlt => (0.61, 0.87, 0.92, 0.94, 0.91),
+            WindowBackgroundMaterial::Theme => unreachable!(),
+        };
 
     let colors = &mut theme.styles.colors;
-    colors.background = set_alpha(colors.background, surface_alpha);
-    colors.surface_background = set_alpha(colors.surface_background, surface_alpha);
-    colors.elevated_surface_background =
-        set_alpha(colors.elevated_surface_background, elevated_alpha);
-    colors.element_background = set_alpha(colors.element_background, elevated_alpha);
-    colors.element_hover = cap_alpha(colors.element_hover, overlay_alpha);
-    colors.element_active = cap_alpha(colors.element_active, overlay_alpha);
-    colors.element_selected = cap_alpha(colors.element_selected, overlay_alpha);
-    colors.element_disabled = cap_alpha(colors.element_disabled, overlay_alpha);
-    colors.ghost_element_background = cap_alpha(colors.ghost_element_background, surface_alpha);
-    colors.ghost_element_hover = cap_alpha(colors.ghost_element_hover, overlay_alpha);
-    colors.ghost_element_active = cap_alpha(colors.ghost_element_active, overlay_alpha);
-    colors.ghost_element_selected = cap_alpha(colors.ghost_element_selected, overlay_alpha);
-    colors.ghost_element_disabled = cap_alpha(colors.ghost_element_disabled, overlay_alpha);
-    colors.title_bar_background = set_alpha(colors.title_bar_background, chrome_alpha);
-    colors.title_bar_inactive_background =
-        set_alpha(colors.title_bar_inactive_background, chrome_alpha);
-    colors.toolbar_background = set_alpha(colors.toolbar_background, surface_alpha);
-    colors.tab_bar_background = set_alpha(colors.tab_bar_background, surface_alpha);
-    colors.tab_inactive_background = set_alpha(colors.tab_inactive_background, surface_alpha);
-    colors.tab_active_background = set_alpha(colors.tab_active_background, elevated_alpha);
-    colors.status_bar_background = set_alpha(colors.status_bar_background, surface_alpha);
-    colors.panel_background = set_alpha(colors.panel_background, surface_alpha);
-    colors.panel_overlay_background = set_alpha(colors.panel_overlay_background, elevated_alpha);
-    colors.panel_overlay_hover = cap_alpha(colors.panel_overlay_hover, overlay_alpha);
-    colors.scrollbar_track_background = set_alpha(colors.scrollbar_track_background, surface_alpha);
-    colors.editor_background = set_alpha(colors.editor_background, content_alpha);
-    colors.editor_gutter_background = set_alpha(colors.editor_gutter_background, content_alpha);
-    colors.editor_subheader_background =
-        set_alpha(colors.editor_subheader_background, elevated_alpha);
-    colors.editor_active_line_background =
-        cap_alpha(colors.editor_active_line_background, overlay_alpha);
-    colors.editor_highlighted_line_background =
-        cap_alpha(colors.editor_highlighted_line_background, overlay_alpha);
-    colors.editor_debugger_active_line_background =
-        cap_alpha(colors.editor_debugger_active_line_background, overlay_alpha);
-    colors.terminal_background = set_alpha(colors.terminal_background, content_alpha);
-    colors.terminal_ansi_background = set_alpha(colors.terminal_ansi_background, content_alpha);
+    let title_bar_background = material_blend(
+        colors.title_bar_background,
+        colors.background,
+        0.08,
+        chrome_alpha,
+    );
+    let title_bar_inactive_background = material_blend(
+        colors.title_bar_inactive_background,
+        colors.surface_background,
+        0.08,
+        chrome_alpha,
+    );
+    let shared_surface = title_bar_background.blend(colors.panel_background.opacity(0.80));
+    let shared_elevated =
+        title_bar_background.blend(colors.elevated_surface_background.opacity(0.84));
+    let shared_content = shared_surface.blend(colors.editor_background.opacity(0.16));
+    let hover_alpha = (overlay_alpha + 0.01_f32).min(0.94_f32);
+    let active_alpha = (overlay_alpha + 0.03_f32).min(0.96_f32);
+    let selected_alpha = (overlay_alpha + 0.05_f32).min(0.98_f32);
+    let popup_alpha = (elevated_alpha + 0.04_f32).min(0.97_f32);
+    let popup_hover_alpha = (popup_alpha + 0.02_f32).min(0.99_f32);
+
+    colors.background = shared_surface;
+    colors.surface_background = shared_surface;
+    colors.elevated_surface_background = shared_elevated;
+    colors.element_background = shared_elevated;
+    colors.element_hover = material_blend(shared_surface, colors.element_hover, 0.10, hover_alpha);
+    colors.element_active =
+        material_blend(shared_surface, colors.element_active, 0.14, active_alpha);
+    colors.element_selected = material_blend(
+        shared_elevated,
+        colors.element_selected,
+        0.16,
+        selected_alpha,
+    );
+    colors.element_disabled =
+        material_blend(shared_surface, colors.element_disabled, 0.08, surface_alpha);
+    colors.ghost_element_background = set_alpha(shared_surface, 0.0);
+    colors.ghost_element_hover = material_blend(
+        shared_surface,
+        colors.ghost_element_hover,
+        0.10,
+        hover_alpha,
+    );
+    colors.ghost_element_active = material_blend(
+        shared_surface,
+        colors.ghost_element_active,
+        0.14,
+        active_alpha,
+    );
+    colors.ghost_element_selected = material_blend(
+        shared_elevated,
+        colors.ghost_element_selected,
+        0.16,
+        selected_alpha,
+    );
+    colors.ghost_element_disabled = set_alpha(shared_surface, 0.0);
+    colors.title_bar_background = title_bar_background;
+    colors.title_bar_inactive_background = title_bar_inactive_background;
+    colors.toolbar_background = shared_surface;
+    colors.tab_bar_background = shared_surface;
+    colors.tab_inactive_background = material_blend(
+        shared_surface,
+        colors.tab_inactive_background,
+        0.05,
+        surface_alpha,
+    );
+    colors.tab_active_background = material_blend(
+        shared_elevated,
+        colors.tab_active_background,
+        0.06,
+        elevated_alpha,
+    );
+    colors.status_bar_background = shared_surface;
+    colors.panel_background = shared_surface;
+    colors.panel_overlay_background = material_blend(
+        shared_elevated,
+        colors.panel_overlay_background,
+        0.06,
+        popup_alpha,
+    );
+    colors.panel_overlay_hover = material_blend(
+        shared_elevated,
+        colors.panel_overlay_hover,
+        0.10,
+        popup_hover_alpha,
+    );
+    colors.scrollbar_track_background = shared_surface;
+    colors.editor_background = shared_content;
+    colors.editor_gutter_background = shared_content;
+    colors.editor_subheader_background = material_blend(
+        shared_elevated,
+        colors.editor_subheader_background,
+        0.05,
+        elevated_alpha,
+    );
+    colors.editor_active_line_background = material_blend(
+        shared_content,
+        colors.editor_active_line_background,
+        0.08,
+        hover_alpha,
+    );
+    colors.editor_highlighted_line_background = material_blend(
+        shared_content,
+        colors.editor_highlighted_line_background,
+        0.12,
+        active_alpha,
+    );
+    colors.editor_debugger_active_line_background = material_blend(
+        shared_content,
+        colors.editor_debugger_active_line_background,
+        0.12,
+        active_alpha,
+    );
+    colors.terminal_background = shared_content;
+    colors.terminal_ansi_background = shared_content;
     colors.drop_target_background = cap_alpha(colors.drop_target_background, overlay_alpha);
     colors.search_match_background = cap_alpha(colors.search_match_background, elevated_alpha);
     colors.search_active_match_background =
@@ -647,6 +725,32 @@ fn apply_window_material_theme_overrides(
     Arc::new(theme)
 }
 
+/// Returns whether a Windows-specific window material override is active.
+pub fn has_custom_window_background_material(cx: &App) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        WindowMaterialThemeSettings::get_global(cx).window_background_material
+            != ::settings::WindowBackgroundMaterial::Theme
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = cx;
+        false
+    }
+}
+
+/// Blends a surface color toward the title bar material when a custom Windows
+/// window material override is active.
+pub fn material_surface_color(color: Hsla, factor: f32, cx: &App) -> Hsla {
+    if has_custom_window_background_material(cx) {
+        let base = cx.theme().colors().title_bar_background;
+        base.blend(color.opacity(factor.clamp(0.0, 0.88)))
+    } else {
+        color
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn set_alpha(color: Hsla, alpha: f32) -> Hsla {
     Hsla { a: alpha, ..color }
@@ -662,4 +766,9 @@ fn cap_alpha(color: Hsla, max_alpha: f32) -> Hsla {
             ..color
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn material_blend(base: Hsla, tint: Hsla, tint_strength: f32, alpha: f32) -> Hsla {
+    set_alpha(base.blend(tint.opacity(tint_strength)), alpha)
 }

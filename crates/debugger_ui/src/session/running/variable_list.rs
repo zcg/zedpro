@@ -20,6 +20,7 @@ use project::debugger::{
 use std::{collections::HashMap, ops::Range, sync::Arc};
 use ui::{ContextMenu, ListItem, ScrollAxes, ScrollableHandle, Tooltip, WithScrollbar, prelude::*};
 use util::{debug_panic, maybe};
+use workspace::material_root_surface_color;
 
 static INDENT_STEP_SIZE: Pixels = px(10.0);
 
@@ -1583,7 +1584,10 @@ impl Render for VariableList {
             .custom_scrollbars(
                 ui::Scrollbars::new(ScrollAxes::Both)
                     .tracked_scroll_handle(&self.list_handle)
-                    .with_track_along(ScrollAxes::Both, cx.theme().colors().panel_background)
+                    .with_track_along(
+                        ScrollAxes::Both,
+                        material_root_surface_color(cx.theme().colors().panel_background, cx),
+                    )
                     .tracked_entity(cx.entity_id()),
                 window,
                 cx,
@@ -1601,7 +1605,7 @@ fn get_entry_color(cx: &Context<VariableList>) -> EntryColors {
     let colors = cx.theme().colors();
 
     EntryColors {
-        default: colors.panel_background,
+        default: material_root_surface_color(colors.panel_background, cx),
         hover: colors.ghost_element_hover,
         marked_active: colors.ghost_element_selected,
     }

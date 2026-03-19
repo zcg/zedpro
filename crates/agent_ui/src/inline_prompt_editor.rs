@@ -164,7 +164,11 @@ impl<T: 'static> Render for PromptEditor<T> {
             .justify_center()
             .border_y_1()
             .border_color(cx.theme().colors().border)
-            .bg(cx.theme().colors().editor_background)
+            .bg(workspace::material_surface_color(
+                cx.theme().colors().editor_background,
+                0.8,
+                cx,
+            ))
             .child(
                 h_flex()
                     .on_action(cx.listener(Self::confirm))

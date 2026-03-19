@@ -207,8 +207,8 @@ impl Render for ModalLayer {
             .inset_0()
             .occlude()
             .when(active_modal.modal.fade_out_background(cx), |this| {
-                let mut background = cx.theme().colors().elevated_surface_background;
-                background.fade_out(0.2);
+                let mut background = cx.theme().colors().panel_overlay_background;
+                background.fade_out(0.08);
                 this.bg(background)
             })
             .on_mouse_down(

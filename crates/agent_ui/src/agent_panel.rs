@@ -3965,7 +3965,11 @@ impl AgentPanel {
             .flex_none()
             .justify_between()
             .gap_2()
-            .bg(cx.theme().colors().tab_bar_background)
+            .bg(workspace::material_surface_color(
+                cx.theme().colors().tab_bar_background,
+                0.8,
+                cx,
+            ))
             .border_b_1()
             .border_color(cx.theme().colors().border);
 
@@ -4236,7 +4240,7 @@ impl AgentPanel {
                 .when(text_thread_view, |this| {
                     this.bg(workspace::material_surface_color(
                         cx.theme().colors().editor_background,
-                        0.72,
+                        0.8,
                         cx,
                     ))
                 })
@@ -4258,8 +4262,11 @@ impl AgentPanel {
                 .absolute()
                 .inset_0()
                 .size_full()
-                .bg(cx.theme().colors().panel_background)
-                .opacity(0.85)
+                .bg(workspace::material_surface_color(
+                    cx.theme().colors().panel_background,
+                    0.8,
+                    cx,
+                ))
                 .block_mouse_except_scroll()
                 .child(EndTrialUpsell::new(Arc::new({
                     let this = cx.entity();

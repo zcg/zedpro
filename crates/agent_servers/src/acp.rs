@@ -210,8 +210,8 @@ impl AgentSessionList for AcpSessionList {
         let updates_tx = self.updates_tx.clone();
         let kvp = GlobalKeyValueStore::global();
 
-        let existing_task =
-            cx.background_spawn(async move { kvp.read_kvp(&tombstone_key_for_read).ok().flatten() });
+        let existing_task = cx
+            .background_spawn(async move { kvp.read_kvp(&tombstone_key_for_read).ok().flatten() });
 
         cx.foreground_executor().spawn(async move {
             let existing = existing_task.await;

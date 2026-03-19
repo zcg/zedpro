@@ -423,7 +423,10 @@ impl Render for WelcomePage {
             .size_full()
             .justify_center()
             .overflow_hidden()
-            .bg(cx.theme().colors().editor_background)
+            .bg(crate::material_root_surface_color(
+                cx.theme().colors().editor_background,
+                cx,
+            ))
             .child(
                 h_flex()
                     .relative()

@@ -7,7 +7,7 @@ use gpui::{Corner, List};
 use language_model::{LanguageModelEffortLevel, Speed};
 use settings::update_settings_file;
 use ui::{ButtonLike, SplitButton, SplitButtonStyle, Tab};
-use workspace::SERIALIZATION_THROTTLE_TIME;
+use workspace::{SERIALIZATION_THROTTLE_TIME, material_surface_color};
 
 use super::*;
 
@@ -2470,7 +2470,11 @@ impl ThreadView {
                     .px_2()
                     .gap_2()
                     .justify_between()
-                    .bg(cx.theme().colors().editor_background)
+                    .bg(material_surface_color(
+                        cx.theme().colors().editor_background,
+                        0.8,
+                        cx,
+                    ))
                     .when(index < plan.entries.len() - 1, |parent| {
                         parent.border_color(cx.theme().colors().border).border_b_1()
                     })
@@ -2705,7 +2709,11 @@ impl ThreadView {
                     this.border_dashed()
                 })
                 .border_color(cx.theme().colors().border)
-                .bg(cx.theme().colors().editor_background.opacity(0.2))
+                .bg(material_surface_color(
+                    cx.theme().colors().editor_background,
+                    0.8,
+                    cx,
+                ))
                 .child(
                     h_flex()
                         .flex_1()
@@ -2924,7 +2932,11 @@ impl ThreadView {
                             .w_full()
                             .p_1p5()
                             .gap_1()
-                            .bg(cx.theme().colors().editor_background)
+                            .bg(material_surface_color(
+                                cx.theme().colors().editor_background,
+                                0.8,
+                                cx,
+                            ))
                             .when(index < queue_len - 1, |this| {
                                 this.border_b_1()
                                     .border_color(cx.theme().colors().border_variant)
@@ -3918,7 +3930,11 @@ impl ThreadView {
                                     .py_3()
                                     .px_2()
                                     .rounded_md()
-                                    .bg(cx.theme().colors().editor_background)
+                                    .bg(material_surface_color(
+                                        cx.theme().colors().editor_background,
+                                        0.78,
+                                        cx,
+                                    ))
                                     .border_1()
                                     .when(is_indented, |this| {
                                         this.py_2().px_2().shadow_sm()
@@ -3953,7 +3969,11 @@ impl ThreadView {
                                     .rounded_sm()
                                     .border_1()
                                     .border_color(cx.theme().colors().border)
-                                    .bg(cx.theme().colors().editor_background)
+                                    .bg(material_surface_color(
+                                        cx.theme().colors().editor_background,
+                                        0.84,
+                                        cx,
+                                    ))
                                     .overflow_hidden();
 
                                 let is_loading_contents = self.is_loading_contents;
@@ -4156,7 +4176,11 @@ impl ThreadView {
                 .relative()
                 .w_full()
                 .pl_5()
-                .bg(cx.theme().colors().panel_background.opacity(0.2))
+                .bg(material_surface_color(
+                    cx.theme().colors().panel_background,
+                    0.8,
+                    cx,
+                ))
                 .child(
                     div()
                         .absolute()
@@ -4213,8 +4237,11 @@ impl ThreadView {
                 .size_full()
                 .absolute()
                 .inset_0()
-                .bg(cx.theme().colors().panel_background)
-                .opacity(0.8)
+                .bg(material_surface_color(
+                    cx.theme().colors().panel_background,
+                    0.8,
+                    cx,
+                ))
                 .block_mouse_except_scroll()
                 .on_click(cx.listener(Self::cancel_editing));
 
@@ -4245,7 +4272,11 @@ impl ThreadView {
             .rounded_md()
             .border_1()
             .border_color(cx.theme().colors().border)
-            .bg(cx.theme().colors().editor_background)
+            .bg(material_surface_color(
+                cx.theme().colors().editor_background,
+                0.8,
+                cx,
+            ))
             .child(div().w_full().child(editor))
             .child(
                 h_flex()
@@ -5267,7 +5298,11 @@ impl ThreadView {
                         .border_t_1()
                         .when(tool_failed || command_failed, |card| card.border_dashed())
                         .border_color(border_color)
-                        .bg(cx.theme().colors().editor_background)
+                        .bg(material_surface_color(
+                            cx.theme().colors().editor_background,
+                            0.78,
+                            cx,
+                        ))
                         .rounded_b_md()
                         .text_ui_sm(cx)
                         .h_full()
@@ -5611,7 +5646,11 @@ impl ThreadView {
                         .border_1()
                         .when(failed_or_canceled, |this| this.border_dashed())
                         .border_color(self.tool_card_border_color(cx))
-                        .bg(cx.theme().colors().editor_background)
+                        .bg(material_surface_color(
+                            cx.theme().colors().editor_background,
+                            0.78,
+                            cx,
+                        ))
                         .overflow_hidden()
                 } else {
                     this.my_1()
@@ -6170,7 +6209,11 @@ impl ThreadView {
             .p_3()
             .gap_1()
             .rounded_b_md()
-            .bg(cx.theme().colors().editor_background)
+            .bg(material_surface_color(
+                cx.theme().colors().editor_background,
+                0.82,
+                cx,
+            ))
             .child(bar(0, "w_4_5"))
             .child(bar(1, "w_1_4"))
             .child(bar(2, "w_2_4"))

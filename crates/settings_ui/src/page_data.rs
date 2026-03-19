@@ -13,8 +13,7 @@ use crate::{
     ActionLink, DynamicItem, PROJECT, SettingField, SettingItem, SettingsFieldMetadata,
     SettingsPage, SettingsPageItem, SubPageLink, USER, active_language, all_language_names,
     pages::{
-        open_audio_test_window, render_edit_prediction_setup_page,
-        render_settings_sync_setup_page,
+        open_audio_test_window, render_edit_prediction_setup_page, render_settings_sync_setup_page,
         render_tool_permissions_setup_page,
     },
 };

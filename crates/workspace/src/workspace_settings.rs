@@ -148,29 +148,15 @@ pub fn effective_window_background_appearance(cx: &App) -> WindowBackgroundAppea
 }
 
 pub fn has_custom_window_background_material(cx: &App) -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        WorkspaceSettings::get_global(cx).window_background_material
-            != settings::WindowBackgroundMaterial::Theme
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = cx;
-        false
-    }
+    theme::has_custom_window_background_material(cx)
 }
 
 pub fn material_surface_color(color: Hsla, factor: f32, cx: &App) -> Hsla {
-    if has_custom_window_background_material(cx) {
-        let panel = cx.theme().colors().panel_background;
-        let chrome = cx.theme().colors().title_bar_background;
-        let base = panel.blend(chrome.opacity(0.35));
-        let tint = color.opacity((1.0 - factor.clamp(0.0, 1.0)) * color.a * 0.6);
-        base.blend(tint)
-    } else {
-        color
-    }
+    theme::material_surface_color(color, factor, cx)
+}
+
+pub fn material_root_surface_color(color: Hsla, cx: &App) -> Hsla {
+    material_surface_color(color, 0.72, cx)
 }
 
 impl Settings for TabBarSettings {

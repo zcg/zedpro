@@ -480,7 +480,11 @@ pub(crate) fn new_debugger_pane(
                     .justify_between()
                     .border_b_1()
                     .border_color(cx.theme().colors().border)
-                    .bg(cx.theme().colors().tab_bar_background)
+                    .bg(workspace::material_surface_color(
+                        cx.theme().colors().tab_bar_background,
+                        0.8,
+                        cx,
+                    ))
                     .on_action(|_: &menu::Cancel, window, cx| {
                         if cx.stop_active_drag(window) {
                         } else {
@@ -657,7 +661,10 @@ impl gpui::Render for DebugTerminal {
         div()
             .track_focus(&self.focus_handle)
             .size_full()
-            .bg(cx.theme().colors().editor_background)
+            .bg(workspace::material_root_surface_color(
+                cx.theme().colors().editor_background,
+                cx,
+            ))
             .children(self.terminal.clone())
     }
 }

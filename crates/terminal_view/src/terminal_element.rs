@@ -942,7 +942,7 @@ impl Element for TerminalElement {
                     line_height: px(line_height).into(),
                     background_color: Some(workspace::material_surface_color(
                         theme.colors().terminal_ansi_background,
-                        0.58,
+                        0.9,
                         cx,
                     )),
                     white_space: WhiteSpace::Normal,
@@ -989,7 +989,7 @@ impl Element for TerminalElement {
                 let search_matches = self.terminal.read(cx).matches.clone();
 
                 let background_color =
-                    workspace::material_surface_color(theme.colors().terminal_background, 0.58, cx);
+                    workspace::material_surface_color(theme.colors().terminal_background, 0.8, cx);
 
                 let (last_hovered_word, hover_tooltip) =
                     self.terminal.update(cx, |terminal, cx| {

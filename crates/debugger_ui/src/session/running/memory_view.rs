@@ -22,7 +22,7 @@ use ui::{
     ContextMenu, Divider, DropdownMenu, FluentBuilder, IntoElement, PopoverMenuHandle, Render,
     ScrollableHandle, StatefulInteractiveElement, Tooltip, WithScrollbar, prelude::*,
 };
-use workspace::Workspace;
+use workspace::{Workspace, material_root_surface_color, material_surface_color};
 
 use crate::{ToggleDataBreakpoint, session::running::stack_frame_list::StackFrameList};
 
@@ -316,7 +316,7 @@ impl MemoryView {
             ..Default::default()
         };
         EditorStyle {
-            background: theme.colors().editor_background,
+            background: material_surface_color(theme.colors().editor_background, 0.8, cx),
             local_player: theme.players().local(),
             text: text_style,
             ..Default::default()
@@ -884,7 +884,10 @@ impl Render for MemoryView {
                             .px_2()
                             .py_0p5()
                             .mb_0p5()
-                            .bg(cx.theme().colors().editor_background)
+                            .bg(material_root_surface_color(
+                                cx.theme().colors().editor_background,
+                                cx,
+                            ))
                             .when_else(
                                 self.query_editor
                                     .focus_handle(cx)
@@ -924,7 +927,10 @@ impl Render for MemoryView {
                             .tracked_scroll_handle(&self.view_state_handle)
                             .with_track_along(
                                 ui::ScrollAxes::Both,
-                                cx.theme().colors().panel_background,
+                                material_root_surface_color(
+                                    cx.theme().colors().panel_background,
+                                    cx,
+                                ),
                             )
                             .tracked_entity(cx.entity_id()),
                         window,

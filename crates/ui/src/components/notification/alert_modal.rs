@@ -107,7 +107,6 @@ impl RenderOnce for AlertModal {
             .id(self.id)
             .elevation_3(cx)
             .w(width)
-            .bg(cx.theme().colors().elevated_surface_background)
             .overflow_hidden();
 
         for handler in self.action_handlers {

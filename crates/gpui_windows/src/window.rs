@@ -891,8 +891,10 @@ impl PlatformWindow for WindowsWindow {
             }
             WindowBackgroundAppearance::Blurred => {
                 let acrylic_tint = match self.state.appearance.get() {
-                    WindowAppearance::Dark | WindowAppearance::VibrantDark => (32, 32, 32, 72),
-                    WindowAppearance::Light | WindowAppearance::VibrantLight => (252, 252, 252, 60),
+                    // Use a lighter neutral tint so Acrylic keeps the frosted look
+                    // without collapsing into a nearly-black overlay.
+                    WindowAppearance::Dark | WindowAppearance::VibrantDark => (54, 58, 64, 48),
+                    WindowAppearance::Light | WindowAppearance::VibrantLight => (250, 250, 250, 44),
                 };
                 set_window_composition_attribute(hwnd, Some(acrylic_tint), 4);
             }

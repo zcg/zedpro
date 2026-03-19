@@ -155,7 +155,8 @@ impl SettingsSyncState {
     }
 
     pub fn try_global(cx: &App) -> Option<Entity<Self>> {
-        cx.try_global::<GlobalSettingsSync>().map(|global| global.0.clone())
+        cx.try_global::<GlobalSettingsSync>()
+            .map(|global| global.0.clone())
     }
 
     fn new(app_state: Weak<AppState>, cx: &mut Context<Self>) -> Self {
@@ -185,7 +186,11 @@ impl SettingsSyncState {
         this.spawn_watchers(fs, cx);
         let provider = <dyn CredentialsProvider>::global(cx);
         cx.spawn(async move |this, cx| {
-            let token_available = Self::load_token(&provider, cx).await.ok().flatten().is_some();
+            let token_available = Self::load_token(&provider, cx)
+                .await
+                .ok()
+                .flatten()
+                .is_some();
             this.update(cx, |this, cx| {
                 this.token_available = token_available;
                 cx.notify();
@@ -198,8 +203,11 @@ impl SettingsSyncState {
     }
 
     fn spawn_watchers(&self, fs: Arc<dyn Fs>, cx: &mut Context<Self>) {
-        let (mut settings_rx, settings_task) =
-            watch_config_file(cx.background_executor(), fs.clone(), settings_file().clone());
+        let (mut settings_rx, settings_task) = watch_config_file(
+            cx.background_executor(),
+            fs.clone(),
+            settings_file().clone(),
+        );
         settings_task.detach();
         cx.spawn(async move |this, cx| {
             let mut first = true;
@@ -208,8 +216,10 @@ impl SettingsSyncState {
                     first = false;
                     continue;
                 }
-                this.update(cx, |this, cx| this.on_local_file_changed("settings.json", cx))
-                    .ok();
+                this.update(cx, |this, cx| {
+                    this.on_local_file_changed("settings.json", cx)
+                })
+                .ok();
             }
         })
         .detach();
@@ -379,7 +389,10 @@ impl SettingsSyncState {
         self.last_action = Some(direction.label().to_string());
         self.last_error = None;
         self.last_message = Some(if is_auto_triggered {
-            format!("Detected local config changes. Automatically running {}…", direction.label())
+            format!(
+                "Detected local config changes. Automatically running {}…",
+                direction.label()
+            )
         } else {
             format!("Running {}…", direction.label())
         });
@@ -481,9 +494,7 @@ async fn perform_sync(
         None if matches!(direction, SyncDirection::Push) => {
             github::create_private_repo(&repo_name, &token, http_client.clone()).await?
         }
-        None => bail!(
-            "GitHub private repository `{repo_name}` was not found. Run a push first."
-        ),
+        None => bail!("GitHub private repository `{repo_name}` was not found. Run a push first."),
     };
 
     match direction {

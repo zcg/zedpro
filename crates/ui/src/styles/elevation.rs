@@ -93,13 +93,13 @@ impl ElevationIndex {
     }
 
     /// Returns the background color for the given elevation index.
-    pub fn bg(&self, cx: &mut App) -> Hsla {
+    pub fn bg(&self, cx: &App) -> Hsla {
         match self {
             ElevationIndex::Background => cx.theme().colors().background,
             ElevationIndex::Surface => cx.theme().colors().surface_background,
             ElevationIndex::EditorSurface => cx.theme().colors().editor_background,
-            ElevationIndex::ElevatedSurface => cx.theme().colors().elevated_surface_background,
-            ElevationIndex::ModalSurface => cx.theme().colors().elevated_surface_background,
+            ElevationIndex::ElevatedSurface => cx.theme().colors().panel_overlay_background,
+            ElevationIndex::ModalSurface => cx.theme().colors().panel_overlay_background,
         }
     }
 

@@ -28,7 +28,7 @@ use ui::{
     ScrollAxes, StatefulInteractiveElement, Tooltip, WithScrollbar, prelude::*,
 };
 use util::rel_path::RelPath;
-use workspace::Workspace;
+use workspace::{Workspace, material_root_surface_color, material_surface_color};
 use zed_actions::{ToggleEnableBreakpoint, UnsetBreakpoint};
 
 actions!(
@@ -889,7 +889,10 @@ impl Render for BreakpointList {
             .custom_scrollbars(
                 ui::Scrollbars::new(ScrollAxes::Both)
                     .tracked_scroll_handle(&self.scroll_handle)
-                    .with_track_along(ScrollAxes::Both, cx.theme().colors().panel_background)
+                    .with_track_along(
+                        ScrollAxes::Both,
+                        material_root_surface_color(cx.theme().colors().panel_background, cx),
+                    )
                     .tracked_entity(cx.entity_id()),
                 window,
                 cx,
@@ -900,7 +903,11 @@ impl Render for BreakpointList {
                         h_flex()
                             .p_1()
                             .rounded_sm()
-                            .bg(cx.theme().colors().editor_background)
+                            .bg(material_surface_color(
+                                cx.theme().colors().editor_background,
+                                0.82,
+                                cx,
+                            ))
                             .border_1()
                             .when(
                                 self.input.focus_handle(cx).contains_focused(window, cx),
@@ -1485,7 +1492,7 @@ impl BreakpointOptionsStrip {
 
             if self.is_selected && self.strip_mode == Some(kind) {
                 if self.focus_handle.is_focused(window) {
-                    this.bg(color.editor_background)
+                    this.bg(material_surface_color(color.editor_background, 0.82, cx))
                         .border_color(color.border_focused)
                 } else {
                     this.border_color(color.border)

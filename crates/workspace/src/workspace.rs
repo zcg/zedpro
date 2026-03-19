@@ -77,7 +77,6 @@ pub use pane_group::{
     ActivePaneDecorator, HANDLE_HITBOX_SIZE, Member, PaneAxis, PaneGroup, PaneRenderContext,
     SplitDirection,
 };
-pub use settings_sync::*;
 use persistence::{SerializedWindowBounds, model::SerializedWorkspace};
 pub use persistence::{
     WorkspaceDb, delete_unloaded_items,
@@ -106,6 +105,7 @@ use session::AppSession;
 use settings::{
     CenteredPaddingSettings, Settings, SettingsLocation, SettingsStore, update_settings_file,
 };
+pub use settings_sync::*;
 
 use sqlez::{
     bindable::{Bind, Column, StaticColumnCount},
@@ -147,7 +147,7 @@ use uuid::Uuid;
 pub use workspace_settings::{
     AutosaveSetting, BottomDockLayout, RestoreOnStartupBehavior, StatusBarSettings, TabBarSettings,
     WorkspaceSettings, effective_window_background_appearance,
-    has_custom_window_background_material, material_surface_color,
+    has_custom_window_background_material, material_root_surface_color, material_surface_color,
 };
 use zed_actions::{Spawn, feedback::FileBugReport, theme::ToggleMode};
 
@@ -7712,7 +7712,10 @@ impl Render for Workspace {
                 div()
                     .h_full()
                     .w(relative(size))
-                    .bg(cx.theme().colors().editor_background)
+                    .bg(material_root_surface_color(
+                        cx.theme().colors().editor_background,
+                        cx,
+                    ))
                     .border_color(cx.theme().colors().pane_group_border)
             })
         };

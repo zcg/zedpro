@@ -2675,7 +2675,10 @@ impl Render for ConversationView {
         v_flex()
             .track_focus(&self.focus_handle)
             .size_full()
-            .bg(cx.theme().colors().panel_background)
+            .bg(workspace::material_root_surface_color(
+                cx.theme().colors().panel_background,
+                cx,
+            ))
             .child(match &self.server_state {
                 ServerState::Loading { .. } => v_flex()
                     .flex_1()
