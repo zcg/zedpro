@@ -155,6 +155,10 @@ pub fn material_surface_color(color: Hsla, factor: f32, cx: &App) -> Hsla {
     theme::material_surface_color(color, factor, cx)
 }
 
+pub fn material_popup_surface_color(color: Hsla, factor: f32, cx: &App) -> Hsla {
+    theme::material_popup_surface_color(color, factor, cx)
+}
+
 pub fn material_root_surface_color(color: Hsla, cx: &App) -> Hsla {
     material_surface_color(color, 0.72, cx)
 }

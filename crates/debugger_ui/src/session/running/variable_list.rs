@@ -1540,6 +1540,10 @@ impl Render for VariableList {
             .id("variable-list")
             .group("variable-list")
             .size_full()
+            .bg(material_root_surface_color(
+                cx.theme().colors().panel_background,
+                cx,
+            ))
             .on_action(cx.listener(Self::select_first))
             .on_action(cx.listener(Self::select_last))
             .on_action(cx.listener(Self::select_prev))
@@ -1605,7 +1609,7 @@ fn get_entry_color(cx: &Context<VariableList>) -> EntryColors {
     let colors = cx.theme().colors();
 
     EntryColors {
-        default: material_root_surface_color(colors.panel_background, cx),
+        default: colors.ghost_element_background,
         hover: colors.ghost_element_hover,
         marked_active: colors.ghost_element_selected,
     }

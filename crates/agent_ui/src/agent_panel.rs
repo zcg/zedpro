@@ -3965,11 +3965,7 @@ impl AgentPanel {
             .flex_none()
             .justify_between()
             .gap_2()
-            .bg(workspace::material_surface_color(
-                cx.theme().colors().tab_bar_background,
-                0.8,
-                cx,
-            ))
+            .bg(cx.theme().colors().panel_overlay_background)
             .border_b_1()
             .border_color(cx.theme().colors().border);
 
@@ -4238,11 +4234,7 @@ impl AgentPanel {
         Some(
             div()
                 .when(text_thread_view, |this| {
-                    this.bg(workspace::material_surface_color(
-                        cx.theme().colors().editor_background,
-                        0.8,
-                        cx,
-                    ))
+                    this.bg(cx.theme().colors().ghost_element_background)
                 })
                 .child(self.onboarding.clone()),
         )
@@ -4262,11 +4254,7 @@ impl AgentPanel {
                 .absolute()
                 .inset_0()
                 .size_full()
-                .bg(workspace::material_surface_color(
-                    cx.theme().colors().panel_background,
-                    0.8,
-                    cx,
-                ))
+                .bg(cx.theme().colors().ghost_element_background.opacity(0.45))
                 .block_mouse_except_scroll()
                 .child(EndTrialUpsell::new(Arc::new({
                     let this = cx.entity();
@@ -4407,11 +4395,7 @@ impl AgentPanel {
                             .p(DynamicSpacing::Base08.rems(cx))
                             .border_b_1()
                             .border_color(cx.theme().colors().border_variant)
-                            .bg(workspace::material_surface_color(
-                                cx.theme().colors().editor_background,
-                                0.72,
-                                cx,
-                            ))
+                            .bg(cx.theme().colors().panel_overlay_background)
                             .child(buffer_search_bar.render(window, cx)),
                     )
                 })

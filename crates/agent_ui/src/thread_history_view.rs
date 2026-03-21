@@ -533,6 +533,7 @@ impl Render for ThreadHistoryView {
                     .px_2()
                     .gap_2()
                     .justify_between()
+                    .bg(cx.theme().colors().panel_overlay_background)
                     .border_b_1()
                     .border_color(cx.theme().colors().border)
                     .child(
@@ -580,6 +581,7 @@ impl Render for ThreadHistoryView {
                 this.child(
                     h_flex()
                         .p_2()
+                        .bg(cx.theme().colors().panel_overlay_background)
                         .border_t_1()
                         .border_color(cx.theme().colors().border_variant)
                         .when(!self.confirming_delete_history, |this| {

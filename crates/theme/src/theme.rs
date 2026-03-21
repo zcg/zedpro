@@ -579,11 +579,13 @@ fn apply_window_material_theme_overrides(
         WindowBackgroundMaterial::MicaAlt => WindowBackgroundAppearance::MicaAltBackdrop,
     };
 
-    let (chrome_alpha, surface_alpha, elevated_alpha, _content_alpha, overlay_alpha) =
+    let (chrome_alpha, surface_alpha, elevated_alpha, content_alpha, overlay_alpha) =
         match material {
-            WindowBackgroundMaterial::Acrylic => (0.56, 0.86, 0.91, 0.93, 0.90),
-            WindowBackgroundMaterial::Mica => (0.65, 0.88, 0.93, 0.95, 0.92),
-            WindowBackgroundMaterial::MicaAlt => (0.61, 0.87, 0.92, 0.94, 0.91),
+            // Keep Acrylic materially translucent across the whole workspace
+            // instead of converging on near-opaque surfaces.
+            WindowBackgroundMaterial::Acrylic => (0.30, 0.18, 0.24, 0.14, 0.22),
+            WindowBackgroundMaterial::Mica => (0.42, 0.26, 0.32, 0.20, 0.28),
+            WindowBackgroundMaterial::MicaAlt => (0.38, 0.24, 0.30, 0.18, 0.26),
             WindowBackgroundMaterial::Theme => unreachable!(),
         };
 
@@ -600,10 +602,18 @@ fn apply_window_material_theme_overrides(
         0.08,
         chrome_alpha,
     );
-    let shared_surface = title_bar_background.blend(colors.panel_background.opacity(0.80));
-    let shared_elevated =
-        title_bar_background.blend(colors.elevated_surface_background.opacity(0.84));
-    let shared_content = shared_surface.blend(colors.editor_background.opacity(0.16));
+    let shared_surface = set_alpha(
+        title_bar_background.blend(colors.panel_background.opacity(0.22)),
+        surface_alpha,
+    );
+    let shared_elevated = set_alpha(
+        title_bar_background.blend(colors.elevated_surface_background.opacity(0.30)),
+        elevated_alpha,
+    );
+    let shared_content = set_alpha(
+        shared_surface.blend(colors.editor_background.opacity(0.12)),
+        content_alpha,
+    );
     let hover_alpha = (overlay_alpha + 0.01_f32).min(0.94_f32);
     let active_alpha = (overlay_alpha + 0.03_f32).min(0.96_f32);
     let selected_alpha = (overlay_alpha + 0.05_f32).min(0.98_f32);
@@ -744,8 +754,29 @@ pub fn has_custom_window_background_material(cx: &App) -> bool {
 /// window material override is active.
 pub fn material_surface_color(color: Hsla, factor: f32, cx: &App) -> Hsla {
     if has_custom_window_background_material(cx) {
+        // `apply_window_material_theme_overrides` already converts the shared
+        // workspace surfaces into translucent material colors. Re-applying the
+        // title bar blend to those colors makes docked panels trend back
+        // toward an opaque fill, which is especially visible in project,
+        // terminal, agent, and debugger panels.
+        if color.a < 0.995 {
+            return color;
+        }
+
         let base = cx.theme().colors().title_bar_background;
         base.blend(color.opacity(factor.clamp(0.0, 0.88)))
+    } else {
+        color
+    }
+}
+
+/// Produces a denser popup surface that still matches the active Windows
+/// material, avoiding the "see-through text" effect for menus and dialogs
+/// rendered inside the same window.
+pub fn material_popup_surface_color(color: Hsla, factor: f32, cx: &App) -> Hsla {
+    if has_custom_window_background_material(cx) {
+        let base = cx.theme().colors().title_bar_background;
+        base.blend(color.opacity(factor.clamp(0.0, 0.96))).opacity(0.995)
     } else {
         color
     }

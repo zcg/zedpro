@@ -16,7 +16,7 @@ use serde::Deserialize;
 use std::{
     cell::Cell, cell::RefCell, collections::HashMap, ops::Range, rc::Rc, sync::Arc, time::Duration,
 };
-use theme::ThemeSettings;
+use theme::{ThemeSettings, material_popup_surface_color};
 use ui::{
     Color, Divider, DocumentationAside, DocumentationSide, Label, ListItem, ListItemSpacing,
     ScrollAxes, Scrollbars, WithScrollbar, prelude::*, utils::WithRemSize, v_flex,
@@ -74,6 +74,9 @@ pub struct Picker<D: PickerDelegate> {
     ///
     /// Set this to `false` when rendering the `Picker` as part of a larger modal.
     is_modal: bool,
+    /// Whether the `Picker` should render with popover styling while remaining
+    /// embedded in another floating container.
+    popover_style: bool,
     /// Bounds tracking for the picker container (for aside positioning)
     picker_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Bounds tracking for items (for aside positioning) - maps item index to bounds
@@ -206,11 +209,24 @@ pub trait PickerDelegate: Sized + 'static {
             )
             .child(
                 h_flex()
-                    .overflow_hidden()
-                    .flex_none()
-                    .h_9()
-                    .px_2p5()
-                    .child(editor.render(window, cx)),
+                    .p_2()
+                    .child(
+                        h_flex()
+                            .overflow_hidden()
+                            .flex_none()
+                            .h_9()
+                            .w_full()
+                            .px_2p5()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().colors().border_variant)
+                            .bg(material_popup_surface_color(
+                                cx.theme().colors().panel_overlay_background,
+                                0.90,
+                                cx,
+                            ))
+                            .child(editor.render(window, cx)),
+                    ),
             )
             .when(
                 self.editor_position() == PickerEditorPosition::Start,
@@ -343,6 +359,7 @@ impl<D: PickerDelegate> Picker<D> {
             show_scrollbar: false,
             use_small_scrollbar: true,
             is_modal: true,
+            popover_style: false,
             picker_bounds: Rc::new(Cell::new(None)),
             item_bounds: Rc::new(RefCell::new(HashMap::default())),
         };
@@ -391,6 +408,11 @@ impl<D: PickerDelegate> Picker<D> {
 
     pub fn modal(mut self, modal: bool) -> Self {
         self.is_modal = modal;
+        self
+    }
+
+    pub fn popover_style(mut self, popover_style: bool) -> Self {
+        self.popover_style = popover_style;
         self
     }
 
@@ -1074,6 +1096,9 @@ impl<D: PickerDelegate> Render for Picker<D> {
             //
             // We should revisit how the `Picker` is styled to make it more composable.
             .when(self.is_modal, |this| this.elevation_3(cx))
+            .when(!self.is_modal && self.popover_style, |this| {
+                this.elevation_2(cx)
+            })
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_previous))
             .on_action(cx.listener(Self::editor_move_down))

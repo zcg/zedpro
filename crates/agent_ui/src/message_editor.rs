@@ -1549,11 +1549,7 @@ impl Render for MessageEditor {
                 EditorElement::new(
                     &self.editor,
                     EditorStyle {
-                        background: workspace::material_surface_color(
-                            cx.theme().colors().editor_background,
-                            0.74,
-                            cx,
-                        ),
+                        background: cx.theme().colors().ghost_element_background,
                         local_player: cx.theme().players().local(),
                         text: text_style,
                         syntax: cx.theme().syntax().clone(),

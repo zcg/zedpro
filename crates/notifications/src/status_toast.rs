@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use gpui::{DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, IntoElement};
 use ui::{Tooltip, prelude::*};
-use workspace::{ToastAction, ToastView};
+use workspace::{ToastAction, ToastView, material_popup_surface_color};
 use zed_actions::toast;
 
 #[derive(Clone, Copy)]
@@ -99,6 +99,9 @@ impl StatusToast {
 impl Render for StatusToast {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let has_action_or_dismiss = self.action.is_some() || self.show_dismiss;
+        let background =
+            material_popup_surface_color(cx.theme().colors().panel_overlay_background, 0.90, cx)
+                .opacity(0.995);
 
         h_flex()
             .id("status-toast")
@@ -114,7 +117,7 @@ impl Render for StatusToast {
                 }
             })
             .flex_none()
-            .bg(cx.theme().colors().surface_background)
+            .bg(background)
             .shadow_lg()
             .when_some(self.icon.as_ref(), |this, icon| {
                 this.child(Icon::new(icon.icon).color(icon.color))

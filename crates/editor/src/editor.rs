@@ -218,6 +218,7 @@ use workspace::{
     OpenTerminal, Pane, RestoreOnStartupBehavior, SERIALIZATION_THROTTLE_TIME, SplitDirection,
     TabBarSettings, Toast, ViewId, Workspace, WorkspaceId, WorkspaceSettings,
     item::{ItemBufferKind, ItemHandle, PreviewTabsSettings, SaveOptions},
+    material_root_surface_color,
     notifications::{DetachAndPromptErr, NotificationId, NotifyTaskExt},
     searchable::SearchEvent,
 };
@@ -25689,7 +25690,7 @@ impl Editor {
             EditorMode::SingleLine => cx.theme().system().transparent,
             EditorMode::AutoHeight { .. } => cx.theme().system().transparent,
             EditorMode::Full { .. } => {
-                material_surface_color(cx.theme().colors().editor_background, 0.86, cx)
+                material_root_surface_color(cx.theme().colors().editor_background, cx)
             }
             EditorMode::Minimap { .. } => {
                 material_surface_color(cx.theme().colors().editor_background, 0.82, cx).opacity(0.7)

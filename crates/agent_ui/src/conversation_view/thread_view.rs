@@ -2003,7 +2003,7 @@ impl ThreadView {
     }
 
     fn activity_bar_bg(&self, cx: &Context<Self>) -> Hsla {
-        let editor_bg_color = cx.theme().colors().editor_background;
+        let editor_bg_color = cx.theme().colors().ghost_element_background;
         let active_color = cx.theme().colors().element_selected;
         editor_bg_color.blend(active_color.opacity(0.3))
     }
@@ -2099,7 +2099,7 @@ impl ThreadView {
         pending_edits: bool,
         cx: &Context<Self>,
     ) -> impl IntoElement {
-        let editor_bg_color = cx.theme().colors().editor_background;
+        let editor_bg_color = cx.theme().colors().ghost_element_background;
 
         // Sort edited files alphabetically for consistency with Git diff view
         let mut sorted_buffers: Vec<_> = changed_buffers.iter().collect();
@@ -2470,11 +2470,7 @@ impl ThreadView {
                     .px_2()
                     .gap_2()
                     .justify_between()
-                    .bg(material_surface_color(
-                        cx.theme().colors().editor_background,
-                        0.8,
-                        cx,
-                    ))
+                    .bg(cx.theme().colors().panel_overlay_background)
                     .when(index < plan.entries.len() - 1, |parent| {
                         parent.border_color(cx.theme().colors().border).border_b_1()
                     })
@@ -2709,11 +2705,7 @@ impl ThreadView {
                     this.border_dashed()
                 })
                 .border_color(cx.theme().colors().border)
-                .bg(material_surface_color(
-                    cx.theme().colors().editor_background,
-                    0.8,
-                    cx,
-                ))
+                .bg(cx.theme().colors().panel_overlay_background)
                 .child(
                     h_flex()
                         .flex_1()
@@ -2932,11 +2924,7 @@ impl ThreadView {
                             .w_full()
                             .p_1p5()
                             .gap_1()
-                            .bg(material_surface_color(
-                                cx.theme().colors().editor_background,
-                                0.8,
-                                cx,
-                            ))
+                            .bg(cx.theme().colors().panel_overlay_background)
                             .when(index < queue_len - 1, |this| {
                                 this.border_b_1()
                                     .border_color(cx.theme().colors().border_variant)
@@ -4176,11 +4164,7 @@ impl ThreadView {
                 .relative()
                 .w_full()
                 .pl_5()
-                .bg(material_surface_color(
-                    cx.theme().colors().panel_background,
-                    0.8,
-                    cx,
-                ))
+                .bg(cx.theme().colors().ghost_element_background)
                 .child(
                     div()
                         .absolute()
@@ -4237,11 +4221,7 @@ impl ThreadView {
                 .size_full()
                 .absolute()
                 .inset_0()
-                .bg(material_surface_color(
-                    cx.theme().colors().panel_background,
-                    0.8,
-                    cx,
-                ))
+                .bg(cx.theme().colors().ghost_element_background.opacity(0.35))
                 .block_mouse_except_scroll()
                 .on_click(cx.listener(Self::cancel_editing));
 
@@ -4272,11 +4252,7 @@ impl ThreadView {
             .rounded_md()
             .border_1()
             .border_color(cx.theme().colors().border)
-            .bg(material_surface_color(
-                cx.theme().colors().editor_background,
-                0.8,
-                cx,
-            ))
+            .bg(cx.theme().colors().panel_overlay_background)
             .child(div().w_full().child(editor))
             .child(
                 h_flex()

@@ -38,7 +38,7 @@ use ui::{
     WithScrollbar, prelude::*,
 };
 use util::ResultExt as _;
-use workspace::{Workspace, create_and_open_local_file};
+use workspace::{Workspace, create_and_open_local_file, material_root_surface_color};
 use zed_actions::{ExtensionCategoryFilter, OpenBrowser};
 
 pub(crate) use configure_context_server_modal::ConfigureContextServerModal;
@@ -1406,7 +1406,10 @@ impl Render for AgentConfiguration {
             .relative()
             .size_full()
             .pb_8()
-            .bg(cx.theme().colors().panel_background)
+            .bg(material_root_surface_color(
+                cx.theme().colors().panel_background,
+                cx,
+            ))
             .child(
                 div()
                     .size_full()

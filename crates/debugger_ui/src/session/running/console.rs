@@ -29,7 +29,7 @@ use std::{ops::Range, rc::Rc, usize};
 use theme::{Theme, ThemeSettings};
 use ui::{ContextMenu, Divider, PopoverMenu, SplitButton, Tooltip, prelude::*};
 use util::ResultExt;
-use workspace::{material_root_surface_color, material_surface_color};
+use workspace::material_root_surface_color;
 
 actions!(
     console,
@@ -408,7 +408,7 @@ impl Console {
             ..Default::default()
         };
         EditorStyle {
-            background: material_surface_color(theme.colors().editor_background, 0.8, cx),
+            background: theme.colors().ghost_element_background,
             local_player: theme.players().local(),
             text: text_style,
             ..Default::default()
@@ -472,7 +472,7 @@ impl Render for Console {
             .size_full()
             .border_2()
             .bg(material_root_surface_color(
-                cx.theme().colors().editor_background,
+                cx.theme().colors().panel_background,
                 cx,
             ))
             .child(self.render_console(cx))
@@ -483,10 +483,7 @@ impl Render for Console {
                         .on_action(cx.listener(Self::next_query))
                         .p_1()
                         .gap_1()
-                        .bg(material_root_surface_color(
-                            cx.theme().colors().editor_background,
-                            cx,
-                        ))
+                        .bg(cx.theme().colors().panel_overlay_background)
                         .child(self.render_query_bar(cx))
                         .child(SplitButton::new(
                             ui::ButtonLike::new_rounded_all(ElementId::Name(

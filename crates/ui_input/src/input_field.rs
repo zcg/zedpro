@@ -143,7 +143,10 @@ impl Render for InputField {
 
         let style = InputFieldStyle {
             text_color: theme_color.text,
-            background_color: theme_color.editor_background,
+            background_color: theme_color
+                .title_bar_background
+                .blend(theme_color.panel_overlay_background.opacity(0.90))
+                .opacity(0.995),
             border_color: theme_color.border_variant,
         };
 

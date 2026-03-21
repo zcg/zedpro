@@ -288,20 +288,13 @@ impl RenderOnce for ThreadItem {
 
         let b_bg = color
             .title_bar_background
-            .blend(color.panel_background.opacity(0.8));
+            .blend(color.ghost_element_background.opacity(0.25));
 
         let base_bg = if self.selected {
             color.element_active
         } else {
             b_bg
         };
-
-        let gradient_overlay =
-            GradientFade::new(base_bg, color.element_hover, color.element_active)
-                .width(px(64.0))
-                .right(px(-10.0))
-                .gradient_stop(0.75)
-                .group_name("thread-item");
 
         let has_diff_stats = self.added.is_some() || self.removed.is_some();
         let added_count = self.added.unwrap_or(0);
@@ -345,7 +338,6 @@ impl RenderOnce for ThreadItem {
                             .child(title_label)
                             .when_some(self.tooltip, |this, tooltip| this.tooltip(tooltip)),
                     )
-                    .child(gradient_overlay)
                     .when(self.hovered, |this| {
                         this.when_some(self.action_slot, |this, slot| {
                             let overlay = GradientFade::new(

@@ -1,6 +1,6 @@
 use crate::{
-    IconButtonShape, KeyBinding, List, ListItem, ListSeparator, ListSubHeader, Tooltip, prelude::*,
-    utils::WithRemSize,
+    ElevationIndex, IconButtonShape, KeyBinding, List, ListItem, ListSeparator, ListSubHeader,
+    Tooltip, prelude::*, utils::WithRemSize,
 };
 use gpui::{
     Action, AnyElement, App, Bounds, Corner, DismissEvent, Entity, EventEmitter, FocusHandle,
@@ -2044,6 +2044,7 @@ impl Render for ContextMenu {
         let window_size = window.viewport_size();
         let rem_size = window.rem_size();
         let is_wide_window = window_size.width / rem_size > rems_from_px(800.).0;
+        let menu_background = ElevationIndex::ModalSurface.bg(cx);
 
         let mut focus_submenu: Option<FocusHandle> = None;
 
@@ -2085,7 +2086,8 @@ impl Render for ContextMenu {
         let render_aside = |aside: DocumentationAside, cx: &mut Context<Self>| {
             WithRemSize::new(ui_font_size)
                 .occlude()
-                .elevation_2(cx)
+                .elevation_3(cx)
+                .bg(menu_background)
                 .w_full()
                 .p_2()
                 .overflow_hidden()
@@ -2111,7 +2113,8 @@ impl Render for ContextMenu {
 
             WithRemSize::new(ui_font_size)
                 .occlude()
-                .elevation_2(cx)
+                .elevation_3(cx)
+                .bg(menu_background)
                 .flex()
                 .flex_row()
                 .flex_shrink_0()

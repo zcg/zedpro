@@ -15,7 +15,7 @@ use settings::{
 use ui::{
     KeyBinding, ListItem, ListItemSpacing, ListSeparator, Navigable, NavigableEntry, prelude::*,
 };
-use workspace::{ModalView, Workspace};
+use workspace::{ModalView, Workspace, material_popup_surface_color};
 
 use crate::agent_configuration::manage_profiles_modal::profile_modal_header::ProfileModalHeader;
 use crate::agent_configuration::tool_picker::{ToolPicker, ToolPickerDelegate};
@@ -923,6 +923,9 @@ impl ManageProfilesModal {
 impl Render for ManageProfilesModal {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = AgentSettings::get_global(cx);
+        let modal_background =
+            material_popup_surface_color(cx.theme().colors().panel_overlay_background, 0.90, cx)
+                .opacity(0.995);
 
         let go_back_item = div()
             .id("cancel-item")
@@ -958,6 +961,7 @@ impl Render for ManageProfilesModal {
 
         div()
             .elevation_3(cx)
+            .bg(modal_background)
             .w(rems(34.))
             .key_context("ManageProfilesModal")
             .on_action(cx.listener(|this, _: &menu::Cancel, window, cx| this.cancel(window, cx)))

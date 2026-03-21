@@ -29,7 +29,9 @@ use ui::{
 };
 use ui_input::InputField;
 use util::{ResultExt, debug_panic, rel_path::RelPath, shell::ShellKind};
-use workspace::{ModalView, Workspace, notifications::DetachAndPromptErr, pane};
+use workspace::{
+    ModalView, Workspace, material_popup_surface_color, notifications::DetachAndPromptErr, pane,
+};
 
 use crate::{
     attach_modal::{AttachModal, ModalIntent},
@@ -589,6 +591,9 @@ impl Render for NewProcessModal {
         let debug_focus_handle = focus_handle.clone();
         let attach_focus_handle = focus_handle.clone();
         let launch_focus_handle = focus_handle;
+        let modal_background =
+            material_popup_surface_color(cx.theme().colors().panel_overlay_background, 0.90, cx)
+                .opacity(0.995);
 
         v_flex()
             .key_context({
@@ -600,6 +605,7 @@ impl Render for NewProcessModal {
             .size_full()
             .w(rems(34.))
             .elevation_3(cx)
+            .bg(modal_background)
             .overflow_hidden()
             .on_action(cx.listener(|_, _: &menu::Cancel, _, cx| {
                 cx.emit(DismissEvent);

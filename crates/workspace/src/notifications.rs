@@ -319,6 +319,13 @@ impl Render for LanguageServerPrompt {
         let Some(request) = &self.request else {
             return div().id("language_server_prompt_notification");
         };
+        let notification_background =
+            crate::material_popup_surface_color(
+                cx.theme().colors().panel_overlay_background,
+                0.90,
+                cx,
+            )
+                .opacity(0.995);
 
         let (icon, color) = match request.level {
             PromptLevel::Info => (IconName::Info, Color::Muted),
@@ -340,6 +347,7 @@ impl Render for LanguageServerPrompt {
             .w_full()
             .max_h(vh(0.8, window))
             .elevation_3(cx)
+            .bg(notification_background)
             .overflow_y_scroll()
             .track_scroll(&self.scroll_handle)
             .on_modifiers_changed(cx.listener(|_, _, _, cx| cx.notify()))
@@ -499,10 +507,19 @@ impl ErrorMessagePrompt {
 
 impl Render for ErrorMessagePrompt {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let notification_background =
+            crate::material_popup_surface_color(
+                cx.theme().colors().panel_overlay_background,
+                0.90,
+                cx,
+            )
+                .opacity(0.995);
+
         h_flex()
             .id("error_message_prompt_notification")
             .occlude()
             .elevation_3(cx)
+            .bg(notification_background)
             .items_start()
             .justify_between()
             .p_2()
@@ -635,6 +652,13 @@ impl RenderOnce for NotificationFrame {
         let entity = window.current_view();
         let show_suppress_button = self.show_suppress_button;
         let suppress = show_suppress_button && window.modifiers().shift;
+        let frame_background =
+            crate::material_popup_surface_color(
+                cx.theme().colors().panel_overlay_background,
+                0.90,
+                cx,
+            )
+                .opacity(0.995);
         let (close_id, close_icon) = if suppress {
             ("suppress", IconName::Minimize)
         } else {
@@ -646,6 +670,7 @@ impl RenderOnce for NotificationFrame {
             .p_3()
             .gap_2()
             .elevation_3(cx)
+            .bg(frame_background)
             .child(
                 h_flex()
                     .gap_4()

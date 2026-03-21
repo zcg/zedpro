@@ -636,12 +636,12 @@ fn get_item_color(is_sticky: bool, cx: &App) -> ItemColors {
         default: if is_sticky {
             colors.panel_overlay_background
         } else {
-            colors.panel_background
+            colors.ghost_element_background
         },
         hover: if is_sticky {
             colors.panel_overlay_hover
         } else {
-            colors.element_hover
+            colors.ghost_element_hover
         },
         marked: colors.element_selected,
         focused: colors.panel_focused_border,
@@ -6634,6 +6634,10 @@ impl Render for ProjectPanel {
                 })
                 .size_full()
                 .relative()
+                .bg(workspace::material_root_surface_color(
+                    cx.theme().colors().panel_background,
+                    cx,
+                ))
                 .on_modifiers_changed(cx.listener(
                     |this, event: &ModifiersChangedEvent, window, cx| {
                         this.refresh_drag_cursor_style(&event.modifiers, window, cx);

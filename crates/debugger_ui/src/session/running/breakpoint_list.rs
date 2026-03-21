@@ -873,6 +873,10 @@ impl Render for BreakpointList {
             .id("breakpoint-list")
             .key_context("BreakpointList")
             .track_focus(&self.focus_handle)
+            .bg(material_root_surface_color(
+                cx.theme().colors().panel_background,
+                cx,
+            ))
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_previous))
             .on_action(cx.listener(Self::select_first))

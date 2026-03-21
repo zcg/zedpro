@@ -36,6 +36,11 @@ where
         anchor: Corner,
         cx: &mut App,
     ) -> Self {
+        picker.update(cx, |picker, _cx| {
+            picker.is_modal = false;
+            picker.popover_style = true;
+        });
+
         Self {
             _subscriptions: vec![cx.subscribe(&picker, |picker, &DismissEvent, cx| {
                 picker.update(cx, |_, cx| cx.emit(DismissEvent));

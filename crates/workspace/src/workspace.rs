@@ -147,7 +147,8 @@ use uuid::Uuid;
 pub use workspace_settings::{
     AutosaveSetting, BottomDockLayout, RestoreOnStartupBehavior, StatusBarSettings, TabBarSettings,
     WorkspaceSettings, effective_window_background_appearance,
-    has_custom_window_background_material, material_root_surface_color, material_surface_color,
+    has_custom_window_background_material, material_popup_surface_color,
+    material_root_surface_color, material_surface_color,
 };
 use zed_actions::{Spawn, feedback::FileBugReport, theme::ToggleMode};
 

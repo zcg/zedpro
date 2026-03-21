@@ -26,6 +26,7 @@ use workspace::notifications::{
     Notification as WorkspaceNotification, NotificationId, SuppressEvent,
 };
 use workspace::{
+    material_popup_surface_color,
     Workspace,
     dock::{DockPosition, Panel, PanelEvent},
 };
@@ -725,6 +726,9 @@ impl NotificationToast {
 impl Render for NotificationToast {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let user = self.actor.clone();
+        let background =
+            material_popup_surface_color(cx.theme().colors().panel_overlay_background, 0.90, cx)
+                .opacity(0.995);
 
         let suppress = window.modifiers().shift;
         let (close_id, close_icon) = if suppress {
@@ -736,6 +740,7 @@ impl Render for NotificationToast {
         h_flex()
             .id("notification_panel_toast")
             .elevation_3(cx)
+            .bg(background)
             .p_2()
             .justify_between()
             .children(user.map(|user| Avatar::new(user.avatar_uri.clone())))

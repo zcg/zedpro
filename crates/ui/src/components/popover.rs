@@ -56,7 +56,6 @@ impl RenderOnce for Popover {
                 this.child(
                     v_flex()
                         .elevation_2(cx)
-                        .bg(cx.theme().colors().surface_background)
                         .px_1()
                         .child(aside),
                 )
