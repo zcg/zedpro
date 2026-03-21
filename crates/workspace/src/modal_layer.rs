@@ -208,12 +208,12 @@ impl Render for ModalLayer {
             .occlude()
             .when(active_modal.modal.fade_out_background(cx), |this| {
                 this.bg(
-                    crate::material_surface_color(
+                    crate::material_popup_surface_color(
                         cx.theme().colors().panel_overlay_background,
-                        0.92,
+                        0.72,
                         cx,
                     )
-                    .opacity(0.36),
+                    .opacity(0.28),
                 )
             })
             .on_mouse_down(

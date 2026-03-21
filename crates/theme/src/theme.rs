@@ -775,8 +775,13 @@ pub fn material_surface_color(color: Hsla, factor: f32, cx: &App) -> Hsla {
 /// rendered inside the same window.
 pub fn material_popup_surface_color(color: Hsla, factor: f32, cx: &App) -> Hsla {
     if has_custom_window_background_material(cx) {
-        let base = cx.theme().colors().title_bar_background;
-        base.blend(color.opacity(factor.clamp(0.0, 0.96))).opacity(0.995)
+        let base = Hsla {
+            a: 1.0,
+            ..cx.theme().colors().title_bar_background
+        };
+        let tint = Hsla { a: 1.0, ..color };
+        base.blend(tint.opacity(factor.clamp(0.0, 0.98)))
+            .opacity(0.998)
     } else {
         color
     }
