@@ -1,7 +1,7 @@
 use std::fmt::{self, Display, Formatter};
 
 use gpui::{App, BoxShadow, Hsla, hsla, point, px};
-use theme::{ActiveTheme, Appearance};
+use theme::{ActiveTheme, Appearance, material_popup_surface_color};
 
 /// Today, elevation is primarily used to add shadows to elements, and set the correct background for elements like buttons.
 ///
@@ -98,8 +98,16 @@ impl ElevationIndex {
             ElevationIndex::Background => cx.theme().colors().background,
             ElevationIndex::Surface => cx.theme().colors().surface_background,
             ElevationIndex::EditorSurface => cx.theme().colors().editor_background,
-            ElevationIndex::ElevatedSurface => cx.theme().colors().panel_overlay_background,
-            ElevationIndex::ModalSurface => cx.theme().colors().panel_overlay_background,
+            ElevationIndex::ElevatedSurface => material_popup_surface_color(
+                cx.theme().colors().panel_overlay_background,
+                0.84,
+                cx,
+            ),
+            ElevationIndex::ModalSurface => material_popup_surface_color(
+                cx.theme().colors().panel_overlay_background,
+                0.94,
+                cx,
+            ),
         }
     }
 
