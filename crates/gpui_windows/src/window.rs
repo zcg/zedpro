@@ -882,10 +882,13 @@ impl PlatformWindow for WindowsWindow {
         self.state.background_appearance.set(background_appearance);
         let hwnd = self.0.hwnd;
 
-        // using Dwm APIs for Mica and MicaAlt backdrops.
-        // others follow the set_window_composition_attribute approach
+        // Clear the previous Windows backdrop state first so switching between
+        // Acrylic and Mica variants takes effect immediately on the same HWND.
+        set_window_composition_attribute(hwnd, None, 0);
+        dwm_set_window_composition_attribute(hwnd, DWMSBT_NONE);
+
         match background_appearance {
-            WindowBackgroundAppearance::Opaque => set_window_composition_attribute(hwnd, None, 0),
+            WindowBackgroundAppearance::Opaque => {}
             WindowBackgroundAppearance::Transparent => {
                 set_window_composition_attribute(hwnd, None, 2);
             }

@@ -1833,7 +1833,8 @@ fn refresh_window_background_appearance(cx: &mut App) {
     for &mut window in cx.windows().iter_mut() {
         window
             .update(cx, |_, window, _| {
-                window.set_background_appearance(background_appearance)
+                window.set_background_appearance(background_appearance);
+                window.refresh();
             })
             .ok();
     }
