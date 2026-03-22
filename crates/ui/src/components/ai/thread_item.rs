@@ -207,12 +207,6 @@ impl RenderOnce for ThreadItem {
             .element_active
             .blend(color.element_background.opacity(0.2));
 
-        let gradient_overlay = GradientFade::new(base_bg, hover_color, hover_color)
-            .width(px(64.0))
-            .right(px(-10.0))
-            .gradient_stop(0.75)
-            .group_name("thread-item");
-
         let dot_separator = || {
             Label::new("•")
                 .size(LabelSize::Small)
@@ -354,7 +348,6 @@ impl RenderOnce for ThreadItem {
                             .child(title_label)
                             .when_some(self.tooltip, |this, tooltip| this.tooltip(tooltip)),
                     )
-                    .child(gradient_overlay)
                     .when(self.hovered, |this| {
                         this.when_some(self.action_slot, |this, slot| {
                             let overlay = GradientFade::new(base_bg, hover_color, hover_color)

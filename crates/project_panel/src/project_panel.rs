@@ -6643,10 +6643,6 @@ impl Render for ProjectPanel {
                 })
                 .size_full()
                 .relative()
-                .bg(workspace::material_root_surface_color(
-                    cx.theme().colors().panel_background,
-                    cx,
-                ))
                 .on_modifiers_changed(cx.listener(
                     |this, event: &ModifiersChangedEvent, window, cx| {
                         this.refresh_drag_cursor_style(&event.modifiers, window, cx);

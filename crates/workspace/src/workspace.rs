@@ -8142,7 +8142,10 @@ impl Render for Workspace {
                                         .absolute()
                                         .overflow_hidden()
                                         .border_color(colors.border)
-                                        .bg(colors.background)
+                                        .bg(material_root_surface_color(
+                                            colors.panel_background,
+                                            cx,
+                                        ))
                                         .child(zoomed_view)
                                         .inset_0()
                                         .shadow_lg();

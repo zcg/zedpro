@@ -14,8 +14,6 @@ use ui::{
     HighlightedLabel, IconButtonShape, ListItem, ListItemSpacing, Tab, Tooltip, WithScrollbar,
     prelude::*,
 };
-use workspace::material_root_surface_color;
-
 const DEFAULT_TITLE: &SharedString = &SharedString::new_static("New Thread");
 
 fn thread_title(entry: &SavedTextThreadMetadata) -> &SharedString {
@@ -488,10 +486,6 @@ impl Render for TextThreadHistory {
         v_flex()
             .size_full()
             .key_context("ThreadHistory")
-            .bg(material_root_surface_color(
-                cx.theme().colors().panel_background,
-                cx,
-            ))
             .on_action(cx.listener(Self::select_previous))
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_first))

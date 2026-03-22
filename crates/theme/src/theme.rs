@@ -584,11 +584,13 @@ fn apply_window_material_theme_overrides(
         // Keep Acrylic materially translucent across the whole workspace
         // instead of converging on near-opaque surfaces.
         WindowBackgroundMaterial::Acrylic => {
-            let chrome_alpha = 0.30;
-            let surface_alpha = 0.18;
-            let elevated_alpha = 0.24;
-            let content_alpha = 0.14;
-            let overlay_alpha = 0.22;
+            // Tune Acrylic toward a denser Windows Terminal-like material so
+            // bright desktop content does not wash out sidebars and editors.
+            let chrome_alpha = 0.34;
+            let surface_alpha = 0.24;
+            let elevated_alpha = 0.30;
+            let content_alpha = 0.22;
+            let overlay_alpha = 0.30;
             let title_bar_background = material_blend(
                 colors.title_bar_background,
                 colors.background,
@@ -602,15 +604,15 @@ fn apply_window_material_theme_overrides(
                 chrome_alpha,
             );
             let shared_surface = set_alpha(
-                title_bar_background.blend(colors.panel_background.opacity(0.22)),
+                title_bar_background.blend(colors.panel_background.opacity(0.30)),
                 surface_alpha,
             );
             let shared_elevated = set_alpha(
-                title_bar_background.blend(colors.elevated_surface_background.opacity(0.30)),
+                title_bar_background.blend(colors.elevated_surface_background.opacity(0.36)),
                 elevated_alpha,
             );
             let shared_content = set_alpha(
-                shared_surface.blend(colors.editor_background.opacity(0.12)),
+                shared_surface.blend(colors.editor_background.opacity(0.18)),
                 content_alpha,
             );
             let hover_alpha = (overlay_alpha + 0.01_f32).min(0.94_f32);
@@ -995,8 +997,8 @@ pub fn material_popup_surface_color(color: Hsla, factor: f32, cx: &App) -> Hsla 
                 ..cx.theme().colors().editor_background
             };
             let base = chrome
-                .blend(panel.opacity(0.54))
-                .blend(editor.opacity(0.18));
+                .blend(panel.opacity(0.68))
+                .blend(editor.opacity(0.24));
 
             base.blend(tint.opacity(factor.clamp(0.0, 0.96)))
                 .opacity(0.998)

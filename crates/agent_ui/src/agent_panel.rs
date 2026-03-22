@@ -83,6 +83,7 @@ use workspace::{
     CollaboratorId, DraggedSelection, DraggedTab, OpenResult, PathList, SerializedPathList,
     ToggleWorkspaceSidebar, ToggleZoom, ToolbarItemView, Workspace, WorkspaceId,
     dock::{DockPosition, Panel, PanelEvent},
+    material_popup_surface_color, material_surface_color,
 };
 use zed_actions::{
     DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFontSize,
@@ -4000,7 +4001,11 @@ impl AgentPanel {
             .flex_none()
             .justify_between()
             .gap_2()
-            .bg(cx.theme().colors().panel_overlay_background)
+            .bg(material_surface_color(
+                cx.theme().colors().panel_background,
+                0.82,
+                cx,
+            ))
             .border_b_1()
             .border_color(cx.theme().colors().border);
 
@@ -4147,7 +4152,11 @@ impl AgentPanel {
                     .p_2()
                     .gap_1()
                     .justify_center()
-                    .bg(cx.theme().colors().editor_background)
+                    .bg(material_surface_color(
+                        cx.theme().colors().panel_background,
+                        0.82,
+                        cx,
+                    ))
                     .child(
                         Icon::new(IconName::LoadCircle)
                             .size(IconSize::Small)
@@ -4580,6 +4589,13 @@ impl Render for AgentPanel {
             .relative()
             .size_full()
             .justify_between()
+            .when(self.zoomed, |this| {
+                this.occlude().bg(material_popup_surface_color(
+                    cx.theme().colors().panel_background,
+                    0.90,
+                    cx,
+                ))
+            })
             .key_context(self.key_context())
             .on_action(cx.listener(|this, action: &NewThread, window, cx| {
                 this.new_thread(action, window, cx);
