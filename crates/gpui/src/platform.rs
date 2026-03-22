@@ -230,6 +230,7 @@ pub trait Platform: 'static {
     fn keyboard_layout(&self) -> Box<dyn PlatformKeyboardLayout>;
     fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper>;
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>);
+    fn on_system_environment_change(&self, _callback: Box<dyn FnMut()>) {}
 }
 
 /// A handle to a platform's display, e.g. a monitor or laptop screen.

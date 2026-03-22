@@ -21,7 +21,10 @@ use anyhow::{Context, Result};
 use itertools::Either;
 use regex::Regex;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{
+    LazyLock,
+    atomic::{AtomicU64, Ordering as AtomicOrdering},
+};
 use std::{
     borrow::Cow,
     cmp::{self, Ordering},
@@ -38,6 +41,12 @@ pub use util_macros::{line_endings, path, uri};
 pub use self::shell::{
     get_default_system_shell, get_default_system_shell_preferring_bash, get_system_shell,
 };
+
+static ENVIRONMENT_REFRESH_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+pub fn environment_refresh_generation() -> u64 {
+    ENVIRONMENT_REFRESH_GENERATION.load(AtomicOrdering::Relaxed)
+}
 
 #[inline]
 pub const fn is_utf8_char_boundary(u8: u8) -> bool {
@@ -387,30 +396,31 @@ fn try_build_cli(root: &Path, release: bool) -> Result<()> {
     }
 }
 
-#[cfg(unix)]
 pub async fn load_login_shell_environment() -> Result<()> {
     use anyhow::Context as _;
 
+    #[cfg(unix)]
     load_shell_from_passwd().log_err();
 
-    // If possible, we want to `cd` in the user's `$HOME` to trigger programs
-    // such as direnv, asdf, mise, ... to adjust the PATH. These tools often hook
-    // into shell's `cd` command (and hooks) to manipulate env.
-    // We do this so that we get the env a user would have when spawning a shell
-    // in home directory.
-    for (name, value) in shell_env::capture(get_system_shell(), &[], paths::home_dir())
+    #[cfg(windows)]
+    load_windows_registry_environment().context("loading environment from Windows registry")?;
+
+    let capture_result = shell_env::capture(get_system_shell(), &[], paths::home_dir())
         .await
-        .with_context(|| format!("capturing environment with {:?}", get_system_shell()))?
-    {
-        // Skip SHLVL to prevent it from polluting Zed's process environment.
-        // The login shell used for env capture increments SHLVL, and if we propagate it,
-        // terminals spawned by Zed will inherit it and increment again, causing SHLVL
-        // to start at 2 instead of 1 (and increase by 2 on each reload).
-        if name == "SHLVL" {
-            continue;
+        .with_context(|| format!("capturing environment with {:?}", get_system_shell()));
+
+    #[cfg(unix)]
+    apply_environment_overrides(capture_result?);
+
+    #[cfg(windows)]
+    match capture_result {
+        Ok(environment) => apply_environment_overrides(environment),
+        Err(error) => {
+            log::warn!("failed to capture shell environment on Windows: {error:#}");
         }
-        unsafe { std::env::set_var(&name, &value) };
     }
+
+    ENVIRONMENT_REFRESH_GENERATION.fetch_add(1, AtomicOrdering::Relaxed);
 
     log::info!(
         "set environment variables from shell:{}, path:{}",
@@ -419,6 +429,228 @@ pub async fn load_login_shell_environment() -> Result<()> {
     );
 
     Ok(())
+}
+
+fn apply_environment_overrides(environment: collections::HashMap<String, String>) {
+    for (name, value) in environment {
+        apply_environment_variable(&name, &value);
+    }
+}
+
+fn apply_environment_variable(name: &str, value: &str) {
+    // Skip SHLVL to prevent it from polluting Zed's process environment.
+    // The login shell used for env capture increments SHLVL, and if we propagate it,
+    // terminals spawned by Zed will inherit it and increment again, causing SHLVL
+    // to start at 2 instead of 1 (and increase by 2 on each reload).
+    if name == "SHLVL" {
+        return;
+    }
+
+    let name = canonical_environment_name(name);
+    unsafe { std::env::set_var(name.as_ref(), value) };
+}
+
+fn canonical_environment_name(name: &str) -> Cow<'_, str> {
+    #[cfg(windows)]
+    if name.eq_ignore_ascii_case("PATH") {
+        return Cow::Borrowed("PATH");
+    }
+
+    Cow::Borrowed(name)
+}
+
+#[cfg(windows)]
+fn load_windows_registry_environment() -> Result<()> {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    static LAST_WINDOWS_REGISTRY_ENV_KEYS: LazyLock<Mutex<HashSet<String>>> =
+        LazyLock::new(|| Mutex::new(HashSet::default()));
+
+    let mut machine_environment = read_windows_registry_environment(
+        windows::Win32::System::Registry::HKEY_LOCAL_MACHINE,
+        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+    )?;
+    let mut user_environment = read_windows_registry_environment(
+        windows::Win32::System::Registry::HKEY_CURRENT_USER,
+        r"Environment",
+    )?;
+    let mut volatile_environment = read_windows_registry_environment(
+        windows::Win32::System::Registry::HKEY_CURRENT_USER,
+        r"Volatile Environment",
+    )?;
+
+    let machine_path = remove_windows_environment_entry(&mut machine_environment, "PATH");
+    let user_path = remove_windows_environment_entry(&mut user_environment, "PATH");
+    let volatile_path = remove_windows_environment_entry(&mut volatile_environment, "PATH");
+
+    let mut current_registry_keys = HashSet::default();
+
+    for environment in [
+        &machine_environment,
+        &user_environment,
+        &volatile_environment,
+    ] {
+        for (name, value) in environment {
+            let name = canonical_environment_name(name).into_owned();
+            let value = expand_windows_environment_variables(value)?;
+            current_registry_keys.insert(name.clone());
+            unsafe { std::env::set_var(&name, &value) };
+        }
+    }
+
+    let combined_path = [machine_path, user_path, volatile_path]
+        .into_iter()
+        .flatten()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join(";");
+    if !combined_path.is_empty() {
+        let combined_path = expand_windows_environment_variables(&combined_path)?;
+        current_registry_keys.insert("PATH".to_string());
+        unsafe { std::env::set_var("PATH", &combined_path) };
+    }
+
+    let mut previous_registry_keys = LAST_WINDOWS_REGISTRY_ENV_KEYS
+        .lock()
+        .expect("windows registry environment key tracking mutex poisoned");
+    for removed_key in previous_registry_keys.difference(&current_registry_keys) {
+        unsafe { std::env::remove_var(removed_key) };
+    }
+    *previous_registry_keys = current_registry_keys;
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn remove_windows_environment_entry(
+    environment: &mut collections::HashMap<String, String>,
+    name: &str,
+) -> Option<String> {
+    let entry_name = environment
+        .keys()
+        .find(|key| key.eq_ignore_ascii_case(name))
+        .cloned()?;
+    environment.remove(&entry_name)
+}
+
+#[cfg(windows)]
+fn read_windows_registry_environment(
+    root: windows::Win32::System::Registry::HKEY,
+    subkey: &str,
+) -> Result<collections::HashMap<String, String>> {
+    use windows::Win32::{
+        Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS},
+        System::Registry::{KEY_READ, RegCloseKey, RegEnumValueW, RegOpenKeyExW},
+    };
+    use windows::core::{PCWSTR, PWSTR};
+
+    let mut key = windows::Win32::System::Registry::HKEY::default();
+    let subkey = subkey.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+    let status = unsafe { RegOpenKeyExW(root, PCWSTR(subkey.as_ptr()), Some(0), KEY_READ, &mut key) };
+    if status == ERROR_FILE_NOT_FOUND {
+        return Ok(Default::default());
+    }
+    status.ok().context("opening Windows registry environment key")?;
+
+    let result = (|| {
+        let mut environment = collections::HashMap::default();
+        let mut index = 0;
+        let mut name_capacity = 256u32;
+        let mut data_capacity = 2048u32;
+
+        loop {
+            let mut name = vec![0u16; name_capacity as usize];
+            let mut data = vec![0u8; data_capacity as usize];
+            let mut name_len = name.len() as u32;
+            let mut data_len = data.len() as u32;
+            let mut value_type = 0u32;
+
+            let status = unsafe {
+                RegEnumValueW(
+                    key,
+                    index,
+                    Some(PWSTR(name.as_mut_ptr())),
+                    &mut name_len,
+                    None,
+                    Some(&mut value_type),
+                    Some(data.as_mut_ptr()),
+                    Some(&mut data_len),
+                )
+            };
+
+            if status == ERROR_NO_MORE_ITEMS {
+                break;
+            }
+
+            if status == ERROR_MORE_DATA {
+                name_capacity = cmp::max(name_capacity * 2, name_len.saturating_add(1));
+                data_capacity = cmp::max(data_capacity * 2, data_len);
+                continue;
+            }
+
+            status.ok().context("enumerating Windows environment registry values")?;
+
+            let name = String::from_utf16_lossy(&name[..name_len as usize]);
+            if let Some(value) = parse_windows_registry_environment_value(
+                windows::Win32::System::Registry::REG_VALUE_TYPE(value_type),
+                &data[..data_len as usize],
+            )? {
+                environment.insert(name, value);
+            }
+            index += 1;
+        }
+
+        Ok(environment)
+    })();
+
+    unsafe {
+        RegCloseKey(key).ok().log_err();
+    }
+
+    result
+}
+
+#[cfg(windows)]
+fn parse_windows_registry_environment_value(
+    value_type: windows::Win32::System::Registry::REG_VALUE_TYPE,
+    data: &[u8],
+) -> Result<Option<String>> {
+    use windows::Win32::System::Registry::{REG_EXPAND_SZ, REG_SZ};
+
+    if value_type != REG_SZ && value_type != REG_EXPAND_SZ {
+        return Ok(None);
+    }
+
+    let mut wide = data
+        .chunks_exact(2)
+        .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+        .collect::<Vec<_>>();
+    while wide.last() == Some(&0) {
+        wide.pop();
+    }
+
+    Ok(Some(String::from_utf16_lossy(&wide)))
+}
+
+#[cfg(windows)]
+fn expand_windows_environment_variables(value: &str) -> Result<String> {
+    use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
+    use windows::core::PCWSTR;
+
+    let value = value.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+    let required = unsafe { ExpandEnvironmentStringsW(PCWSTR(value.as_ptr()), None) };
+    anyhow::ensure!(required != 0, "ExpandEnvironmentStringsW failed");
+
+    let mut buffer = vec![0u16; required as usize];
+    let written = unsafe { ExpandEnvironmentStringsW(PCWSTR(value.as_ptr()), Some(buffer.as_mut_slice())) };
+    anyhow::ensure!(written != 0, "ExpandEnvironmentStringsW failed");
+
+    while buffer.last() == Some(&0) {
+        buffer.pop();
+    }
+
+    Ok(String::from_utf16_lossy(&buffer))
 }
 
 /// Configures the process to start a new session, to prevent interactive shells from taking control

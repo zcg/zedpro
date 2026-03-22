@@ -493,7 +493,6 @@ pub fn execute_run(
         .build_global()
         .unwrap();
 
-    #[cfg(unix)]
     let shell_env_loaded_rx = {
         let (shell_env_loaded_tx, shell_env_loaded_rx) = oneshot::channel();
         app.background_executor()
@@ -504,8 +503,6 @@ pub fn execute_run(
             .detach();
         Some(shell_env_loaded_rx)
     };
-    #[cfg(windows)]
-    let shell_env_loaded_rx: Option<oneshot::Receiver<()>> = None;
 
     let git_hosting_provider_registry = Arc::new(GitHostingProviderRegistry::new());
     let run = move |cx: &mut _| {

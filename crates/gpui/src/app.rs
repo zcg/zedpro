@@ -213,6 +213,19 @@ impl Application {
         self
     }
 
+    /// Register a handler to be invoked when the platform reports that the
+    /// process environment should be refreshed.
+    pub fn on_system_environment_change<F>(&self, mut callback: F) -> &Self
+    where
+        F: 'static + FnMut(),
+    {
+        self.0
+            .borrow()
+            .platform
+            .on_system_environment_change(Box::new(move || callback()));
+        self
+    }
+
     /// Returns a handle to the [`BackgroundExecutor`] associated with this app, which can be used to spawn futures in the background.
     pub fn background_executor(&self) -> BackgroundExecutor {
         self.0.borrow().background_executor.clone()

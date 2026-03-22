@@ -79,6 +79,7 @@ struct PlatformCallbacks {
     will_open_app_menu: Cell<Option<Box<dyn FnMut()>>>,
     validate_app_menu_command: Cell<Option<Box<dyn FnMut(&dyn Action) -> bool>>>,
     keyboard_layout_change: Cell<Option<Box<dyn FnMut()>>>,
+    system_environment_change: Cell<Option<Box<dyn FnMut()>>>,
 }
 
 struct HideOtherAppsContext {
@@ -470,6 +471,14 @@ impl Platform for WindowsPlatform {
             .state
             .callbacks
             .keyboard_layout_change
+            .set(Some(callback));
+    }
+
+    fn on_system_environment_change(&self, callback: Box<dyn FnMut()>) {
+        self.inner
+            .state
+            .callbacks
+            .system_environment_change
             .set(Some(callback));
     }
 
@@ -1002,6 +1011,7 @@ impl WindowsPlatformInner {
             WM_GPUI_CLOSE_ONE_WINDOW
             | WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD
             | WM_GPUI_DOCK_MENU_ACTION
+            | WM_GPUI_SYSTEM_ENVIRONMENT_CHANGED
             | WM_GPUI_KEYBOARD_LAYOUT_CHANGED
             | WM_GPUI_GPU_DEVICE_LOST => self.handle_gpui_events(msg, wparam, lparam),
             _ => None,
@@ -1025,6 +1035,7 @@ impl WindowsPlatformInner {
             }
             WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD => self.run_foreground_task(),
             WM_GPUI_DOCK_MENU_ACTION => self.handle_dock_action_event(lparam.0 as _),
+            WM_GPUI_SYSTEM_ENVIRONMENT_CHANGED => self.handle_system_environment_change(),
             WM_GPUI_KEYBOARD_LAYOUT_CHANGED => self.handle_keyboard_layout_change(),
             WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(lparam),
             _ => unreachable!(),
@@ -1137,6 +1148,14 @@ impl WindowsPlatformInner {
     fn handle_keyboard_layout_change(&self) -> Option<isize> {
         self.with_callback(
             |callbacks| &callbacks.keyboard_layout_change,
+            |callback| callback(),
+        );
+        Some(0)
+    }
+
+    fn handle_system_environment_change(&self) -> Option<isize> {
+        self.with_callback(
+            |callbacks| &callbacks.system_environment_change,
             |callback| callback(),
         );
         Some(0)

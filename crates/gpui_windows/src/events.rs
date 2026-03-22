@@ -28,6 +28,7 @@ pub(crate) const WM_GPUI_FORCE_UPDATE_WINDOW: u32 = WM_USER + 5;
 pub(crate) const WM_GPUI_KEYBOARD_LAYOUT_CHANGED: u32 = WM_USER + 6;
 pub(crate) const WM_GPUI_GPU_DEVICE_LOST: u32 = WM_USER + 7;
 pub(crate) const WM_GPUI_KEYDOWN: u32 = WM_USER + 8;
+pub(crate) const WM_GPUI_SYSTEM_ENVIRONMENT_CHANGED: u32 = WM_USER + 9;
 
 const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
 
@@ -1079,13 +1080,13 @@ impl WindowsWindowInner {
 
             self.system_settings().update(wparam.0);
         } else {
-            self.handle_system_theme_changed(handle, lparam)?;
+            self.handle_system_setting_string_changed(handle, lparam)?;
         };
 
         Some(0)
     }
 
-    fn handle_system_theme_changed(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
+    fn handle_system_setting_string_changed(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
         // lParam is a pointer to a string that indicates the area containing the system parameter
         // that was changed.
         let parameter = PCWSTR::from_raw(lparam.0 as _);
@@ -1093,21 +1094,39 @@ impl WindowsWindowInner {
             && let Some(parameter_string) = unsafe { parameter.to_string() }.log_err()
         {
             log::info!("System settings changed: {}", parameter_string);
-            if parameter_string.as_str() == "ImmersiveColorSet" {
-                let new_appearance = system_appearance()
-                    .context("unable to get system appearance when handling ImmersiveColorSet")
-                    .log_err()?;
-
-                if new_appearance != self.state.appearance.get() {
-                    self.state.appearance.set(new_appearance);
-                    let mut callback = self.state.callbacks.appearance_changed.take()?;
-
-                    callback();
-                    self.state.callbacks.appearance_changed.set(Some(callback));
-                    configure_dwm_dark_mode(handle, new_appearance);
+            if parameter_string.as_str() == "Environment" {
+                unsafe {
+                    PostMessageW(
+                        Some(self.platform_window_handle),
+                        WM_GPUI_SYSTEM_ENVIRONMENT_CHANGED,
+                        WPARAM(self.validation_number),
+                        LPARAM(0),
+                    )
+                    .log_err();
                 }
             }
+
+            if parameter_string.as_str() == "ImmersiveColorSet" {
+                self.handle_system_theme_changed(handle)?;
+            }
         }
+        Some(0)
+    }
+
+    fn handle_system_theme_changed(&self, handle: HWND) -> Option<isize> {
+        let new_appearance = system_appearance()
+            .context("unable to get system appearance when handling ImmersiveColorSet")
+            .log_err()?;
+
+        if new_appearance != self.state.appearance.get() {
+            self.state.appearance.set(new_appearance);
+            let mut callback = self.state.callbacks.appearance_changed.take()?;
+
+            callback();
+            self.state.callbacks.appearance_changed.set(Some(callback));
+            configure_dwm_dark_mode(handle, new_appearance);
+        }
+
         Some(0)
     }
 

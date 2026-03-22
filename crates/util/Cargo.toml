@@ -63,7 +63,9 @@ mach2.workspace = true
 tendril = "0.4.3"
 windows = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_System_Environment",
     "Win32_System_JobObjects",
+    "Win32_System_Registry",
     "Win32_System_Threading",
 ] }
 

@@ -6,7 +6,7 @@ use rpc::proto::{self, REMOTE_SERVER_PROJECT_ID};
 use std::{collections::VecDeque, path::Path, sync::Arc};
 use task::{Shell, shell_to_proto};
 use terminal::terminal_settings::TerminalSettings;
-use util::{ResultExt, command::new_command, rel_path::RelPath};
+use util::{ResultExt, command::new_command, environment_refresh_generation, rel_path::RelPath};
 use worktree::Worktree;
 
 use collections::HashMap;
@@ -22,6 +22,7 @@ pub struct ProjectEnvironment {
     cli_environment: Option<HashMap<String, String>>,
     local_environments: HashMap<(Shell, Arc<Path>), Shared<Task<Option<HashMap<String, String>>>>>,
     remote_environments: HashMap<(Shell, Arc<Path>), Shared<Task<Option<HashMap<String, String>>>>>,
+    local_environment_generation: u64,
     environment_error_messages: VecDeque<String>,
     environment_error_messages_tx: mpsc::UnboundedSender<String>,
     worktree_store: WeakEntity<WorktreeStore>,
@@ -58,6 +59,7 @@ impl ProjectEnvironment {
             cli_environment,
             local_environments: Default::default(),
             remote_environments: Default::default(),
+            local_environment_generation: environment_refresh_generation(),
             environment_error_messages: Default::default(),
             environment_error_messages_tx: tx,
             worktree_store,
@@ -204,6 +206,8 @@ impl ProjectEnvironment {
         abs_path: Arc<Path>,
         cx: &mut App,
     ) -> Shared<Task<Option<HashMap<String, String>>>> {
+        self.invalidate_local_environment_cache_if_needed();
+
         if let Some(cli_environment) = self.get_cli_environment() {
             log::debug!("using project environment variables from CLI");
             return Task::ready(Some(cli_environment)).shared();
@@ -293,6 +297,16 @@ impl ProjectEnvironment {
 
     pub fn pop_environment_error(&mut self) -> Option<String> {
         self.environment_error_messages.pop_front()
+    }
+
+    fn invalidate_local_environment_cache_if_needed(&mut self) {
+        let current_generation = environment_refresh_generation();
+        if self.local_environment_generation == current_generation {
+            return;
+        }
+
+        self.local_environment_generation = current_generation;
+        self.local_environments.clear();
     }
 }
 

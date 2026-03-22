@@ -48,7 +48,10 @@ use std::{
     path::{Path, PathBuf},
     process,
     rc::Rc,
-    sync::{Arc, LazyLock, OnceLock},
+    sync::{
+        Arc, LazyLock, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 use theme::{ActiveTheme, GlobalTheme, ThemeRegistry};
@@ -327,6 +330,29 @@ To build it, run: cargo build -p cli",
 
     let app =
         Application::with_platform(gpui_platform::current_platform(false)).with_assets(Assets);
+    let refresh_system_environment = !stdout_is_a_pty();
+
+    #[cfg(target_os = "windows")]
+    if refresh_system_environment {
+        let background_executor = app.background_executor();
+        let reload_in_progress = Arc::new(AtomicBool::new(false));
+        app.on_system_environment_change({
+            let reload_in_progress = reload_in_progress.clone();
+            move || {
+                if reload_in_progress.swap(true, Ordering::AcqRel) {
+                    return;
+                }
+
+                let reload_in_progress = reload_in_progress.clone();
+                background_executor
+                    .spawn(async move {
+                        util::load_login_shell_environment().await.log_err();
+                        reload_in_progress.store(false, Ordering::Release);
+                    })
+                    .detach();
+            }
+        });
+    }
 
     let app_db = db::AppDatabase::new();
     let system_id = app.background_executor().spawn(system_id());
@@ -420,10 +446,9 @@ To build it, run: cargo build -p cli",
     );
 
     let (shell_env_loaded_tx, shell_env_loaded_rx) = oneshot::channel();
-    if !stdout_is_a_pty() {
+    if refresh_system_environment {
         app.background_executor()
             .spawn(async {
-                #[cfg(unix)]
                 util::load_login_shell_environment().await.log_err();
                 shell_env_loaded_tx.send(()).ok();
             })
