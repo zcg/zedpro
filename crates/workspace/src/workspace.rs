@@ -28,6 +28,7 @@ mod workspace_settings;
 pub use crate::notifications::NotificationFrame;
 pub use dock::Panel;
 pub use multi_workspace::{
+    CloseWorkspaceSidebar,
     DraggedSidebar, FocusWorkspaceSidebar, MultiWorkspace, MultiWorkspaceEvent,
     NewWorkspaceInWindow, NextWorkspaceInWindow, PreviousWorkspaceInWindow, Sidebar, SidebarHandle,
     SidebarWorkspaceEntry, ToggleWorkspaceSidebar,
@@ -1424,7 +1425,13 @@ impl Workspace {
                     this.collaborator_left(*peer_id, window, cx);
                 }
 
-                &project::Event::WorktreeRemoved(id) | &project::Event::WorktreeAdded(id) => {
+                &project::Event::WorktreeRemoved(_) => {
+                    this.update_window_title(window, cx);
+                    this.serialize_workspace(window, cx);
+                    this.update_history(cx);
+                }
+
+                &project::Event::WorktreeAdded(id) => {
                     this.update_window_title(window, cx);
                     if this
                         .project()
@@ -2165,9 +2172,17 @@ impl Workspace {
         &self.status_bar
     }
 
-    pub fn set_workspace_sidebar_open(&self, open: bool, cx: &mut App) {
+    pub fn set_workspace_sidebar_open(
+        &self,
+        open: bool,
+        has_notifications: bool,
+        show_toggle: bool,
+        cx: &mut App,
+    ) {
         self.status_bar.update(cx, |status_bar, cx| {
             status_bar.set_workspace_sidebar_open(open, cx);
+            status_bar.set_sidebar_has_notifications(has_notifications, cx);
+            status_bar.set_show_sidebar_toggle(show_toggle, cx);
         });
     }
 
@@ -3385,7 +3400,7 @@ impl Workspace {
             .map(|path| path.as_ref().to_path_buf())
     }
 
-    fn add_folder_to_project(
+    pub fn add_folder_to_project(
         &mut self,
         _: &AddFolderToProject,
         window: &mut Window,
@@ -7036,6 +7051,12 @@ impl Workspace {
 
     pub fn has_active_modal(&self, _: &mut Window, cx: &mut App) -> bool {
         self.modal_layer.read(cx).has_active_modal()
+    }
+
+    pub fn is_active_modal_command_palette(&self, cx: &mut App) -> bool {
+        self.modal_layer
+            .read(cx)
+            .is_active_modal_command_palette(cx)
     }
 
     pub fn active_modal<V: ManagedView + 'static>(&self, cx: &App) -> Option<Entity<V>> {
@@ -11117,6 +11138,7 @@ mod tests {
             assert!(workspace.right_dock().read(cx).is_open());
             assert!(!panel.is_zoomed(window, cx));
             assert!(!panel.read(cx).focus_handle(cx).contains_focused(window, cx));
+            assert!(pane.read(cx).focus_handle(cx).contains_focused(window, cx));
         });
 
         // Close the dock
@@ -11128,6 +11150,7 @@ mod tests {
             assert!(!workspace.right_dock().read(cx).is_open());
             assert!(!panel.is_zoomed(window, cx));
             assert!(!panel.read(cx).focus_handle(cx).contains_focused(window, cx));
+            assert!(pane.read(cx).focus_handle(cx).contains_focused(window, cx));
         });
 
         // Open the dock

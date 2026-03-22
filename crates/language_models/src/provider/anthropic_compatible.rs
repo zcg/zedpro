@@ -218,7 +218,12 @@ impl LanguageModelProvider for AnthropicCompatibleLanguageModelProvider {
                     max_output_tokens: model.max_output_tokens,
                     default_temperature: model.default_temperature,
                     extra_beta_headers: model.extra_beta_headers.clone(),
-                    mode: model.mode.unwrap_or_default().into(),
+                    mode: match model.mode.unwrap_or_default() {
+                        settings::ModelMode::Default => anthropic::AnthropicModelMode::Default,
+                        settings::ModelMode::Thinking { budget_tokens } => {
+                            anthropic::AnthropicModelMode::Thinking { budget_tokens }
+                        }
+                    },
                 })
             })
     }
@@ -249,7 +254,12 @@ impl LanguageModelProvider for AnthropicCompatibleLanguageModelProvider {
                     max_output_tokens: model.max_output_tokens,
                     default_temperature: model.default_temperature,
                     extra_beta_headers: model.extra_beta_headers.clone(),
-                    mode: model.mode.unwrap_or_default().into(),
+                    mode: match model.mode.unwrap_or_default() {
+                        settings::ModelMode::Default => anthropic::AnthropicModelMode::Default,
+                        settings::ModelMode::Thinking { budget_tokens } => {
+                            anthropic::AnthropicModelMode::Thinking { budget_tokens }
+                        }
+                    },
                 })
             })
             .collect()

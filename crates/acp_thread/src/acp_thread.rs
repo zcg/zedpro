@@ -31,6 +31,7 @@ use task::{Shell, ShellBuilder};
 pub use terminal::*;
 use text::Bias;
 use ui::App;
+use util::markdown::MarkdownEscaped;
 use util::path_list::PathList;
 use util::{ResultExt, get_default_system_shell_preferring_bash, paths::PathStyle};
 use uuid::Uuid;
@@ -246,6 +247,8 @@ impl ToolCall {
     ) -> Result<Self> {
         let title = if tool_call.kind == acp::ToolKind::Execute {
             tool_call.title
+        } else if tool_call.kind == acp::ToolKind::Edit {
+            MarkdownEscaped(tool_call.title.as_str()).to_string()
         } else if let Some((first_line, _)) = tool_call.title.split_once("\n") {
             first_line.to_owned() + "…"
         } else {
@@ -334,6 +337,8 @@ impl ToolCall {
             self.label.update(cx, |label, cx| {
                 if self.kind == acp::ToolKind::Execute {
                     label.replace(title, cx);
+                } else if self.kind == acp::ToolKind::Edit {
+                    label.replace(MarkdownEscaped(&title).to_string(), cx)
                 } else if let Some((first_line, _)) = title.split_once("\n") {
                     label.replace(first_line.to_owned() + "…", cx);
                 } else {
@@ -489,6 +494,58 @@ impl From<&ResolvedLocation> for AgentLocation {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum SelectedPermissionParams {
+    Terminal { patterns: Vec<String> },
+}
+
+#[derive(Debug)]
+pub struct SelectedPermissionOutcome {
+    pub option_id: acp::PermissionOptionId,
+    pub params: Option<SelectedPermissionParams>,
+}
+
+impl SelectedPermissionOutcome {
+    pub fn new(option_id: acp::PermissionOptionId) -> Self {
+        Self {
+            option_id,
+            params: None,
+        }
+    }
+
+    pub fn params(mut self, params: Option<SelectedPermissionParams>) -> Self {
+        self.params = params;
+        self
+    }
+}
+
+impl From<acp::PermissionOptionId> for SelectedPermissionOutcome {
+    fn from(option_id: acp::PermissionOptionId) -> Self {
+        Self::new(option_id)
+    }
+}
+
+impl From<SelectedPermissionOutcome> for acp::SelectedPermissionOutcome {
+    fn from(value: SelectedPermissionOutcome) -> Self {
+        Self::new(value.option_id)
+    }
+}
+
+#[derive(Debug)]
+pub enum RequestPermissionOutcome {
+    Cancelled,
+    Selected(SelectedPermissionOutcome),
+}
+
+impl From<RequestPermissionOutcome> for acp::RequestPermissionOutcome {
+    fn from(value: RequestPermissionOutcome) -> Self {
+        match value {
+            RequestPermissionOutcome::Cancelled => Self::Cancelled,
+            RequestPermissionOutcome::Selected(outcome) => Self::Selected(outcome.into()),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ToolCallStatus {
     /// The tool call hasn't started running yet, but we start showing it to
@@ -497,7 +554,7 @@ pub enum ToolCallStatus {
     /// The tool call is waiting for confirmation from the user.
     WaitingForConfirmation {
         options: PermissionOptions,
-        respond_tx: oneshot::Sender<acp::PermissionOptionId>,
+        respond_tx: oneshot::Sender<SelectedPermissionOutcome>,
     },
     /// The tool call is currently running.
     InProgress,
@@ -1326,6 +1383,18 @@ impl AcpThread {
             acp::SessionUpdate::Plan(plan) => {
                 self.update_plan(plan, cx);
             }
+            acp::SessionUpdate::SessionInfoUpdate(info_update) => {
+                if let acp::MaybeUndefined::Value(title) = info_update.title {
+                    let had_provisional = self.provisional_title.take().is_some();
+                    let title: SharedString = title.into();
+                    if title != self.title {
+                        self.title = title;
+                        cx.emit(AcpThreadEvent::TitleUpdated);
+                    } else if had_provisional {
+                        cx.emit(AcpThreadEvent::TitleUpdated);
+                    }
+                }
+            }
             acp::SessionUpdate::AvailableCommandsUpdate(acp::AvailableCommandsUpdate {
                 available_commands,
                 ..
@@ -1912,7 +1981,7 @@ impl AcpThread {
         tool_call: acp::ToolCallUpdate,
         options: PermissionOptions,
         cx: &mut Context<Self>,
-    ) -> Result<Task<acp::RequestPermissionOutcome>> {
+    ) -> Result<Task<RequestPermissionOutcome>> {
         let (tx, rx) = oneshot::channel();
 
         let status = ToolCallStatus::WaitingForConfirmation {
@@ -1928,10 +1997,8 @@ impl AcpThread {
 
         Ok(cx.spawn(async move |this, cx| {
             let outcome = match rx.await {
-                Ok(option) => acp::RequestPermissionOutcome::Selected(
-                    acp::SelectedPermissionOutcome::new(option),
-                ),
-                Err(oneshot::Canceled) => acp::RequestPermissionOutcome::Cancelled,
+                Ok(outcome) => RequestPermissionOutcome::Selected(outcome),
+                Err(oneshot::Canceled) => RequestPermissionOutcome::Cancelled,
             };
             this.update(cx, |_this, cx| {
                 cx.emit(AcpThreadEvent::ToolAuthorizationReceived(tool_call_id))
@@ -1944,7 +2011,7 @@ impl AcpThread {
     pub fn authorize_tool_call(
         &mut self,
         id: acp::ToolCallId,
-        option_id: acp::PermissionOptionId,
+        outcome: SelectedPermissionOutcome,
         option_kind: acp::PermissionOptionKind,
         cx: &mut Context<Self>,
     ) {
@@ -1965,7 +2032,7 @@ impl AcpThread {
         let curr_status = mem::replace(&mut call.status, new_status);
 
         if let ToolCallStatus::WaitingForConfirmation { respond_tx, .. } = curr_status {
-            respond_tx.send(option_id).log_err();
+            respond_tx.send(outcome).log_err();
         } else if cfg!(debug_assertions) {
             panic!("tried to authorize an already authorized tool call");
         }
@@ -4963,6 +5030,79 @@ mod tests {
             set_title_calls.borrow().as_slice(),
             &[SharedString::from("Helping with Rust question")],
             "real title should propagate to the connection"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_session_info_update_replaces_provisional_title_and_emits_event(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let connection = Rc::new(FakeAgentConnection::new());
+
+        let thread = cx
+            .update(|cx| {
+                connection.clone().new_session(
+                    project,
+                    PathList::new(&[Path::new(path!("/test"))]),
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+
+        let title_updated_events = Rc::new(RefCell::new(0usize));
+        let title_updated_events_for_subscription = title_updated_events.clone();
+        thread.update(cx, |_thread, cx| {
+            cx.subscribe(
+                &thread,
+                move |_thread, _event_thread, event: &AcpThreadEvent, _cx| {
+                    if matches!(event, AcpThreadEvent::TitleUpdated) {
+                        *title_updated_events_for_subscription.borrow_mut() += 1;
+                    }
+                },
+            )
+            .detach();
+        });
+
+        thread.update(cx, |thread, cx| {
+            thread.set_provisional_title("Hello, can you help…".into(), cx);
+        });
+        assert_eq!(
+            *title_updated_events.borrow(),
+            1,
+            "setting a provisional title should emit TitleUpdated"
+        );
+
+        let result = thread.update(cx, |thread, cx| {
+            thread.handle_session_update(
+                acp::SessionUpdate::SessionInfoUpdate(
+                    acp::SessionInfoUpdate::new().title("Helping with Rust question"),
+                ),
+                cx,
+            )
+        });
+        result.expect("session info update should succeed");
+
+        thread.read_with(cx, |thread, _| {
+            assert_eq!(thread.title().as_ref(), "Helping with Rust question");
+            assert!(
+                !thread.has_provisional_title(),
+                "session info title update should clear provisional title"
+            );
+        });
+
+        assert_eq!(
+            *title_updated_events.borrow(),
+            2,
+            "session info title update should emit TitleUpdated"
+        );
+        assert!(
+            connection.set_title_calls.borrow().is_empty(),
+            "session info title update should not propagate back to the connection"
         );
     }
 }

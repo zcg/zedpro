@@ -45,6 +45,8 @@ pub struct ListItem {
     rounded: bool,
     overflow_x: bool,
     focused: Option<bool>,
+    docked_right: bool,
+    height: Option<Pixels>,
 }
 
 impl ListItem {
@@ -74,6 +76,8 @@ impl ListItem {
             rounded: false,
             overflow_x: false,
             focused: None,
+            docked_right: false,
+            height: None,
         }
     }
 
@@ -185,6 +189,16 @@ impl ListItem {
         self.focused = Some(focused);
         self
     }
+
+    pub fn docked_right(mut self, docked_right: bool) -> Self {
+        self.docked_right = docked_right;
+        self
+    }
+
+    pub fn height(mut self, height: Pixels) -> Self {
+        self.height = Some(height);
+        self
+    }
 }
 
 impl Disableable for ListItem {
@@ -213,6 +227,7 @@ impl RenderOnce for ListItem {
             .id(self.id)
             .when_some(self.group_name, |this, group| this.group(group))
             .w_full()
+            .when_some(self.height, |this, height| this.h(height))
             .relative()
             // When an item is inset draw the indent spacing outside of the item
             .when(self.inset, |this| {
@@ -223,6 +238,7 @@ impl RenderOnce for ListItem {
                 this.when_some(self.focused, |this, focused| {
                     if focused {
                         this.border_1()
+                            .when(self.docked_right, |this| this.border_r_2())
                             .border_color(cx.theme().colors().border_focused)
                             .bg(cx.theme().colors().ghost_element_selected)
                     } else {
