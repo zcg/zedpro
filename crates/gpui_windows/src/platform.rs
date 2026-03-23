@@ -19,7 +19,7 @@ use windows::{
     UI::ViewManagement::UISettings,
     Win32::{
         Foundation::*,
-        Graphics::{Direct3D11::ID3D11Device, Gdi::*},
+        Graphics::Gdi::*,
         Security::Credentials::*,
         System::{Com::*, LibraryLoader::*, Ole::*, SystemInformation::*},
         UI::{Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
@@ -181,10 +181,10 @@ impl WindowsPlatform {
         }
         let (directx_devices, text_system, direct_write_text_system) = if !headless {
             let devices = DirectXDevices::new().context("Creating DirectX devices")?;
-            let dw_text_system = Arc::new(
-                DirectWriteTextSystem::new(&devices)
-                    .context("Error creating DirectWriteTextSystem")?,
-            );
+            let (devices, dw_text_system, startup_note) =
+                initialize_windows_renderer_stack(devices)
+                    .context("Initializing Windows renderer stack")?;
+            log_windows_renderer_startup(&devices, startup_note.as_deref());
             (
                 Some(devices),
                 dw_text_system.clone() as Arc<dyn PlatformTextSystem>,
@@ -398,7 +398,7 @@ impl WindowsPlatform {
                 let vsync_provider = VSyncProvider::new();
                 loop {
                     vsync_provider.wait_for_vsync();
-                    if check_device_lost(&directx_device.device)
+                    if check_device_lost(&directx_device)
                         || invalidate_devices.fetch_and(false, Ordering::Acquire)
                     {
                         if let Err(err) = handle_gpu_device_lost(
@@ -1392,14 +1392,105 @@ fn should_auto_hide_scrollbars() -> Result<bool> {
     Ok(ui_settings.AutoHideScrollBars()?)
 }
 
-fn check_device_lost(device: &ID3D11Device) -> bool {
-    let device_state = unsafe { device.GetDeviceRemovedReason() };
-    match device_state {
-        Ok(_) => false,
-        Err(err) => {
-            log::error!("DirectX device lost detected: {:?}", err);
-            true
+fn check_device_lost(directx_devices: &DirectXDevices) -> bool {
+    match directx_devices.active_backend() {
+        DirectXBackend::Direct3d11 => {
+            let device_state = unsafe { directx_devices.device.GetDeviceRemovedReason() };
+            match device_state {
+                Ok(_) => false,
+                Err(err) => {
+                    log::error!("DirectX device lost detected: {:?}", err);
+                    true
+                }
+            }
         }
+        DirectXBackend::Direct3d12 => {
+            let Some(device) = directx_devices.d3d12_device() else {
+                log::error!(
+                    "Direct3D 12 backend is active, but the cached Direct3D 12 device is missing"
+                );
+                return true;
+            };
+            let device_state = unsafe { device.GetDeviceRemovedReason() };
+            match device_state {
+                Ok(_) => false,
+                Err(err) => {
+                    log::error!("Direct3D 12 device lost detected: {:?}", err);
+                    true
+                }
+            }
+        }
+    }
+}
+
+fn initialize_windows_renderer_stack(
+    devices: DirectXDevices,
+) -> Result<(DirectXDevices, Arc<DirectWriteTextSystem>, Option<String>)> {
+    match DirectWriteTextSystem::new(&devices) {
+        Ok(text_system) => Ok((devices, Arc::new(text_system), None)),
+        Err(error) if devices.active_backend() == DirectXBackend::Direct3d12 => {
+            let fallback_reason = format!("{error:#}");
+            let fallback_devices = devices.with_active_backend(DirectXBackend::Direct3d11);
+            let fallback_text_system = Arc::new(
+                DirectWriteTextSystem::new(&fallback_devices).with_context(|| {
+                    format!(
+                        "Error creating DirectWriteTextSystem after falling back to {}",
+                        DirectXBackend::Direct3d11.display_name()
+                    )
+                })?,
+            );
+            Ok((
+                fallback_devices,
+                fallback_text_system,
+                Some(format!(
+                    "Requested {} startup path failed during DirectWrite initialization and the platform fell back to {}: {}",
+                    DirectXBackend::Direct3d12.display_name(),
+                    DirectXBackend::Direct3d11.display_name(),
+                    fallback_reason
+                )),
+            ))
+        }
+        Err(error) => Err(error).context("Error creating DirectWriteTextSystem"),
+    }
+}
+
+fn log_windows_renderer_startup(directx_devices: &DirectXDevices, startup_note: Option<&str>) {
+    let adapter_name = directx_devices
+        .adapter_name()
+        .unwrap_or_else(|error| format!("unknown adapter ({error:#})"));
+    let d3d11_feature_level = display_feature_level(directx_devices.d3d11_feature_level());
+    let d3d12_feature_level = directx_devices
+        .d3d12_feature_level()
+        .map(display_feature_level)
+        .unwrap_or("unavailable");
+    let request = directx_devices.backend_request().display_name();
+    let request_raw = directx_devices.backend_request_raw().unwrap_or("unset");
+    let (d3d11_feature_label, d3d12_feature_label) =
+        if directx_devices.active_backend() == crate::directx_devices::DirectXBackend::Direct3d12
+        {
+            (
+                "D3D11 compatibility feature level",
+                "D3D12 feature level",
+            )
+        } else {
+            ("D3D11 feature level", "D3D12 supported feature level")
+        };
+
+    log::info!(
+        "========== Windows renderer startup: adapter=\"{}\", request={} (raw=\"{}\"), preferred={}, actual={}, {}={}, {}={} ==========",
+        adapter_name,
+        request,
+        request_raw,
+        directx_devices.preferred_backend().display_name(),
+        directx_devices.active_backend().display_name(),
+        d3d12_feature_label,
+        d3d12_feature_level,
+        d3d11_feature_label,
+        d3d11_feature_level,
+    );
+
+    if let Some(note) = startup_note {
+        log::warn!("Windows renderer startup note: {note}");
     }
 }
 
@@ -1414,9 +1505,38 @@ fn handle_gpu_device_lost(
     // If we don't wait, the final drawing result will be blank.
     std::thread::sleep(std::time::Duration::from_millis(350));
 
-    *directx_devices = try_to_recover_from_device_lost(|| {
+    let mut recovered_devices = try_to_recover_from_device_lost(|| {
         DirectXDevices::new().context("Failed to recreate new DirectX devices after device lost")
     })?;
+
+    if let Some(text_system) = text_system.upgrade() {
+        if let Err(error) = text_system.handle_gpu_lost(&recovered_devices) {
+            if recovered_devices.active_backend() == DirectXBackend::Direct3d12 {
+                let fallback_reason = format!("{error:#}");
+                recovered_devices =
+                    recovered_devices.with_active_backend(DirectXBackend::Direct3d11);
+                text_system
+                    .handle_gpu_lost(&recovered_devices)
+                    .with_context(|| {
+                        format!(
+                            "Failed to rebuild DirectWrite after device-loss fallback to {}",
+                            DirectXBackend::Direct3d11.display_name()
+                        )
+                    })?;
+                log::warn!(
+                    "Windows renderer device-loss recovery fell back to {} after a {} recovery attempt failed: {}",
+                    DirectXBackend::Direct3d11.display_name(),
+                    DirectXBackend::Direct3d12.display_name(),
+                    fallback_reason
+                );
+            } else {
+                return Err(error).context("Updating DirectWrite text system after device lost");
+            }
+        }
+    }
+
+    *directx_devices = recovered_devices;
+    log_windows_renderer_startup(directx_devices, Some("GPU device recovery completed"));
     log::info!("DirectX devices successfully recreated.");
 
     let lparam = LPARAM(directx_devices as *const _ as _);
@@ -1429,9 +1549,6 @@ fn handle_gpu_device_lost(
         );
     }
 
-    if let Some(text_system) = text_system.upgrade() {
-        text_system.handle_gpu_lost(&directx_devices)?;
-    }
     if let Some(all_windows) = all_windows.upgrade() {
         for window in all_windows.read().iter() {
             unsafe {

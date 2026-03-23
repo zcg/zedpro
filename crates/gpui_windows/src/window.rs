@@ -42,12 +42,14 @@ impl std::ops::Deref for WindowsWindow {
 pub struct WindowsWindowState {
     pub origin: Cell<Point<Pixels>>,
     pub logical_size: Cell<Size<Pixels>>,
+    pub pending_device_size_during_resize: Cell<Option<Size<DevicePixels>>>,
     pub min_size: Option<Size<Pixels>>,
     pub fullscreen_restore_bounds: Cell<Bounds<Pixels>>,
     pub border_offset: WindowBorderOffset,
     pub appearance: Cell<WindowAppearance>,
     pub background_appearance: Cell<WindowBackgroundAppearance>,
     pub scale_factor: Cell<f32>,
+    pub in_size_move_loop: Cell<bool>,
     pub restore_from_minimized: Cell<Option<Box<dyn FnMut(RequestFrameOptions)>>>,
 
     pub callbacks: Callbacks,
@@ -58,7 +60,7 @@ pub struct WindowsWindowState {
     pub last_reported_capslock: Cell<Option<Capslock>>,
     pub hovered: Cell<bool>,
 
-    pub renderer: RefCell<DirectXRenderer>,
+    pub renderer: RefCell<WindowRenderer>,
 
     pub click_state: ClickState,
     pub current_cursor: Cell<Option<HCURSOR>>,
@@ -121,9 +123,11 @@ impl WindowsWindowState {
             origin,
             size: logical_size,
         };
+        let pending_device_size_during_resize = None;
         let border_offset = WindowBorderOffset::default();
+        let in_size_move_loop = false;
         let restore_from_minimized = None;
-        let renderer = DirectXRenderer::new(hwnd, directx_devices, disable_direct_composition)
+        let renderer = WindowRenderer::new(hwnd, directx_devices, disable_direct_composition)
             .context("Creating DirectX renderer")?;
         let callbacks = Callbacks::default();
         let input_handler = None;
@@ -139,11 +143,13 @@ impl WindowsWindowState {
         Ok(Self {
             origin: Cell::new(origin),
             logical_size: Cell::new(logical_size),
+            pending_device_size_during_resize: Cell::new(pending_device_size_during_resize),
             fullscreen_restore_bounds: Cell::new(fullscreen_restore_bounds),
             border_offset,
             appearance: Cell::new(appearance),
             background_appearance: Cell::new(WindowBackgroundAppearance::Opaque),
             scale_factor: Cell::new(scale_factor),
+            in_size_move_loop: Cell::new(in_size_move_loop),
             restore_from_minimized: Cell::new(restore_from_minimized),
             min_size,
             callbacks,

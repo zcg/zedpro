@@ -70,6 +70,10 @@ pub const DEFAULT_ADDITIONAL_WINDOW_SIZE: Size<Pixels> = Size {
     height: Pixels(750.),
 };
 
+fn is_closed_window_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.to_string() == "window not found")
+}
+
 /// Represents the two different phases when dispatching events.
 #[derive(Default, Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DispatchPhase {
@@ -1291,8 +1295,7 @@ impl Window {
         platform_window.on_active_status_change(Box::new({
             let mut cx = cx.to_async();
             move |active| {
-                handle
-                    .update(&mut cx, |_, window, cx| {
+                match handle.update(&mut cx, |_, window, cx| {
                         window.active.set(active);
                         window.modifiers = window.platform_window.modifiers();
                         window.capslock = window.platform_window.capslock();
@@ -1305,8 +1308,15 @@ impl Window {
                         window.refresh();
 
                         SystemWindowTabController::update_last_active(cx, window.handle.id);
-                    })
-                    .log_err();
+                    }) {
+                    Ok(()) => {}
+                    Err(error) if is_closed_window_error(&error) => {
+                        log::debug!(
+                            "Ignoring active-status change for a window that is already closed."
+                        );
+                    }
+                    Err(error) => log::error!("{error:#}"),
+                }
             }
         }));
         platform_window.on_hover_status_change(Box::new({

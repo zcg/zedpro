@@ -11,7 +11,7 @@ use windows::{
         ThreadPool, ThreadPoolTimer, TimerElapsedHandler, WorkItemHandler, WorkItemPriority,
     },
     Win32::{
-        Foundation::{LPARAM, WPARAM},
+        Foundation::{ERROR_INVALID_WINDOW_HANDLE, LPARAM, WPARAM},
         Media::{timeBeginPeriod, timeEndPeriod},
         System::Threading::{
             GetCurrentThread, HIGH_PRIORITY_CLASS, SetPriorityClass, SetThreadPriority,
@@ -148,13 +148,20 @@ impl PlatformDispatcher for WindowsDispatcher {
             Ok(_) => {
                 if !self.wake_posted.swap(true, Ordering::AcqRel) {
                     unsafe {
-                        PostMessageW(
+                        if let Err(error) = PostMessageW(
                             Some(self.platform_window_handle.as_raw()),
                             WM_GPUI_TASK_DISPATCHED_ON_MAIN_THREAD,
                             WPARAM(self.validation_number),
                             LPARAM(0),
-                        )
-                        .log_err();
+                        ) {
+                            if error.code() == ERROR_INVALID_WINDOW_HANDLE.to_hresult() {
+                                log::debug!(
+                                    "Skipping main-thread wake because the platform window handle is already invalid."
+                                );
+                            } else {
+                                log::error!("Failed to wake the main thread: {error:#}");
+                            }
+                        }
                     }
                 }
             }

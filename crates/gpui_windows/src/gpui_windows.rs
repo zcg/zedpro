@@ -3,6 +3,7 @@
 mod clipboard;
 mod destination_list;
 mod direct_write;
+mod directx12_renderer;
 mod directx_atlas;
 mod directx_devices;
 mod directx_renderer;

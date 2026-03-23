@@ -2119,6 +2119,13 @@ fn is_ep_store_provider(provider: EditPredictionProvider) -> bool {
     }
 }
 
+fn is_missing_prediction_credentials_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains("no credentials provided") || message.contains("credentials not found")
+    })
+}
+
 impl EditPredictionStore {
     fn queue_prediction_refresh(
         &mut self,
@@ -2216,7 +2223,19 @@ impl EditPredictionStore {
                 return None;
             }
 
-            let new_prediction_result = do_refresh(this.clone(), cx).await.log_err().flatten();
+            let new_prediction_result = match do_refresh(this.clone(), cx).await {
+                Ok(result) => result,
+                Err(error) if is_missing_prediction_credentials_error(&error) => {
+                    log::debug!(
+                        "Skipping edit prediction refresh because credentials are unavailable: {error}"
+                    );
+                    None
+                }
+                Err(error) => {
+                    log::error!("{error:#}");
+                    None
+                }
+            };
             let new_prediction_id = new_prediction_result
                 .as_ref()
                 .map(|(prediction, _)| prediction.id.clone());

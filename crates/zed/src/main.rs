@@ -1838,19 +1838,33 @@ fn watch_themes(fs: Arc<dyn fs::Fs>, cx: &mut App) {
             for event in paths {
                 if fs.metadata(&event.path).await.ok().flatten().is_some() {
                     let theme_registry = cx.update(|cx| ThemeRegistry::global(cx));
-                    if theme_registry
-                        .load_user_theme(&event.path, fs.clone())
-                        .await
-                        .log_err()
-                        .is_some()
-                    {
-                        cx.update(GlobalTheme::reload_theme);
+                    match theme_registry.load_user_theme(&event.path, fs.clone()).await {
+                        Ok(()) => {
+                            cx.update(GlobalTheme::reload_theme);
+                        }
+                        Err(error) if is_permission_denied_error(&error) => {
+                            log::debug!(
+                                "Skipping transient user theme reload for {:?}: {error}",
+                                event.path
+                            );
+                        }
+                        Err(error) => {
+                            log::error!("{error:#}");
+                        }
                     }
                 }
             }
         }
     })
     .detach()
+}
+
+fn is_permission_denied_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<io::Error>()
+            .is_some_and(|io_error| io_error.kind() == io::ErrorKind::PermissionDenied)
+    })
 }
 
 fn refresh_window_background_appearance(cx: &mut App) {

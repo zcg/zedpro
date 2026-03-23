@@ -20,6 +20,7 @@ use windows::{
 };
 
 use crate::directx_renderer::shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget};
+use crate::directx12_renderer::DirectX12Renderer;
 use crate::*;
 use gpui::*;
 
@@ -27,6 +28,94 @@ pub(crate) const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSI
 const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 // This configuration is used for MSAA rendering on paths only, and it's guaranteed to be supported by DirectX 11.
 const PATH_MULTISAMPLE_COUNT: u32 = 4;
+
+pub(crate) enum WindowRenderer {
+    Direct3d11(DirectXRenderer),
+    Direct3d12(DirectX12Renderer),
+}
+
+impl WindowRenderer {
+    pub(crate) fn new(
+        hwnd: HWND,
+        directx_devices: &DirectXDevices,
+        disable_direct_composition: bool,
+    ) -> Result<Self> {
+        match directx_devices.active_backend() {
+            DirectXBackend::Direct3d11 => {
+                log::info!(
+                    "Creating window renderer with {}.",
+                    DirectXBackend::Direct3d11.display_name()
+                );
+                Ok(Self::Direct3d11(DirectXRenderer::new(
+                    hwnd,
+                    directx_devices,
+                    disable_direct_composition,
+                )?))
+            }
+            DirectXBackend::Direct3d12 => {
+                log::info!(
+                    "Creating window renderer with {}.",
+                    DirectXBackend::Direct3d12.display_name()
+                );
+                Ok(Self::Direct3d12(DirectX12Renderer::new(
+                    hwnd,
+                    directx_devices,
+                    disable_direct_composition,
+                )?))
+            }
+        }
+    }
+
+    pub(crate) fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
+        match self {
+            Self::Direct3d11(renderer) => renderer.sprite_atlas(),
+            Self::Direct3d12(renderer) => renderer.sprite_atlas(),
+        }
+    }
+
+    pub(crate) fn handle_device_lost(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
+        match self {
+            Self::Direct3d11(renderer) => renderer.handle_device_lost(directx_devices),
+            Self::Direct3d12(renderer) => renderer.handle_device_lost(directx_devices),
+        }
+    }
+
+    pub(crate) fn draw(
+        &mut self,
+        scene: &Scene,
+        background_appearance: WindowBackgroundAppearance,
+    ) -> Result<()> {
+        match self {
+            Self::Direct3d11(renderer) => renderer.draw(scene, background_appearance),
+            Self::Direct3d12(renderer) => renderer.draw(scene, background_appearance),
+        }
+    }
+
+    pub(crate) fn resize(&mut self, new_size: Size<DevicePixels>) -> Result<()> {
+        match self {
+            Self::Direct3d11(renderer) => renderer.resize(new_size),
+            Self::Direct3d12(renderer) => renderer.resize(new_size),
+        }
+    }
+
+    pub(crate) fn uses_direct3d12(&self) -> bool {
+        matches!(self, Self::Direct3d12(_))
+    }
+
+    pub(crate) fn gpu_specs(&self) -> Result<GpuSpecs> {
+        match self {
+            Self::Direct3d11(renderer) => renderer.gpu_specs(),
+            Self::Direct3d12(renderer) => renderer.gpu_specs(),
+        }
+    }
+
+    pub(crate) fn mark_drawable(&mut self) {
+        match self {
+            Self::Direct3d11(renderer) => renderer.mark_drawable(),
+            Self::Direct3d12(renderer) => renderer.mark_drawable(),
+        }
+    }
+}
 
 pub(crate) struct FontInfo {
     pub gamma_ratios: [f32; 4],
@@ -112,6 +201,7 @@ impl DirectXRendererDevices {
             dxgi_factory,
             device,
             device_context,
+            ..
         } = directx_devices;
         let dxgi_device = if disable_direct_composition {
             None
@@ -1597,6 +1687,7 @@ pub(crate) mod shader_resources {
         MonochromeSprite,
         SubpixelSprite,
         PolychromeSprite,
+        #[allow(dead_code)]
         EmojiRasterization,
     }
 

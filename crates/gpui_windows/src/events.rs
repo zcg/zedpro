@@ -183,6 +183,7 @@ impl WindowsWindowInner {
         let width = lparam.loword().max(1) as i32;
         let height = lparam.hiword().max(1) as i32;
         let new_size = size(DevicePixels(width), DevicePixels(height));
+        let uses_direct3d12 = self.state.renderer.borrow().uses_direct3d12();
 
         let scale_factor = self.state.scale_factor.get();
         let mut should_resize_renderer = false;
@@ -191,6 +192,20 @@ impl WindowsWindowInner {
                 .callbacks
                 .request_frame
                 .set(Some(restore_from_minimized));
+        } else if self.state.in_size_move_loop.get() && uses_direct3d12 {
+            log::trace!(
+                "Deferring Direct3D 12 size handling during interactive size/move loop to {}x{}.",
+                width,
+                height
+            );
+            self.state
+                .pending_device_size_during_resize
+                .set(Some(new_size));
+            return Some(0);
+        } else if self.state.in_size_move_loop.get() {
+            self.state
+                .pending_device_size_during_resize
+                .set(Some(new_size));
         } else {
             should_resize_renderer = true;
         }
@@ -223,6 +238,8 @@ impl WindowsWindowInner {
     }
 
     fn handle_size_move_loop(&self, handle: HWND) -> Option<isize> {
+        self.state.in_size_move_loop.set(true);
+        self.state.pending_device_size_during_resize.set(None);
         unsafe {
             let ret = SetTimer(
                 Some(handle),
@@ -241,8 +258,21 @@ impl WindowsWindowInner {
     }
 
     fn handle_size_move_loop_exit(&self, handle: HWND) -> Option<isize> {
+        self.state.in_size_move_loop.set(false);
         unsafe {
             KillTimer(Some(handle), SIZE_MOVE_LOOP_TIMER_ID).log_err();
+        }
+        if let Some(device_size) = self.state.pending_device_size_during_resize.take() {
+            let scale_factor = self.state.scale_factor.get();
+            log::info!(
+                "Applying deferred renderer resize after interactive size/move loop to {}x{}.",
+                device_size.width.0,
+                device_size.height.0
+            );
+            self.handle_size_change(device_size, scale_factor, true);
+            unsafe {
+                let _ = RedrawWindow(Some(handle), None, None, RDW_INVALIDATE | RDW_UPDATENOW);
+            }
         }
         None
     }
@@ -643,9 +673,12 @@ impl WindowsWindowInner {
                     .log_err();
             } else {
                 if let Some(ctx) = ImeContext::get(handle) {
-                    ImmNotifyIME(*ctx, NI_COMPOSITIONSTR, CPS_COMPLETE, 0)
-                        .ok()
-                        .log_err();
+                    if !ImmNotifyIME(*ctx, NI_COMPOSITIONSTR, CPS_COMPLETE, 0).as_bool() {
+                        let error = std::io::Error::last_os_error();
+                        if error.raw_os_error().unwrap_or_default() != 0 {
+                            log::error!("ImmNotifyIME(CPS_COMPLETE) failed: {error}");
+                        }
+                    }
                 }
                 ImmAssociateContextEx(handle, HIMC::default(), 0)
                     .ok()
