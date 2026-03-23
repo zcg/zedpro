@@ -26,9 +26,9 @@ use workspace::notifications::{
     Notification as WorkspaceNotification, NotificationId, SuppressEvent,
 };
 use workspace::{
-    material_popup_surface_color,
     Workspace,
     dock::{DockPosition, Panel, PanelEvent},
+    material_popup_surface_color,
 };
 
 const LOADING_THRESHOLD: usize = 30;

@@ -35,9 +35,6 @@ pub struct WorkspaceSettings {
     pub close_on_file_delete: bool,
     pub close_panel_on_toggle: bool,
     pub use_system_window_tabs: bool,
-    /// Controls how next/previous switching actions interact with native window tab groups.
-    /// See `settings::WindowTabLinkMode` for supported values.
-    pub window_tab_link_mode: settings::WindowTabLinkMode,
     pub zoomed_padding: bool,
     pub window_decorations: settings::WindowDecorations,
     pub window_background_material: settings::WindowBackgroundMaterial,
@@ -120,7 +117,6 @@ impl Settings for WorkspaceSettings {
             close_on_file_delete: workspace.close_on_file_delete.unwrap(),
             close_panel_on_toggle: workspace.close_panel_on_toggle.unwrap(),
             use_system_window_tabs: workspace.use_system_window_tabs.unwrap(),
-            window_tab_link_mode: workspace.window_tab_link_mode.unwrap(),
             zoomed_padding: workspace.zoomed_padding.unwrap(),
             window_decorations: workspace.window_decorations.unwrap(),
             window_background_material: workspace.window_background_material.unwrap(),

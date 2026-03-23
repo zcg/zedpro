@@ -71,7 +71,9 @@ pub const DEFAULT_ADDITIONAL_WINDOW_SIZE: Size<Pixels> = Size {
 };
 
 fn is_closed_window_error(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| cause.to_string() == "window not found")
+    error
+        .chain()
+        .any(|cause| cause.to_string() == "window not found")
 }
 
 /// Represents the two different phases when dispatching events.
@@ -1294,29 +1296,27 @@ impl Window {
         }));
         platform_window.on_active_status_change(Box::new({
             let mut cx = cx.to_async();
-            move |active| {
-                match handle.update(&mut cx, |_, window, cx| {
-                        window.active.set(active);
-                        window.modifiers = window.platform_window.modifiers();
-                        window.capslock = window.platform_window.capslock();
-                        window
-                            .activation_observers
-                            .clone()
-                            .retain(&(), |callback| callback(window, cx));
+            move |active| match handle.update(&mut cx, |_, window, cx| {
+                window.active.set(active);
+                window.modifiers = window.platform_window.modifiers();
+                window.capslock = window.platform_window.capslock();
+                window
+                    .activation_observers
+                    .clone()
+                    .retain(&(), |callback| callback(window, cx));
 
-                        window.bounds_changed(cx);
-                        window.refresh();
+                window.bounds_changed(cx);
+                window.refresh();
 
-                        SystemWindowTabController::update_last_active(cx, window.handle.id);
-                    }) {
-                    Ok(()) => {}
-                    Err(error) if is_closed_window_error(&error) => {
-                        log::debug!(
-                            "Ignoring active-status change for a window that is already closed."
-                        );
-                    }
-                    Err(error) => log::error!("{error:#}"),
+                SystemWindowTabController::update_last_active(cx, window.handle.id);
+            }) {
+                Ok(()) => {}
+                Err(error) if is_closed_window_error(&error) => {
+                    log::debug!(
+                        "Ignoring active-status change for a window that is already closed."
+                    );
                 }
+                Err(error) => log::error!("{error:#}"),
             }
         }));
         platform_window.on_hover_status_change(Box::new({

@@ -202,7 +202,10 @@ impl DirectX12Renderer {
 
         let devices = DirectX12RendererDevices::new(directx_devices, disable_direct_composition)
             .context("Creating Direct3D 12 devices")?;
-        let atlas = Arc::new(DirectX12Atlas::new(&devices.device, &devices.command_queue)?);
+        let atlas = Arc::new(DirectX12Atlas::new(
+            &devices.device,
+            &devices.command_queue,
+        )?);
         let resources =
             DirectX12RendererResources::new(&devices, 1, 1, hwnd, disable_direct_composition)
                 .context("Creating Direct3D 12 resources")?;
@@ -214,9 +217,8 @@ impl DirectX12Renderer {
         let direct_composition = if disable_direct_composition {
             None
         } else {
-            let composition =
-                DirectCompositionLayer::new(hwnd)
-                    .context("Creating DirectComposition for Direct3D 12")?;
+            let composition = DirectCompositionLayer::new(hwnd)
+                .context("Creating DirectComposition for Direct3D 12")?;
             composition
                 .set_swap_chain(&resources.swap_chain)
                 .context("Binding Direct3D 12 swap chain to DirectComposition")?;
@@ -373,14 +375,9 @@ impl DirectX12Renderer {
             .release_recorded_references()
             .context("Releasing Direct3D 12 command-list references before resize")?;
         if let Some(direct_composition) = &self.direct_composition {
-            let new_resources = DirectX12RendererResources::new(
-                &self.devices,
-                width,
-                height,
-                self.hwnd,
-                false,
-            )
-            .context("Recreating Direct3D 12 resources for DirectComposition resize")?;
+            let new_resources =
+                DirectX12RendererResources::new(&self.devices, width, height, self.hwnd, false)
+                    .context("Recreating Direct3D 12 resources for DirectComposition resize")?;
             direct_composition
                 .set_swap_chain(&new_resources.swap_chain)
                 .context("Switching DirectComposition to resized Direct3D 12 swap chain")?;
@@ -428,7 +425,10 @@ impl DirectX12Renderer {
     fn pre_draw(&mut self, clear_color: [f32; 4]) -> Result<()> {
         self.globals.global_params_buffer.update(&GlobalParams {
             gamma_ratios: self.font_info.gamma_ratios,
-            viewport_size: [self.resources.viewport.Width, self.resources.viewport.Height],
+            viewport_size: [
+                self.resources.viewport.Width,
+                self.resources.viewport.Height,
+            ],
             grayscale_enhanced_contrast: self.font_info.grayscale_enhanced_contrast,
             subpixel_enhanced_contrast: self.font_info.subpixel_enhanced_contrast,
         });
@@ -545,7 +545,11 @@ impl DirectX12Renderer {
             return Ok(());
         }
         let pipeline_state = self.pipelines.shadow_pipeline.pipeline_state.clone();
-        let gpu_va = self.pipelines.shadow_pipeline.buffer.gpu_virtual_address(start as u32);
+        let gpu_va = self
+            .pipelines
+            .shadow_pipeline
+            .buffer
+            .gpu_virtual_address(start as u32);
         self.bind_draw_state(
             &pipeline_state,
             gpu_va,
@@ -566,7 +570,11 @@ impl DirectX12Renderer {
             return Ok(());
         }
         let pipeline_state = self.pipelines.quad_pipeline.pipeline_state.clone();
-        let gpu_va = self.pipelines.quad_pipeline.buffer.gpu_virtual_address(start as u32);
+        let gpu_va = self
+            .pipelines
+            .quad_pipeline
+            .buffer
+            .gpu_virtual_address(start as u32);
         self.bind_draw_state(
             &pipeline_state,
             gpu_va,
@@ -702,7 +710,11 @@ impl DirectX12Renderer {
             .path_sprite_pipeline
             .update_buffer(&self.devices.device, &sprites)?;
         let pipeline_state = self.pipelines.path_sprite_pipeline.pipeline_state.clone();
-        let gpu_va = self.pipelines.path_sprite_pipeline.buffer.gpu_virtual_address(0);
+        let gpu_va = self
+            .pipelines
+            .path_sprite_pipeline
+            .buffer
+            .gpu_virtual_address(0);
         let texture = self.resources.path_intermediate_texture.clone();
         self.bind_draw_state(
             &pipeline_state,
@@ -724,7 +736,11 @@ impl DirectX12Renderer {
             return Ok(());
         }
         let pipeline_state = self.pipelines.underline_pipeline.pipeline_state.clone();
-        let gpu_va = self.pipelines.underline_pipeline.buffer.gpu_virtual_address(start as u32);
+        let gpu_va = self
+            .pipelines
+            .underline_pipeline
+            .buffer
+            .gpu_virtual_address(start as u32);
         self.bind_draw_state(
             &pipeline_state,
             gpu_va,
@@ -754,7 +770,11 @@ impl DirectX12Renderer {
             .get_texture_binding(texture_id)
             .context("Missing Direct3D 12 monochrome atlas texture")?;
         let pipeline_state = self.pipelines.mono_sprites.pipeline_state.clone();
-        let gpu_va = self.pipelines.mono_sprites.buffer.gpu_virtual_address(start as u32);
+        let gpu_va = self
+            .pipelines
+            .mono_sprites
+            .buffer
+            .gpu_virtual_address(start as u32);
         self.bind_draw_state(
             &pipeline_state,
             gpu_va,
@@ -818,7 +838,11 @@ impl DirectX12Renderer {
             .get_texture_binding(texture_id)
             .context("Missing Direct3D 12 polychrome atlas texture")?;
         let pipeline_state = self.pipelines.poly_sprites.pipeline_state.clone();
-        let gpu_va = self.pipelines.poly_sprites.buffer.gpu_virtual_address(start as u32);
+        let gpu_va = self
+            .pipelines
+            .poly_sprites
+            .buffer
+            .gpu_virtual_address(start as u32);
         self.bind_draw_state(
             &pipeline_state,
             gpu_va,
@@ -898,7 +922,7 @@ impl DirectX12Renderer {
         Ok(gpu_handle)
     }
 
-fn current_back_buffer(&self) -> Result<&DirectX12BackBuffer> {
+    fn current_back_buffer(&self) -> Result<&DirectX12BackBuffer> {
         let index = unsafe { self.resources.swap_chain.GetCurrentBackBufferIndex() as usize };
         self.resources
             .back_buffers
@@ -1086,16 +1110,13 @@ impl DirectX12RendererResources {
         let old_back_buffers = std::mem::take(&mut self.back_buffers);
         drop(old_back_buffers);
         unsafe {
-            if let Err(error) = self
-                .swap_chain
-                .ResizeBuffers(
-                    BUFFER_COUNT as u32,
-                    width,
-                    height,
-                    RENDER_TARGET_FORMAT,
-                    DXGI_SWAP_CHAIN_FLAG(0),
-                )
-            {
+            if let Err(error) = self.swap_chain.ResizeBuffers(
+                BUFFER_COUNT as u32,
+                width,
+                height,
+                RENDER_TARGET_FORMAT,
+                DXGI_SWAP_CHAIN_FLAG(0),
+            ) {
                 log::error!(
                     "Direct3D 12 ResizeBuffers failed while resizing swap chain to {}x{}: {error:#}",
                     width,
@@ -1162,7 +1183,9 @@ impl DirectX12RendererResources {
 impl DirectCompositionLayer {
     fn new(hwnd: HWND) -> Result<Self> {
         let comp_device = unsafe {
-            DCompositionCreateDevice2::<Option<&windows::core::IUnknown>, IDCompositionDevice>(None)?
+            DCompositionCreateDevice2::<Option<&windows::core::IUnknown>, IDCompositionDevice>(
+                None,
+            )?
         };
         let comp_target = unsafe { comp_device.CreateTargetForHwnd(hwnd, true) }?;
         let comp_visual = unsafe { comp_device.CreateVisual() }?;
@@ -1366,8 +1389,7 @@ impl<T> StructuredBuffer<T> {
 
     fn gpu_virtual_address(&self, first_element: u32) -> u64 {
         unsafe {
-            self.resource.GetGPUVirtualAddress()
-                + (first_element as usize * size_of::<T>()) as u64
+            self.resource.GetGPUVirtualAddress() + (first_element as usize * size_of::<T>()) as u64
         }
     }
 }
@@ -1611,7 +1633,9 @@ impl DirectX12AtlasState {
             let dst = D3D12_TEXTURE_COPY_LOCATION {
                 pResource: ManuallyDrop::new(Some(texture.resource.clone())),
                 Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: 0 },
+                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                    SubresourceIndex: 0,
+                },
             };
             command_list.CopyTextureRegion(
                 &dst,
@@ -1704,12 +1728,15 @@ impl DirectX12AtlasState {
 
     fn texture(&self, id: AtlasTextureId) -> Option<&DirectX12AtlasTexture> {
         match id.kind {
-            AtlasTextureKind::Monochrome => self.monochrome_textures.textures[id.index as usize]
-                .as_ref(),
-            AtlasTextureKind::Polychrome => self.polychrome_textures.textures[id.index as usize]
-                .as_ref(),
-            AtlasTextureKind::Subpixel => self.subpixel_textures.textures[id.index as usize]
-                .as_ref(),
+            AtlasTextureKind::Monochrome => {
+                self.monochrome_textures.textures[id.index as usize].as_ref()
+            }
+            AtlasTextureKind::Polychrome => {
+                self.polychrome_textures.textures[id.index as usize].as_ref()
+            }
+            AtlasTextureKind::Subpixel => {
+                self.subpixel_textures.textures[id.index as usize].as_ref()
+            }
         }
     }
 }
@@ -1916,9 +1943,11 @@ fn create_root_signature(device: &ID3D12Device) -> Result<ID3D12RootSignature> {
     }
     let blob = blob.context("Missing Direct3D 12 root signature blob")?;
 
-    let blob_bytes =
-        unsafe { slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize()) };
-    unsafe { device.CreateRootSignature(0, blob_bytes) }.context("Creating Direct3D 12 root signature")
+    let blob_bytes = unsafe {
+        slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize())
+    };
+    unsafe { device.CreateRootSignature(0, blob_bytes) }
+        .context("Creating Direct3D 12 root signature")
 }
 
 fn create_graphics_pipeline_state(
@@ -2186,8 +2215,8 @@ fn write_texture_upload_buffer(
         return Ok(());
     }
 
-    let mapped_ptr = map_upload_resource(upload_buffer)
-        .context("Mapping Direct3D 12 texture upload buffer")?;
+    let mapped_ptr =
+        map_upload_resource(upload_buffer).context("Mapping Direct3D 12 texture upload buffer")?;
     anyhow::ensure!(
         !mapped_ptr.is_null(),
         "Direct3D 12 texture upload buffer map returned a null pointer"
@@ -2347,10 +2376,8 @@ fn etagere_point_to_device(value: etagere::Point) -> Point<DevicePixels> {
 
 fn blob_to_string(blob: windows::Win32::Graphics::Direct3D::ID3DBlob) -> String {
     unsafe {
-        let bytes = slice::from_raw_parts(
-            blob.GetBufferPointer() as *const u8,
-            blob.GetBufferSize(),
-        );
+        let bytes =
+            slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize());
         String::from_utf8_lossy(bytes).into_owned()
     }
 }

@@ -53,12 +53,7 @@ impl RenderOnce for Popover {
                     .child(div().children(self.children)),
             )
             .when_some(self.aside, |this, aside| {
-                this.child(
-                    v_flex()
-                        .elevation_3(cx)
-                        .px_1()
-                        .child(aside),
-                )
+                this.child(v_flex().elevation_3(cx).px_1().child(aside))
             })
     }
 }

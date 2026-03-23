@@ -208,25 +208,23 @@ pub trait PickerDelegate: Sized + 'static {
                 |this| this.child(Divider::horizontal()),
             )
             .child(
-                h_flex()
-                    .p_2()
-                    .child(
-                        h_flex()
-                            .overflow_hidden()
-                            .flex_none()
-                            .h_9()
-                            .w_full()
-                            .px_2p5()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(cx.theme().colors().border_variant)
-                            .bg(material_popup_surface_color(
-                                cx.theme().colors().panel_overlay_background,
-                                0.90,
-                                cx,
-                            ))
-                            .child(editor.render(window, cx)),
-                    ),
+                h_flex().p_2().child(
+                    h_flex()
+                        .overflow_hidden()
+                        .flex_none()
+                        .h_9()
+                        .w_full()
+                        .px_2p5()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(cx.theme().colors().border_variant)
+                        .bg(material_popup_surface_color(
+                            cx.theme().colors().panel_overlay_background,
+                            0.90,
+                            cx,
+                        ))
+                        .child(editor.render(window, cx)),
+                ),
             )
             .when(
                 self.editor_position() == PickerEditorPosition::Start,

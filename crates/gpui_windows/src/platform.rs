@@ -1466,12 +1466,8 @@ fn log_windows_renderer_startup(directx_devices: &DirectXDevices, startup_note: 
     let request = directx_devices.backend_request().display_name();
     let request_raw = directx_devices.backend_request_raw().unwrap_or("unset");
     let (d3d11_feature_label, d3d12_feature_label) =
-        if directx_devices.active_backend() == crate::directx_devices::DirectXBackend::Direct3d12
-        {
-            (
-                "D3D11 compatibility feature level",
-                "D3D12 feature level",
-            )
+        if directx_devices.active_backend() == crate::directx_devices::DirectXBackend::Direct3d12 {
+            ("D3D11 compatibility feature level", "D3D12 feature level")
         } else {
             ("D3D11 feature level", "D3D12 supported feature level")
         };

@@ -749,15 +749,11 @@ fn apply_window_material_theme_overrides(
                 content_tint,
             ) = match material {
                 WindowBackgroundMaterial::Mica => {
-                    (
-                        0.14, 0.07, 0.09, 0.12, 0.08, 0.16, 0.01, 0.025, 0.04, 0.02,
-                    )
+                    (0.14, 0.07, 0.09, 0.12, 0.08, 0.16, 0.01, 0.025, 0.04, 0.02)
                 }
-                WindowBackgroundMaterial::MicaAlt => {
-                    (
-                        0.20, 0.09, 0.12, 0.16, 0.10, 0.20, 0.015, 0.035, 0.055, 0.025,
-                    )
-                }
+                WindowBackgroundMaterial::MicaAlt => (
+                    0.20, 0.09, 0.12, 0.16, 0.10, 0.20, 0.015, 0.035, 0.055, 0.025,
+                ),
                 WindowBackgroundMaterial::Acrylic | WindowBackgroundMaterial::Theme => {
                     unreachable!()
                 }
@@ -813,12 +809,8 @@ fn apply_window_material_theme_overrides(
             colors.element_hover = material_blend(surface, colors.element_hover, 0.08, hover_alpha);
             colors.element_active =
                 material_blend(surface, colors.element_active, 0.10, active_alpha);
-            colors.element_selected = material_blend(
-                elevated,
-                colors.element_selected,
-                0.12,
-                selected_alpha,
-            );
+            colors.element_selected =
+                material_blend(elevated, colors.element_selected, 0.12, selected_alpha);
             colors.element_disabled =
                 material_blend(surface, colors.element_disabled, 0.06, surface_alpha);
             colors.ghost_element_background = set_alpha(surface, 0.0);
@@ -838,28 +830,20 @@ fn apply_window_material_theme_overrides(
             colors.toolbar_background =
                 material_blend(colors.toolbar_background, surface, 0.06, surface_alpha);
             colors.tab_bar_background = surface;
-            colors.tab_inactive_background = material_blend(
-                colors.tab_inactive_background,
-                surface,
-                0.05,
-                surface_alpha,
+            colors.tab_inactive_background =
+                material_blend(colors.tab_inactive_background, surface, 0.05, surface_alpha);
+            colors.tab_active_background =
+                material_blend(colors.tab_active_background, elevated, 0.08, elevated_alpha);
+            colors.status_bar_background = material_blend(
+                colors.status_bar_background,
+                background,
+                0.04,
+                background_alpha,
             );
-            colors.tab_active_background = material_blend(
-                colors.tab_active_background,
-                elevated,
-                0.08,
-                elevated_alpha,
-            );
-            colors.status_bar_background =
-                material_blend(colors.status_bar_background, background, 0.04, background_alpha);
             colors.panel_background =
                 material_blend(colors.panel_background, surface, 0.05, surface_alpha);
-            colors.panel_overlay_background = material_blend(
-                colors.panel_overlay_background,
-                elevated,
-                0.10,
-                popup_alpha,
-            );
+            colors.panel_overlay_background =
+                material_blend(colors.panel_overlay_background, elevated, 0.10, popup_alpha);
             colors.panel_overlay_hover = material_blend(
                 colors.panel_overlay_hover,
                 elevated,

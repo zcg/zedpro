@@ -1838,7 +1838,10 @@ fn watch_themes(fs: Arc<dyn fs::Fs>, cx: &mut App) {
             for event in paths {
                 if fs.metadata(&event.path).await.ok().flatten().is_some() {
                     let theme_registry = cx.update(|cx| ThemeRegistry::global(cx));
-                    match theme_registry.load_user_theme(&event.path, fs.clone()).await {
+                    match theme_registry
+                        .load_user_theme(&event.path, fs.clone())
+                        .await
+                    {
                         Ok(()) => {
                             cx.update(GlobalTheme::reload_theme);
                         }

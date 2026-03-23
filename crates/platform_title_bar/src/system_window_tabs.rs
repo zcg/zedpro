@@ -101,7 +101,6 @@ impl SystemWindowTabs {
     pub fn init(cx: &mut App) {
         let mut was_use_system_window_tabs =
             WorkspaceSettings::get_global(cx).use_system_window_tabs;
-        let mut was_window_tab_link_mode = WorkspaceSettings::get_global(cx).window_tab_link_mode;
 
         // Initialize on startup if setting is already enabled
         if was_use_system_window_tabs {
@@ -120,36 +119,13 @@ impl SystemWindowTabs {
         cx.observe_global::<SettingsStore>(move |cx| {
             let settings = WorkspaceSettings::get_global(cx);
             let use_system_window_tabs = settings.use_system_window_tabs;
-            let window_tab_link_mode = settings.window_tab_link_mode;
             let use_system_window_tabs_changed =
                 use_system_window_tabs != was_use_system_window_tabs;
-            let window_tab_link_mode_changed = window_tab_link_mode != was_window_tab_link_mode;
 
-            if !use_system_window_tabs_changed && !window_tab_link_mode_changed {
+            if !use_system_window_tabs_changed {
                 return;
             }
             was_use_system_window_tabs = use_system_window_tabs;
-            was_window_tab_link_mode = window_tab_link_mode;
-
-            if !use_system_window_tabs_changed {
-                if use_system_window_tabs {
-                    cx.windows().iter().for_each(|handle| {
-                        handle
-                            .update(cx, |_, window, cx| {
-                                Self::sync_window_tab_state(window, cx);
-                            })
-                            .ok();
-                    });
-                }
-
-                let to_refresh = cx
-                    .windows()
-                    .into_iter()
-                    .map(|handle| handle.window_id())
-                    .collect::<Vec<_>>();
-                SystemWindowTabController::refresh_window_ids(cx, to_refresh);
-                return;
-            }
 
             // Reset controller snapshots whenever the setting toggles to avoid
             // stale tab-group UI leaking across modes.

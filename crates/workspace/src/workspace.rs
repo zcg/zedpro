@@ -30,8 +30,7 @@ pub use dock::Panel;
 pub use multi_workspace::{
     CloseWorkspaceSidebar, DraggedSidebar, FocusWorkspaceSidebar, MultiWorkspace,
     MultiWorkspaceEvent, NewWorkspaceInWindow, NextWorkspace, NextWorkspaceInWindow,
-    PreviousWorkspace, PreviousWorkspaceInWindow, Sidebar, SidebarHandle, SidebarWorkspaceEntry,
-    ToggleWorkspaceSidebar,
+    PreviousWorkspace, PreviousWorkspaceInWindow, Sidebar, SidebarHandle, ToggleWorkspaceSidebar,
 };
 pub use path_list::{PathList, SerializedPathList};
 pub use toast_layer::{ToastAction, ToastLayer, ToastView};
@@ -6857,11 +6856,6 @@ impl Workspace {
             .on_action(cx.listener(Workspace::toggle_centered_layout))
             .on_action(cx.listener(
                 |workspace: &mut Workspace, _action: &pane::ActivateNextItem, window, cx| {
-                    if Workspace::should_use_linked_window_tab_navigation(cx) {
-                        workspace.activate_next_window(cx);
-                        return;
-                    }
-
                     if let Some(active_dock) = workspace.active_dock(window, cx) {
                         let dock = active_dock.read(cx);
                         if let Some(active_panel) = dock.active_panel() {
@@ -6903,11 +6897,6 @@ impl Workspace {
             ))
             .on_action(cx.listener(
                 |workspace: &mut Workspace, _action: &pane::ActivatePreviousItem, window, cx| {
-                    if Workspace::should_use_linked_window_tab_navigation(cx) {
-                        workspace.activate_previous_window(cx);
-                        return;
-                    }
-
                     if let Some(active_dock) = workspace.active_dock(window, cx) {
                         let dock = active_dock.read(cx);
                         if let Some(active_panel) = dock.active_panel() {
@@ -7175,12 +7164,6 @@ impl Workspace {
                 .update(cx, |_, window, _| window.activate_window())
                 .ok();
         }
-    }
-
-    fn should_use_linked_window_tab_navigation(cx: &App) -> bool {
-        let settings = WorkspaceSettings::get_global(cx);
-        settings.use_system_window_tabs
-            && settings.window_tab_link_mode == settings::WindowTabLinkMode::Linked
     }
 
     pub fn activate_previous_window(&mut self, cx: &mut Context<Self>) {

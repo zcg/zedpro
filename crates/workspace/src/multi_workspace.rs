@@ -2,16 +2,12 @@ use anyhow::Result;
 use feature_flags::{AgentV2FeatureFlag, FeatureFlagAppExt};
 use gpui::{
     AnyView, App, Context, DragMoveEvent, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
-    ManagedView, MouseButton, Pixels, Render, SharedString, Subscription,
-    SystemWindowTabController, Task, Tiling, Window, WindowId, actions, deferred, px,
+    ManagedView, MouseButton, Pixels, Render, Subscription, SystemWindowTabController, Task,
+    Tiling, Window, WindowId, actions, deferred, px,
 };
 use project::{DisableAiSettings, Project};
 use settings::{Settings, SettingsStore};
-use std::{
-    collections::{HashMap, HashSet},
-    future::Future,
-    path::PathBuf,
-};
+use std::{future::Future, path::PathBuf};
 use ui::prelude::*;
 use util::ResultExt;
 
@@ -136,34 +132,20 @@ pub struct MultiWorkspace {
     _subscriptions: Vec<Subscription>,
 }
 
-#[derive(Clone)]
-pub struct SidebarWorkspaceEntry {
-    pub index: usize,
-    pub workspace: Option<Entity<Workspace>>,
-    pub tab_title: SharedString,
-}
-
 impl EventEmitter<MultiWorkspaceEvent> for MultiWorkspace {}
 
 impl MultiWorkspace {
     pub fn new(workspace: Entity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut was_use_system_window_tabs =
             WorkspaceSettings::get_global(cx).use_system_window_tabs;
-        let mut was_window_tab_link_mode = WorkspaceSettings::get_global(cx).window_tab_link_mode;
 
         let window_tab_settings_subscription = cx.observe_global::<SettingsStore>(move |_, cx| {
-            let settings = WorkspaceSettings::get_global(cx);
-            let use_system_window_tabs = settings.use_system_window_tabs;
-            let window_tab_link_mode = settings.window_tab_link_mode;
-
-            if use_system_window_tabs == was_use_system_window_tabs
-                && window_tab_link_mode == was_window_tab_link_mode
-            {
+            let use_system_window_tabs = WorkspaceSettings::get_global(cx).use_system_window_tabs;
+            if use_system_window_tabs == was_use_system_window_tabs {
                 return;
             }
 
             was_use_system_window_tabs = use_system_window_tabs;
-            was_window_tab_link_mode = window_tab_link_mode;
             cx.notify();
         });
 
@@ -450,54 +432,7 @@ impl MultiWorkspace {
         cx.notify();
     }
 
-    pub fn activate_index_with_link_mode(
-        &mut self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.should_link_window_tabs(cx) {
-            let current_window_id = window.window_handle().window_id();
-            let tab_group_window_ids =
-                SystemWindowTabController::tab_group_window_ids(cx, current_window_id);
-            let Some(target_window_id) = tab_group_window_ids.get(index).copied() else {
-                return;
-            };
-            if target_window_id == current_window_id {
-                return;
-            }
-            if let Some(target_window_handle) = cx
-                .windows()
-                .into_iter()
-                .find(|window_handle| window_handle.window_id() == target_window_id)
-            {
-                target_window_handle
-                    .update(cx, |_, target_window, _| {
-                        target_window.activate_window();
-                    })
-                    .ok();
-            }
-            return;
-        }
-
-        debug_assert!(
-            index < self.workspaces.len(),
-            "workspace index out of bounds"
-        );
-        self.activate_index(index, window, cx);
-    }
-
     fn cycle_workspace(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.should_link_window_tabs(cx) {
-            let window_id = window.window_handle().window_id();
-            if delta >= 0 {
-                SystemWindowTabController::select_next_tab(cx, window_id);
-            } else {
-                SystemWindowTabController::select_previous_tab(cx, window_id);
-            }
-            return;
-        }
-
         let count = self.workspaces.len() as isize;
         if count <= 1 {
             return;
@@ -512,146 +447,6 @@ impl MultiWorkspace {
     }
 
     pub fn activate_previous_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.cycle_workspace(-1, window, cx);
-    }
-
-    pub fn should_link_window_tabs(&self, cx: &App) -> bool {
-        let settings = WorkspaceSettings::get_global(cx);
-        settings.use_system_window_tabs
-            && settings.window_tab_link_mode == settings::WindowTabLinkMode::Linked
-    }
-
-    pub fn sidebar_workspace_entries(
-        &self,
-        current_window_id: WindowId,
-        cx: &App,
-    ) -> Vec<SidebarWorkspaceEntry> {
-        if self.should_link_window_tabs(cx) {
-            self.tab_group_workspaces(current_window_id, cx)
-        } else {
-            self.workspaces
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(|(index, workspace)| SidebarWorkspaceEntry {
-                    index,
-                    workspace: Some(workspace),
-                    tab_title: SharedString::new(""),
-                })
-                .collect::<Vec<_>>()
-        }
-    }
-
-    pub fn sidebar_active_index(&self, current_window_id: WindowId, cx: &App) -> usize {
-        if self.should_link_window_tabs(cx) {
-            SystemWindowTabController::tab_group_window_ids(cx, current_window_id)
-                .into_iter()
-                .position(|window_id| window_id == current_window_id)
-                .unwrap_or(0)
-        } else {
-            self.active_workspace_index
-        }
-    }
-
-    pub fn remove_sidebar_entry(
-        &mut self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.should_link_window_tabs(cx) {
-            let current_window_id = window.window_handle().window_id();
-            let tab_group_window_ids =
-                SystemWindowTabController::tab_group_window_ids(cx, current_window_id);
-            if tab_group_window_ids.len() <= 1 {
-                return;
-            }
-            let Some(target_window_id) = tab_group_window_ids.get(index).copied() else {
-                return;
-            };
-
-            if let Some(target_window_handle) = cx
-                .windows()
-                .into_iter()
-                .find(|window_handle| window_handle.window_id() == target_window_id)
-            {
-                target_window_handle
-                    .update(cx, |_, target_window, _| {
-                        target_window.remove_window();
-                    })
-                    .ok();
-            }
-            return;
-        }
-
-        self.remove_workspace(index, window, cx);
-    }
-
-    fn tab_group_workspaces(
-        &self,
-        current_window_id: WindowId,
-        cx: &App,
-    ) -> Vec<SidebarWorkspaceEntry> {
-        let mut entries = Vec::new();
-        let workspace_by_window_id: HashMap<WindowId, Entity<Workspace>> = {
-            let app_state = self.workspace().read(cx).app_state().clone();
-            app_state
-                .workspace_store
-                .read(cx)
-                .workspaces_with_windows()
-                .filter_map(|(window_handle, weak_workspace)| {
-                    weak_workspace
-                        .upgrade()
-                        .map(|workspace| (window_handle.window_id(), workspace))
-                })
-                .collect()
-        };
-        let live_window_ids: HashSet<WindowId> = cx
-            .windows()
-            .into_iter()
-            .map(|window_handle| window_handle.window_id())
-            .collect();
-        let tabs = cx
-            .global::<SystemWindowTabController>()
-            .tabs(current_window_id)
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|tab| live_window_ids.contains(&tab.id))
-            .collect::<Vec<_>>();
-
-        for (tab_index, tab) in tabs.into_iter().enumerate() {
-            let workspace = workspace_by_window_id
-                .get(&tab.id)
-                .cloned()
-                .or_else(|| (tab.id == current_window_id).then(|| self.workspace().clone()));
-            entries.push(SidebarWorkspaceEntry {
-                index: tab_index,
-                workspace,
-                tab_title: tab.title,
-            });
-        }
-
-        if entries.is_empty() {
-            entries.push(SidebarWorkspaceEntry {
-                index: 0,
-                workspace: Some(self.workspace().clone()),
-                tab_title: SharedString::new(""),
-            });
-        }
-
-        entries
-    }
-
-    fn route_next_workspace_or_window_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.cycle_workspace(1, window, cx);
-    }
-
-    fn route_previous_workspace_or_window_tab(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
         self.cycle_workspace(-1, window, cx);
     }
 
@@ -845,7 +640,7 @@ impl MultiWorkspace {
             return;
         }
         let app_state = self.workspace().read(cx).app_state().clone();
-        if self.should_link_window_tabs(cx) {
+        if WorkspaceSettings::get_global(cx).use_system_window_tabs {
             #[cfg(target_os = "windows")]
             {
                 let Some(target_window_handle) = window.window_handle().downcast::<Self>() else {
@@ -972,7 +767,7 @@ impl MultiWorkspace {
         cx: &mut Context<Self>,
     ) -> Task<()> {
         let app_state = self.workspace().read(cx).app_state().clone();
-        if self.should_link_window_tabs(cx) {
+        if WorkspaceSettings::get_global(cx).use_system_window_tabs {
             #[cfg(target_os = "windows")]
             {
                 let Some(target_window_handle) = window.window_handle().downcast::<Self>() else {
@@ -1111,7 +906,7 @@ impl MultiWorkspace {
     ) -> Task<Result<Entity<Workspace>>> {
         let workspace = self.workspace().clone();
 
-        if self.should_link_window_tabs(cx) {
+        if WorkspaceSettings::get_global(cx).use_system_window_tabs {
             let app_state = workspace.read(cx).app_state().clone();
 
             #[cfg(target_os = "windows")]
@@ -1277,12 +1072,12 @@ impl Render for MultiWorkspace {
                 )
                 .on_action(
                     cx.listener(|this: &mut Self, _: &NextWorkspaceInWindow, window, cx| {
-                        this.route_next_workspace_or_window_tab(window, cx);
+                        this.activate_next_workspace(window, cx);
                     }),
                 )
                 .on_action(cx.listener(
                     |this: &mut Self, _: &PreviousWorkspaceInWindow, window, cx| {
-                        this.route_previous_workspace_or_window_tab(window, cx);
+                        this.activate_previous_workspace(window, cx);
                     },
                 ))
                 .when(self.multi_workspace_enabled(cx), |this| {

@@ -455,10 +455,6 @@
   },
   // Whether to group native windows into a shared tab strip (macOS and Windows).
   "use_system_window_tabs": false,
-  // How next/previous switching actions interact with native window tab groups.
-  // independent: use internal tab/workspace switching behavior
-  // linked: route next/previous switching to native window tabs/windows
-  "window_tab_link_mode": "independent",
   // Titlebar related settings
   "title_bar": {
     // Whether to show the branch icon beside branch switcher in the titlebar.

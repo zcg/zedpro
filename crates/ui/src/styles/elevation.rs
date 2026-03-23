@@ -98,16 +98,12 @@ impl ElevationIndex {
             ElevationIndex::Background => cx.theme().colors().background,
             ElevationIndex::Surface => cx.theme().colors().surface_background,
             ElevationIndex::EditorSurface => cx.theme().colors().editor_background,
-            ElevationIndex::ElevatedSurface => material_popup_surface_color(
-                cx.theme().colors().panel_overlay_background,
-                0.84,
-                cx,
-            ),
-            ElevationIndex::ModalSurface => material_popup_surface_color(
-                cx.theme().colors().panel_overlay_background,
-                0.94,
-                cx,
-            ),
+            ElevationIndex::ElevatedSurface => {
+                material_popup_surface_color(cx.theme().colors().panel_overlay_background, 0.84, cx)
+            }
+            ElevationIndex::ModalSurface => {
+                material_popup_surface_color(cx.theme().colors().panel_overlay_background, 0.94, cx)
+            }
         }
     }
 

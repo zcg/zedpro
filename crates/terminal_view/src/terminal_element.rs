@@ -984,10 +984,8 @@ impl Element for TerminalElement {
 
                 let search_matches = self.terminal.read(cx).matches.clone();
 
-                let background_color = workspace::material_root_surface_color(
-                    theme.colors().terminal_background,
-                    cx,
-                );
+                let background_color =
+                    workspace::material_root_surface_color(theme.colors().terminal_background, cx);
 
                 let (last_hovered_word, hover_tooltip) =
                     self.terminal.update(cx, |terminal, cx| {

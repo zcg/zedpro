@@ -546,12 +546,18 @@ fn read_windows_registry_environment(
     use windows::core::{PCWSTR, PWSTR};
 
     let mut key = windows::Win32::System::Registry::HKEY::default();
-    let subkey = subkey.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
-    let status = unsafe { RegOpenKeyExW(root, PCWSTR(subkey.as_ptr()), Some(0), KEY_READ, &mut key) };
+    let subkey = subkey
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let status =
+        unsafe { RegOpenKeyExW(root, PCWSTR(subkey.as_ptr()), Some(0), KEY_READ, &mut key) };
     if status == ERROR_FILE_NOT_FOUND {
         return Ok(Default::default());
     }
-    status.ok().context("opening Windows registry environment key")?;
+    status
+        .ok()
+        .context("opening Windows registry environment key")?;
 
     let result = (|| {
         let mut environment = collections::HashMap::default();
@@ -589,7 +595,9 @@ fn read_windows_registry_environment(
                 continue;
             }
 
-            status.ok().context("enumerating Windows environment registry values")?;
+            status
+                .ok()
+                .context("enumerating Windows environment registry values")?;
 
             let name = String::from_utf16_lossy(&name[..name_len as usize]);
             if let Some(value) = parse_windows_registry_environment_value(
@@ -638,12 +646,16 @@ fn expand_windows_environment_variables(value: &str) -> Result<String> {
     use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
     use windows::core::PCWSTR;
 
-    let value = value.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+    let value = value
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
     let required = unsafe { ExpandEnvironmentStringsW(PCWSTR(value.as_ptr()), None) };
     anyhow::ensure!(required != 0, "ExpandEnvironmentStringsW failed");
 
     let mut buffer = vec![0u16; required as usize];
-    let written = unsafe { ExpandEnvironmentStringsW(PCWSTR(value.as_ptr()), Some(buffer.as_mut_slice())) };
+    let written =
+        unsafe { ExpandEnvironmentStringsW(PCWSTR(value.as_ptr()), Some(buffer.as_mut_slice())) };
     anyhow::ensure!(written != 0, "ExpandEnvironmentStringsW failed");
 
     while buffer.last() == Some(&0) {

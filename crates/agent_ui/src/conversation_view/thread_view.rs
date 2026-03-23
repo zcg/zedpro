@@ -12,9 +12,7 @@ use heapless::Vec as ArrayVec;
 use language_model::{LanguageModelEffortLevel, Speed};
 use settings::update_settings_file;
 use ui::{ButtonLike, SplitButton, SplitButtonStyle, Tab};
-use workspace::{
-    SERIALIZATION_THROTTLE_TIME, material_root_surface_color, material_surface_color,
-};
+use workspace::{SERIALIZATION_THROTTLE_TIME, material_root_surface_color, material_surface_color};
 
 use super::*;
 
@@ -2958,8 +2956,7 @@ impl ThreadView {
         }
 
         let focus_handle = self.message_editor.focus_handle(cx);
-        let editor_bg_color =
-            material_root_surface_color(cx.theme().colors().panel_background, cx);
+        let editor_bg_color = material_root_surface_color(cx.theme().colors().panel_background, cx);
         let editor_expanded = self.editor_expanded;
         let has_messages = self.list_state.item_count() > 0;
         let v2_empty_state = cx.has_flag::<AgentV2FeatureFlag>() && !has_messages;
