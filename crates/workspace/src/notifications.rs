@@ -319,13 +319,12 @@ impl Render for LanguageServerPrompt {
         let Some(request) = &self.request else {
             return div().id("language_server_prompt_notification");
         };
-        let notification_background =
-            crate::material_popup_surface_color(
-                cx.theme().colors().panel_overlay_background,
-                0.90,
-                cx,
-            )
-                .opacity(0.995);
+        let notification_background = crate::material_popup_surface_color(
+            cx.theme().colors().panel_overlay_background,
+            0.90,
+            cx,
+        )
+        .opacity(0.995);
 
         let (icon, color) = match request.level {
             PromptLevel::Info => (IconName::Info, Color::Muted),
@@ -507,13 +506,12 @@ impl ErrorMessagePrompt {
 
 impl Render for ErrorMessagePrompt {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let notification_background =
-            crate::material_popup_surface_color(
-                cx.theme().colors().panel_overlay_background,
-                0.90,
-                cx,
-            )
-                .opacity(0.995);
+        let notification_background = crate::material_popup_surface_color(
+            cx.theme().colors().panel_overlay_background,
+            0.90,
+            cx,
+        )
+        .opacity(0.995);
 
         h_flex()
             .id("error_message_prompt_notification")
@@ -652,13 +650,12 @@ impl RenderOnce for NotificationFrame {
         let entity = window.current_view();
         let show_suppress_button = self.show_suppress_button;
         let suppress = show_suppress_button && window.modifiers().shift;
-        let frame_background =
-            crate::material_popup_surface_color(
-                cx.theme().colors().panel_overlay_background,
-                0.90,
-                cx,
-            )
-                .opacity(0.995);
+        let frame_background = crate::material_popup_surface_color(
+            cx.theme().colors().panel_overlay_background,
+            0.90,
+            cx,
+        )
+        .opacity(0.995);
         let (close_id, close_icon) = if suppress {
             ("suppress", IconName::Minimize)
         } else {

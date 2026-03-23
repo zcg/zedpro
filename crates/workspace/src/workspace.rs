@@ -28,10 +28,10 @@ mod workspace_settings;
 pub use crate::notifications::NotificationFrame;
 pub use dock::Panel;
 pub use multi_workspace::{
-    CloseWorkspaceSidebar,
-    DraggedSidebar, FocusWorkspaceSidebar, MultiWorkspace, MultiWorkspaceEvent,
-    NewWorkspaceInWindow, NextWorkspaceInWindow, PreviousWorkspaceInWindow, Sidebar, SidebarHandle,
-    SidebarWorkspaceEntry, ToggleWorkspaceSidebar,
+    CloseWorkspaceSidebar, DraggedSidebar, FocusWorkspaceSidebar, MultiWorkspace,
+    MultiWorkspaceEvent, NewWorkspaceInWindow, NextWorkspace, NextWorkspaceInWindow,
+    PreviousWorkspace, PreviousWorkspaceInWindow, Sidebar, SidebarHandle, SidebarWorkspaceEntry,
+    ToggleWorkspaceSidebar,
 };
 pub use path_list::{PathList, SerializedPathList};
 pub use toast_layer::{ToastAction, ToastLayer, ToastView};

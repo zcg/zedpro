@@ -223,7 +223,7 @@ pub fn init(cx: &mut App) {
                 .register_action(|workspace, _: &OpenAgentDiff, window, cx| {
                     let thread = workspace
                         .panel::<AgentPanel>(cx)
-                        .and_then(|panel| panel.read(cx).active_conversation().cloned())
+                        .and_then(|panel| panel.read(cx).active_conversation_view().cloned())
                         .and_then(|conversation| {
                             conversation
                                 .read(cx)
@@ -405,17 +405,17 @@ pub fn init(cx: &mut App) {
                         });
                     },
                 )
-                .register_action(|workspace, action: &StartThreadIn, _window, cx| {
+                .register_action(|workspace, action: &StartThreadIn, window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                         panel.update(cx, |panel, cx| {
-                            panel.set_start_thread_in(action, cx);
+                            panel.set_start_thread_in(action, window, cx);
                         });
                     }
                 })
-                .register_action(|workspace, _: &CycleStartThreadIn, _window, cx| {
+                .register_action(|workspace, _: &CycleStartThreadIn, window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                         panel.update(cx, |panel, cx| {
-                            panel.cycle_start_thread_in(cx);
+                            panel.cycle_start_thread_in(window, cx);
                         });
                     }
                 });
@@ -1189,18 +1189,6 @@ impl AgentPanel {
             .unwrap_or(false)
     }
 
-    pub fn active_conversation(&self) -> Option<&Entity<ConversationView>> {
-        match &self.active_view {
-            ActiveView::AgentThread {
-                conversation_view, ..
-            } => Some(conversation_view),
-            ActiveView::Uninitialized
-            | ActiveView::TextThread { .. }
-            | ActiveView::History { .. }
-            | ActiveView::Configuration => None,
-        }
-    }
-
     pub fn new_thread(&mut self, _action: &NewThread, window: &mut Window, cx: &mut Context<Self>) {
         self.new_agent_thread(AgentType::NativeAgent, window, cx);
     }
@@ -1412,7 +1400,7 @@ impl AgentPanel {
     }
 
     fn expand_message_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(conversation_view) = self.active_conversation() else {
+        let Some(conversation_view) = self.active_conversation_view() else {
             return;
         };
 
@@ -1738,7 +1726,7 @@ impl AgentPanel {
         cx: &mut Context<Self>,
     ) {
         if let Some(workspace) = self.workspace.upgrade()
-            && let Some(conversation_view) = self.active_conversation()
+            && let Some(conversation_view) = self.active_conversation_view()
             && let Some(active_thread) = conversation_view.read(cx).active_thread().cloned()
         {
             active_thread.update(cx, |thread, cx| {
@@ -2264,7 +2252,12 @@ impl AgentPanel {
         &self.start_thread_in
     }
 
-    fn set_start_thread_in(&mut self, action: &StartThreadIn, cx: &mut Context<Self>) {
+    fn set_start_thread_in(
+        &mut self,
+        action: &StartThreadIn,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if matches!(action, StartThreadIn::NewWorktree) && !cx.has_flag::<AgentV2FeatureFlag>() {
             return;
         }
@@ -2286,16 +2279,19 @@ impl AgentPanel {
             }
         };
         self.start_thread_in = new_target;
+        if let Some(thread) = self.active_thread_view(cx) {
+            thread.update(cx, |thread, cx| thread.focus_handle(cx).focus(window, cx));
+        }
         self.serialize(cx);
         cx.notify();
     }
 
-    fn cycle_start_thread_in(&mut self, cx: &mut Context<Self>) {
+    fn cycle_start_thread_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let next = match self.start_thread_in {
             StartThreadIn::LocalProject => StartThreadIn::NewWorktree,
             StartThreadIn::NewWorktree => StartThreadIn::LocalProject,
         };
-        self.set_start_thread_in(&next, cx);
+        self.set_start_thread_in(&next, window, cx);
     }
 
     fn reset_start_thread_in_to_default(&mut self, cx: &mut Context<Self>) {
@@ -2543,7 +2539,7 @@ impl AgentPanel {
     }
 
     pub fn active_thread_is_draft(&self, cx: &App) -> bool {
-        self.active_conversation().is_some() && !self.active_thread_has_messages(cx)
+        self.active_conversation_view().is_some() && !self.active_thread_has_messages(cx)
     }
 
     fn handle_first_send_requested(
@@ -3937,7 +3933,7 @@ impl AgentPanel {
         };
 
         let is_thread_loading = self
-            .active_conversation()
+            .active_conversation_view()
             .map(|thread| thread.read(cx).is_loading())
             .unwrap_or(false);
 
@@ -4616,7 +4612,7 @@ impl Render for AgentPanel {
             .on_action(cx.listener(Self::reset_font_size))
             .on_action(cx.listener(Self::toggle_zoom))
             .on_action(cx.listener(|this, _: &ReauthenticateAgent, window, cx| {
-                if let Some(conversation_view) = this.active_conversation() {
+                if let Some(conversation_view) = this.active_conversation_view() {
                     conversation_view.update(cx, |conversation_view, cx| {
                         conversation_view.reauthenticate(window, cx)
                     })
@@ -4812,7 +4808,7 @@ impl AgentPanelDelegate for ConcreteAssistantPanelDelegate {
             // Wait to create a new context until the workspace is no longer
             // being updated.
             cx.defer_in(window, move |panel, window, cx| {
-                if let Some(conversation_view) = panel.active_conversation() {
+                if let Some(conversation_view) = panel.active_conversation_view() {
                     conversation_view.update(cx, |conversation_view, cx| {
                         conversation_view.insert_selections(window, cx);
                     });
@@ -4850,7 +4846,7 @@ impl AgentPanelDelegate for ConcreteAssistantPanelDelegate {
             // Wait to create a new context until the workspace is no longer
             // being updated.
             cx.defer_in(window, move |panel, window, cx| {
-                if let Some(conversation_view) = panel.active_conversation() {
+                if let Some(conversation_view) = panel.active_conversation_view() {
                     conversation_view.update(cx, |conversation_view, cx| {
                         conversation_view.insert_terminal_text(text, window, cx);
                     });
@@ -4916,7 +4912,7 @@ impl AgentPanel {
     /// This is a test-only accessor that exposes the private `active_thread_view()`
     /// method for test assertions. Not compiled into production builds.
     pub fn active_thread_view_for_tests(&self) -> Option<&Entity<ConversationView>> {
-        self.active_conversation()
+        self.active_conversation_view()
     }
 
     /// Sets the start_thread_in value directly, bypassing validation.
@@ -5106,7 +5102,7 @@ mod tests {
                 "workspace A agent type should be restored"
             );
             assert!(
-                panel.active_conversation().is_some(),
+                panel.active_conversation_view().is_some(),
                 "workspace A should have its active thread restored"
             );
         });
@@ -5126,7 +5122,7 @@ mod tests {
                 "workspace B agent type should be restored"
             );
             assert!(
-                panel.active_conversation().is_none(),
+                panel.active_conversation_view().is_none(),
                 "workspace B should have no active thread"
             );
         });
@@ -5578,7 +5574,7 @@ mod tests {
         send_message(&panel, &mut cx);
 
         let weak_view_a = panel.read_with(&cx, |panel, _cx| {
-            panel.active_conversation().unwrap().downgrade()
+            panel.active_conversation_view().unwrap().downgrade()
         });
         let session_id_a = active_session_id(&panel, &cx);
 
@@ -5985,8 +5981,8 @@ mod tests {
         });
 
         // Change thread target to NewWorktree.
-        panel.update(cx, |panel, cx| {
-            panel.set_start_thread_in(&StartThreadIn::NewWorktree, cx);
+        panel.update_in(cx, |panel, window, cx| {
+            panel.set_start_thread_in(&StartThreadIn::NewWorktree, window, cx);
         });
 
         panel.read_with(cx, |panel, _cx| {
@@ -6208,11 +6204,11 @@ mod tests {
         // Set the selected agent to Codex (a custom agent) and start_thread_in
         // to NewWorktree. We do this AFTER opening the thread because
         // open_external_thread_with_server overrides selected_agent_type.
-        panel.update(cx, |panel, cx| {
+        panel.update_in(cx, |panel, window, cx| {
             panel.selected_agent_type = AgentType::Custom {
                 id: CODEX_ID.into(),
             };
-            panel.set_start_thread_in(&StartThreadIn::NewWorktree, cx);
+            panel.set_start_thread_in(&StartThreadIn::NewWorktree, window, cx);
         });
 
         // Verify the panel has the Codex agent selected.

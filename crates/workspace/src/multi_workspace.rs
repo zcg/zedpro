@@ -38,6 +38,10 @@ actions!(
         CloseWorkspaceSidebar,
         /// Moves focus to or from the workspace sidebar without closing it.
         FocusWorkspaceSidebar,
+        /// Switches to the next workspace.
+        NextWorkspace,
+        /// Switches to the previous workspace.
+        PreviousWorkspace,
     ]
 );
 
@@ -483,22 +487,32 @@ impl MultiWorkspace {
         self.activate_index(index, window, cx);
     }
 
-    pub fn activate_next_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.workspaces.len() > 1 {
-            let next_index = (self.active_workspace_index + 1) % self.workspaces.len();
-            self.activate_index(next_index, window, cx);
+    fn cycle_workspace(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.should_link_window_tabs(cx) {
+            let window_id = window.window_handle().window_id();
+            if delta >= 0 {
+                SystemWindowTabController::select_next_tab(cx, window_id);
+            } else {
+                SystemWindowTabController::select_previous_tab(cx, window_id);
+            }
+            return;
         }
+
+        let count = self.workspaces.len() as isize;
+        if count <= 1 {
+            return;
+        }
+        let current = self.active_workspace_index as isize;
+        let next = ((current + delta).rem_euclid(count)) as usize;
+        self.activate_index(next, window, cx);
+    }
+
+    pub fn activate_next_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cycle_workspace(1, window, cx);
     }
 
     pub fn activate_previous_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.workspaces.len() > 1 {
-            let prev_index = if self.active_workspace_index == 0 {
-                self.workspaces.len() - 1
-            } else {
-                self.active_workspace_index - 1
-            };
-            self.activate_index(prev_index, window, cx);
-        }
+        self.cycle_workspace(-1, window, cx);
     }
 
     pub fn should_link_window_tabs(&self, cx: &App) -> bool {
@@ -630,13 +644,7 @@ impl MultiWorkspace {
     }
 
     fn route_next_workspace_or_window_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let window_id = window.window_handle().window_id();
-        if self.should_link_window_tabs(cx) {
-            SystemWindowTabController::select_next_tab(cx, window_id);
-            return;
-        }
-
-        self.activate_next_workspace(window, cx);
+        self.cycle_workspace(1, window, cx);
     }
 
     fn route_previous_workspace_or_window_tab(
@@ -644,13 +652,20 @@ impl MultiWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let window_id = window.window_handle().window_id();
-        if self.should_link_window_tabs(cx) {
-            SystemWindowTabController::select_previous_tab(cx, window_id);
-            return;
-        }
+        self.cycle_workspace(-1, window, cx);
+    }
 
-        self.activate_previous_workspace(window, cx);
+    fn next_workspace(&mut self, _: &NextWorkspace, window: &mut Window, cx: &mut Context<Self>) {
+        self.cycle_workspace(1, window, cx);
+    }
+
+    fn previous_workspace(
+        &mut self,
+        _: &PreviousWorkspace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cycle_workspace(-1, window, cx);
     }
     fn serialize(&mut self, cx: &mut App) {
         let window_id = self.window_id;
@@ -1286,6 +1301,8 @@ impl Render for MultiWorkspace {
                             this.focus_sidebar(window, cx);
                         },
                     ))
+                    .on_action(cx.listener(Self::next_workspace))
+                    .on_action(cx.listener(Self::previous_workspace))
                 })
                 .when(
                     self.sidebar_open() && self.multi_workspace_enabled(cx),
