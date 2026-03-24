@@ -2469,6 +2469,9 @@
   "macos": {},
   // Settings overrides to use when using Windows.
   "windows": {
+    // Use built-in prompts by default on Windows to avoid native dialog hangs
+    // with custom title bar and window backdrop combinations.
+    "use_system_prompts": false,
     "languages": {
       "PHP": {
         "language_servers": ["intelephense", "!phpactor", "!phptools", "..."],

@@ -1156,6 +1156,7 @@ impl Window {
                 focus,
                 show,
                 display_id,
+                window_background,
                 window_min_size,
                 #[cfg(target_os = "macos")]
                 tabbing_identifier,

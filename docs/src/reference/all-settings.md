@@ -3804,7 +3804,7 @@ Positive integer values
 
 - Description: Whether to use the system provided dialogs for prompts, such as confirmation prompts. When set to false, Zed will use its built-in prompts. Note that on Linux, this option is ignored and Zed will always use the built-in prompts.
 - Setting: `use_system_prompts`
-- Default: `true`
+- Default: `true` except on Windows, where the bundled default override is `false`
 
 **Options**
 

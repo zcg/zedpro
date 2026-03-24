@@ -1462,6 +1462,8 @@ pub struct WindowParams {
     #[cfg_attr(feature = "wayland", allow(dead_code))]
     pub display_id: Option<DisplayId>,
 
+    pub window_background: WindowBackgroundAppearance,
+
     pub window_min_size: Option<Size<Pixels>>,
     #[cfg(target_os = "macos")]
     pub tabbing_identifier: Option<String>,

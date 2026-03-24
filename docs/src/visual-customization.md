@@ -136,9 +136,9 @@ To disable this behavior use:
   // Force usage of Zed build in path prompts (file and directory pickers)
   // instead of OS native pickers (false).
   "use_system_path_prompts": true,
-  // Force usage of Zed built in confirmation prompts ("Do you want to save?")
-  // instead of OS native prompts (false). On linux this is ignored (always false).
-  "use_system_prompts": true,
+  // Force usage of OS native prompts with true. Built-in prompts are the
+  // Windows default and Linux always uses built-in prompts.
+  "use_system_prompts": false,
 
   // Active pane styling settings.
   "active_pane_modifiers": {

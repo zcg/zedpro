@@ -612,6 +612,7 @@ impl MacWindow {
             focus,
             show,
             display_id,
+            window_background: _,
             window_min_size,
             tabbing_identifier,
         }: WindowParams,

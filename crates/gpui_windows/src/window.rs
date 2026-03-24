@@ -39,6 +39,12 @@ impl std::ops::Deref for WindowsWindow {
     }
 }
 
+#[derive(Clone, Copy)]
+struct SyntheticWindowMoveState {
+    offset_x: i32,
+    offset_y: i32,
+}
+
 pub struct WindowsWindowState {
     pub origin: Cell<Point<Pixels>>,
     pub logical_size: Cell<Size<Pixels>>,
@@ -50,6 +56,7 @@ pub struct WindowsWindowState {
     pub background_appearance: Cell<WindowBackgroundAppearance>,
     pub scale_factor: Cell<f32>,
     pub in_size_move_loop: Cell<bool>,
+    synthetic_window_move: Cell<Option<SyntheticWindowMoveState>>,
     pub restore_from_minimized: Cell<Option<Box<dyn FnMut(RequestFrameOptions)>>>,
 
     pub callbacks: Callbacks,
@@ -104,6 +111,7 @@ impl WindowsWindowState {
         display: WindowsDisplay,
         min_size: Option<Size<Pixels>>,
         appearance: WindowAppearance,
+        background_appearance: WindowBackgroundAppearance,
         disable_direct_composition: bool,
         invalidate_devices: Arc<AtomicBool>,
     ) -> Result<Self> {
@@ -126,6 +134,7 @@ impl WindowsWindowState {
         let pending_device_size_during_resize = None;
         let border_offset = WindowBorderOffset::default();
         let in_size_move_loop = false;
+        let synthetic_window_move = None;
         let restore_from_minimized = None;
         let renderer = WindowRenderer::new(hwnd, directx_devices, disable_direct_composition)
             .context("Creating DirectX renderer")?;
@@ -147,9 +156,10 @@ impl WindowsWindowState {
             fullscreen_restore_bounds: Cell::new(fullscreen_restore_bounds),
             border_offset,
             appearance: Cell::new(appearance),
-            background_appearance: Cell::new(WindowBackgroundAppearance::Opaque),
+            background_appearance: Cell::new(background_appearance),
             scale_factor: Cell::new(scale_factor),
             in_size_move_loop: Cell::new(in_size_move_loop),
+            synthetic_window_move: Cell::new(synthetic_window_move),
             restore_from_minimized: Cell::new(restore_from_minimized),
             min_size,
             callbacks,
@@ -242,6 +252,7 @@ impl WindowsWindowInner {
             context.display,
             context.min_size,
             context.appearance,
+            context.background_appearance,
             context.disable_direct_composition,
             context.invalidate_devices.clone(),
         )?;
@@ -261,6 +272,148 @@ impl WindowsWindowInner {
             parent_hwnd: context.parent_hwnd,
             tab_coordinator: context.tab_coordinator.clone(),
         }))
+    }
+
+    fn apply_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
+        self.state.background_appearance.set(background_appearance);
+        let hwnd = self.hwnd;
+
+        // Clear the previous Windows backdrop state first so switching between
+        // Acrylic and Mica variants takes effect immediately on the same HWND.
+        set_window_composition_attribute(hwnd, None, 0);
+        dwm_set_window_composition_attribute(hwnd, DWMSBT_NONE);
+
+        match background_appearance {
+            WindowBackgroundAppearance::Opaque => {}
+            WindowBackgroundAppearance::Transparent => {
+                set_window_composition_attribute(hwnd, None, 2);
+            }
+            WindowBackgroundAppearance::Blurred => {
+                let acrylic_tint = match self.state.appearance.get() {
+                    // Use a lighter neutral tint so Acrylic keeps the frosted look
+                    // without collapsing into a nearly-black overlay.
+                    WindowAppearance::Dark | WindowAppearance::VibrantDark => (54, 58, 64, 48),
+                    WindowAppearance::Light | WindowAppearance::VibrantLight => (250, 250, 250, 44),
+                };
+                set_window_composition_attribute(hwnd, Some(acrylic_tint), 4);
+            }
+            WindowBackgroundAppearance::MicaBackdrop => {
+                // DWMSBT_MAINWINDOW => MicaBase
+                dwm_set_window_composition_attribute(hwnd, DWMSBT_MAINWINDOW);
+            }
+            WindowBackgroundAppearance::MicaAltBackdrop => {
+                // DWMSBT_TABBEDWINDOW => MicaAlt
+                dwm_set_window_composition_attribute(hwnd, DWMSBT_TABBEDWINDOW);
+            }
+        }
+    }
+
+    fn start_synthetic_window_move(&self) {
+        if self.state.is_fullscreen() {
+            return;
+        }
+
+        if self.state.is_maximized() {
+            unsafe {
+                ReleaseCapture().log_err();
+                let _ = SendMessageW(
+                    self.hwnd,
+                    WM_NCLBUTTONDOWN,
+                    Some(WPARAM(HTCAPTION as usize)),
+                    Some(LPARAM(0)),
+                );
+            }
+            return;
+        }
+
+        let mut cursor_origin = POINT::default();
+        if unsafe {
+            GetCursorPos(&mut cursor_origin)
+                .context("unable to get cursor position before starting synthetic window move")
+                .log_err()
+        }
+        .is_none()
+        {
+            return;
+        }
+
+        let mut window_rect = RECT::default();
+        if unsafe {
+            GetWindowRect(self.hwnd, &mut window_rect)
+                .context("unable to get window rect before starting synthetic window move")
+                .log_err()
+        }
+        .is_none()
+        {
+            return;
+        }
+
+        self.state
+            .synthetic_window_move
+            .set(Some(SyntheticWindowMoveState {
+                offset_x: cursor_origin.x - window_rect.left,
+                offset_y: cursor_origin.y - window_rect.top,
+            }));
+        unsafe {
+            SetCapture(self.hwnd);
+        }
+    }
+
+    pub(crate) fn stop_synthetic_window_move(&self) {
+        if self.state.synthetic_window_move.take().is_some() {
+            self.notify_moved();
+            unsafe {
+                let _ = RedrawWindow(
+                    Some(self.hwnd),
+                    None,
+                    None,
+                    RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN,
+                );
+            }
+        }
+    }
+
+    pub(crate) fn has_synthetic_window_move(&self) -> bool {
+        self.state.synthetic_window_move.get().is_some()
+    }
+
+    pub(crate) fn update_synthetic_window_move(&self) -> bool {
+        let Some(window_move) = self.state.synthetic_window_move.get() else {
+            return false;
+        };
+
+        let mut cursor = POINT::default();
+        if unsafe {
+            GetCursorPos(&mut cursor)
+                .context("unable to poll cursor position during synthetic window move")
+                .log_err()
+        }
+        .is_none()
+        {
+            return false;
+        }
+
+        unsafe {
+            SetWindowPos(
+                self.hwnd,
+                None,
+                cursor.x - window_move.offset_x,
+                cursor.y - window_move.offset_y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+            )
+            .context("unable to update window position during synthetic move")
+            .log_err();
+        }
+        true
+    }
+
+    pub(crate) fn notify_moved(&self) {
+        if let Some(mut callback) = self.state.callbacks.moved.take() {
+            callback();
+            self.state.callbacks.moved.set(Some(callback));
+        }
     }
 
     pub fn tabbing_identifier(&self) -> Option<String> {
@@ -414,6 +567,7 @@ struct WindowCreateContext {
     main_receiver: PriorityQueueReceiver<RunnableVariant>,
     platform_window_handle: HWND,
     appearance: WindowAppearance,
+    background_appearance: WindowBackgroundAppearance,
     disable_direct_composition: bool,
     directx_devices: DirectXDevices,
     invalidate_devices: Arc<AtomicBool>,
@@ -516,6 +670,7 @@ impl WindowsWindow {
             main_receiver,
             platform_window_handle,
             appearance,
+            background_appearance: params.window_background,
             disable_direct_composition,
             directx_devices,
             invalidate_devices,
@@ -548,6 +703,7 @@ impl WindowsWindow {
         register_drag_drop(&this)?;
         set_non_rude_hwnd(hwnd, true);
         configure_dwm_dark_mode(hwnd, appearance);
+        this.apply_background_appearance(params.window_background);
         this.state.border_offset.update(hwnd)?;
         let placement = retrieve_window_placement(
             hwnd,
@@ -885,37 +1041,11 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
-        self.state.background_appearance.set(background_appearance);
-        let hwnd = self.0.hwnd;
+        self.0.apply_background_appearance(background_appearance);
+    }
 
-        // Clear the previous Windows backdrop state first so switching between
-        // Acrylic and Mica variants takes effect immediately on the same HWND.
-        set_window_composition_attribute(hwnd, None, 0);
-        dwm_set_window_composition_attribute(hwnd, DWMSBT_NONE);
-
-        match background_appearance {
-            WindowBackgroundAppearance::Opaque => {}
-            WindowBackgroundAppearance::Transparent => {
-                set_window_composition_attribute(hwnd, None, 2);
-            }
-            WindowBackgroundAppearance::Blurred => {
-                let acrylic_tint = match self.state.appearance.get() {
-                    // Use a lighter neutral tint so Acrylic keeps the frosted look
-                    // without collapsing into a nearly-black overlay.
-                    WindowAppearance::Dark | WindowAppearance::VibrantDark => (54, 58, 64, 48),
-                    WindowAppearance::Light | WindowAppearance::VibrantLight => (250, 250, 250, 44),
-                };
-                set_window_composition_attribute(hwnd, Some(acrylic_tint), 4);
-            }
-            WindowBackgroundAppearance::MicaBackdrop => {
-                // DWMSBT_MAINWINDOW => MicaBase
-                dwm_set_window_composition_attribute(hwnd, DWMSBT_MAINWINDOW);
-            }
-            WindowBackgroundAppearance::MicaAltBackdrop => {
-                // DWMSBT_TABBEDWINDOW => MicaAlt
-                dwm_set_window_composition_attribute(hwnd, DWMSBT_TABBEDWINDOW);
-            }
-        }
+    fn start_window_move(&self) {
+        self.0.start_synthetic_window_move();
     }
 
     fn minimize(&self) {

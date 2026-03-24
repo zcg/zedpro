@@ -148,9 +148,8 @@ impl WindowsWindowInner {
                     .set(WindowsDisplay::new_with_handle(monitor).log_err()?);
             }
         }
-        if let Some(mut callback) = self.state.callbacks.moved.take() {
-            callback();
-            self.state.callbacks.moved.set(Some(callback));
+        if !self.has_synthetic_window_move() {
+            self.notify_moved();
         }
         Some(0)
     }
@@ -334,11 +333,6 @@ impl WindowsWindowInner {
     fn handle_mouse_move_msg(&self, handle: HWND, lparam: LPARAM, wparam: WPARAM) -> Option<isize> {
         self.start_tracking_mouse(handle, TME_LEAVE);
 
-        let Some(mut func) = self.state.callbacks.input.take() else {
-            return Some(1);
-        };
-        let scale_factor = self.state.scale_factor.get();
-
         let pressed_button = match MODIFIERKEYS_FLAGS(wparam.loword() as u32) {
             flags if flags.contains(MK_LBUTTON) => Some(MouseButton::Left),
             flags if flags.contains(MK_RBUTTON) => Some(MouseButton::Right),
@@ -351,6 +345,20 @@ impl WindowsWindowInner {
             }
             _ => None,
         };
+
+        if self.has_synthetic_window_move() {
+            if pressed_button == Some(MouseButton::Left) {
+                self.update_synthetic_window_move();
+                return Some(0);
+            }
+
+            self.stop_synthetic_window_move();
+        }
+
+        let Some(mut func) = self.state.callbacks.input.take() else {
+            return Some(1);
+        };
+        let scale_factor = self.state.scale_factor.get();
         let x = lparam.signed_loword() as f32;
         let y = lparam.signed_hiword() as f32;
         let input = PlatformInput::MouseMove(MouseMoveEvent {
@@ -481,6 +489,9 @@ impl WindowsWindowInner {
         button: MouseButton,
         lparam: LPARAM,
     ) -> Option<isize> {
+        if button == MouseButton::Left {
+            self.stop_synthetic_window_move();
+        }
         unsafe { ReleaseCapture().log_err() };
 
         let Some(mut func) = self.state.callbacks.input.take() else {
@@ -1199,6 +1210,12 @@ impl WindowsWindowInner {
 
     #[inline]
     fn draw_window(&self, handle: HWND, force_render: bool) -> Option<isize> {
+        if self.has_synthetic_window_move() && !force_render {
+            self.update_ime_enabled(handle);
+            unsafe { ValidateRect(Some(handle), None).ok().log_err() };
+            return Some(0);
+        }
+
         let mut request_frame = self.state.callbacks.request_frame.take()?;
 
         // we are instructing gpui to force render a frame, this will
