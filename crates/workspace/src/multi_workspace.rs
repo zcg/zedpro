@@ -7,9 +7,10 @@ use gpui::{
 };
 use project::{DisableAiSettings, Project};
 use settings::{Settings, SettingsStore};
-use std::{future::Future, path::PathBuf};
+use std::{future::Future, path::PathBuf, sync::Arc};
 use ui::prelude::*;
 use util::ResultExt;
+use zed_actions::agents_sidebar::MoveWorkspaceToNewWindow;
 
 const SIDEBAR_RESIZE_HANDLE_SIZE: Pixels = px(6.0);
 
@@ -299,7 +300,7 @@ impl MultiWorkspace {
         cx.notify();
     }
 
-    fn close_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn close_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_open = false;
         let has_notifications = self.sidebar_has_notifications(cx);
         let show_toggle = self.multi_workspace_enabled(cx);
@@ -863,9 +864,14 @@ impl MultiWorkspace {
         })
     }
 
-    pub fn remove_workspace(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn remove_workspace(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<Workspace>> {
         if self.workspaces.len() <= 1 || index >= self.workspaces.len() {
-            return;
+            return None;
         }
 
         let removed_workspace = self.workspaces.remove(index);
@@ -875,6 +881,16 @@ impl MultiWorkspace {
         } else if self.active_workspace_index > index {
             self.active_workspace_index -= 1;
         }
+
+        // Clear session_id and cancel any in-flight serialization on the
+        // removed workspace. Without this, a pending throttle timer from
+        // `serialize_workspace` could fire and write the old session_id
+        // back to the DB, resurrecting the workspace on next launch.
+        removed_workspace.update(cx, |workspace, _cx| {
+            workspace.session_id.take();
+            workspace._schedule_serialize_workspace.take();
+            workspace._serialize_workspace_task.take();
+        });
 
         if let Some(workspace_id) = removed_workspace.read(cx).database_id() {
             let db = crate::persistence::WorkspaceDb::global(cx);
@@ -896,6 +912,49 @@ impl MultiWorkspace {
         ));
         cx.emit(MultiWorkspaceEvent::ActiveWorkspaceChanged);
         cx.notify();
+
+        Some(removed_workspace)
+    }
+
+    pub fn move_workspace_to_new_window(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.workspaces.len() <= 1 || index >= self.workspaces.len() {
+            return;
+        }
+
+        let Some(workspace) = self.remove_workspace(index, window, cx) else {
+            return;
+        };
+
+        let app_state: Arc<crate::AppState> = workspace.read(cx).app_state().clone();
+
+        cx.defer(move |cx| {
+            let options = (app_state.build_window_options)(None, cx);
+
+            let Ok(window) = cx.open_window(options, |window, cx| {
+                cx.new(|cx| MultiWorkspace::new(workspace, window, cx))
+            }) else {
+                return;
+            };
+
+            let _ = window.update(cx, |_, window, _| {
+                window.activate_window();
+            });
+        });
+    }
+
+    fn move_active_workspace_to_new_window(
+        &mut self,
+        _: &MoveWorkspaceToNewWindow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let index = self.active_workspace_index;
+        self.move_workspace_to_new_window(index, window, cx);
     }
 
     pub fn open_project(
@@ -1098,6 +1157,7 @@ impl Render for MultiWorkspace {
                     ))
                     .on_action(cx.listener(Self::next_workspace))
                     .on_action(cx.listener(Self::previous_workspace))
+                    .on_action(cx.listener(Self::move_active_workspace_to_new_window))
                 })
                 .when(
                     self.sidebar_open() && self.multi_workspace_enabled(cx),

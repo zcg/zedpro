@@ -504,6 +504,7 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<usize>(render_number_field)
         .add_basic_renderer::<Vec<usize>>(render_usize_list_field)
         .add_basic_renderer::<NonZero<usize>>(render_number_field)
+        .add_basic_renderer::<Option<NonZero<usize>>>(render_optional_number_field::<NonZero<usize>>)
         .add_basic_renderer::<NonZeroU32>(render_number_field)
         .add_basic_renderer::<settings::CodeFade>(render_number_field)
         .add_basic_renderer::<settings::DelayMs>(render_number_field)
@@ -546,6 +547,7 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::RelativeLineNumbers>(render_dropdown)
         .add_basic_renderer::<settings::WindowDecorations>(render_dropdown)
         .add_basic_renderer::<settings::WindowBackgroundMaterial>(render_dropdown)
+        .add_basic_renderer::<settings::WindowButtonLayoutContentDiscriminants>(render_dropdown)
         .add_basic_renderer::<settings::FontSize>(render_editable_number_field)
         .add_basic_renderer::<settings::OllamaModelName>(render_ollama_model_picker)
         .add_basic_renderer::<settings::SemanticTokens>(render_dropdown)
@@ -4165,6 +4167,73 @@ fn render_optional_f32_field(
                 }
 
                 let Ok(value) = new_text.parse::<f32>() else {
+                    return;
+                };
+
+                let _ = update_settings_file(
+                    file.clone(),
+                    field.json_path,
+                    window,
+                    cx,
+                    move |settings, _cx| {
+                        (field.write)(settings, Some(Some(value)));
+                    },
+                );
+            }
+        })
+        .into_any_element()
+}
+
+fn render_optional_number_field<T: NumberFieldType + Send + Sync>(
+    field: SettingField<Option<T>>,
+    file: SettingsUiFile,
+    metadata: Option<&SettingsFieldMetadata>,
+    _window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let (_, value) = SettingsStore::global(cx).get_value_from_file(file.to_settings(), field.pick);
+    let initial_text = value
+        .copied()
+        .flatten()
+        .map(|value| T::default_format(&value));
+
+    SettingsInputField::new()
+        .tab_index(0)
+        .when_some(initial_text, |editor, text| editor.with_initial_text(text))
+        .when_some(
+            metadata.and_then(|metadata| metadata.placeholder),
+            |editor, placeholder| editor.with_placeholder(placeholder),
+        )
+        .on_confirm({
+            move |new_text, window, cx| {
+                let Some(new_text) = new_text else {
+                    let _ = update_settings_file(
+                        file.clone(),
+                        field.json_path,
+                        window,
+                        cx,
+                        move |settings, _cx| {
+                            (field.write)(settings, None);
+                        },
+                    );
+                    return;
+                };
+
+                let new_text = new_text.trim();
+                if new_text.is_empty() {
+                    let _ = update_settings_file(
+                        file.clone(),
+                        field.json_path,
+                        window,
+                        cx,
+                        move |settings, _cx| {
+                            (field.write)(settings, None);
+                        },
+                    );
+                    return;
+                }
+
+                let Ok(value) = new_text.parse::<T>() else {
                     return;
                 };
 

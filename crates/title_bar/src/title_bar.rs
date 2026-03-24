@@ -42,7 +42,7 @@ use theme::ActiveTheme;
 use title_bar_settings::TitleBarSettings;
 use ui::{
     Avatar, ButtonLike, ContextMenu, IconWithIndicator, Indicator, PopoverMenu, PopoverMenuHandle,
-    TintColor, Tooltip, prelude::*,
+    TintColor, Tooltip, prelude::*, utils::platform_title_bar_height,
 };
 use update_version::UpdateVersion;
 use util::ResultExt;
@@ -162,8 +162,11 @@ pub struct TitleBar {
 impl Render for TitleBar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title_bar_settings = *TitleBarSettings::get_global(cx);
+        let button_layout = title_bar_settings.button_layout;
 
         let show_menus = show_menus(cx);
+        let keep_expanded_menus_inline = cfg!(target_os = "windows");
+        let show_menus_inline = !show_menus || keep_expanded_menus_inline;
 
         let mut children = Vec::new();
 
@@ -195,13 +198,16 @@ impl Render for TitleBar {
                     let mut render_project_items = title_bar_settings.show_branch_name
                         || title_bar_settings.show_project_items;
                     title_bar
-                        .when_some(self.application_menu.clone(), |title_bar, menu| {
-                            if !show_menus {
-                                render_project_items &=
-                                    !menu.update(cx, |menu, cx| menu.all_menus_shown(cx));
-                            }
-                            title_bar.child(menu)
-                        })
+                        .when_some(
+                            self.application_menu.clone().filter(|_| show_menus_inline),
+                            |title_bar, menu| {
+                                if !show_menus {
+                                    render_project_items &=
+                                        !menu.update(cx, |menu, cx| menu.all_menus_shown(cx));
+                                }
+                                title_bar.child(menu)
+                            },
+                        )
                         .children(self.render_restricted_mode(cx))
                         .when(render_project_items, |title_bar| {
                             title_bar
@@ -263,10 +269,41 @@ impl Render for TitleBar {
                 .into_any_element(),
         );
 
-        self.platform_titlebar.update(cx, |this, _| {
-            this.set_children(children);
-        });
-        self.platform_titlebar.clone().into_any_element()
+        if show_menus && !keep_expanded_menus_inline {
+            self.platform_titlebar.update(cx, |this, _| {
+                this.set_button_layout(button_layout);
+                this.set_children(
+                    self.application_menu
+                        .clone()
+                        .map(|menu| menu.into_any_element()),
+                );
+            });
+
+            let height = platform_title_bar_height(window);
+            let title_bar_color = self.platform_titlebar.update(cx, |platform_titlebar, cx| {
+                platform_titlebar.title_bar_color(window, cx)
+            });
+
+            v_flex()
+                .w_full()
+                .child(self.platform_titlebar.clone().into_any_element())
+                .child(
+                    h_flex()
+                        .bg(title_bar_color)
+                        .h(height)
+                        .pl_2()
+                        .justify_between()
+                        .w_full()
+                        .children(children),
+                )
+                .into_any_element()
+        } else {
+            self.platform_titlebar.update(cx, |this, _| {
+                this.set_button_layout(button_layout);
+                this.set_children(children);
+            });
+            self.platform_titlebar.clone().into_any_element()
+        }
     }
 }
 
@@ -330,6 +367,7 @@ impl TitleBar {
             }),
         );
         subscriptions.push(cx.observe(&user_store, |_a, _, cx| cx.notify()));
+        subscriptions.push(cx.observe_button_layout_changed(window, |_, _, cx| cx.notify()));
         if let Some(trusted_worktrees) = TrustedWorktrees::try_get_global(cx) {
             subscriptions.push(cx.subscribe(&trusted_worktrees, |_, _, _, cx| {
                 cx.notify();

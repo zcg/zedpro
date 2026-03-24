@@ -1,3 +1,4 @@
+use crate::DEFAULT_THREAD_TITLE;
 use crate::SendImmediately;
 use crate::ThreadHistory;
 use crate::{
@@ -150,7 +151,10 @@ pub enum MessageEditorEvent {
     Cancel,
     Focus,
     LostFocus,
-    InputAttempted(Arc<str>),
+    InputAttempted {
+        text: Arc<str>,
+        cursor_offset: usize,
+    },
 }
 
 impl EventEmitter<MessageEditorEvent> for MessageEditor {}
@@ -256,7 +260,15 @@ impl MessageEditor {
                     && editor.read(cx).read_only(cx)
                     && !text.is_empty()
                 {
-                    cx.emit(MessageEditorEvent::InputAttempted(text.clone()));
+                    let editor = editor.read(cx);
+                    let cursor_anchor = editor.selections.newest_anchor().head();
+                    let cursor_offset = cursor_anchor
+                        .to_offset(&editor.buffer().read(cx).snapshot(cx))
+                        .0;
+                    cx.emit(MessageEditorEvent::InputAttempted {
+                        text: text.clone(),
+                        cursor_offset,
+                    });
                 }
 
                 if let EditorEvent::Edited { .. } = event
@@ -387,7 +399,7 @@ impl MessageEditor {
         };
         let thread_title = title
             .filter(|title| !title.is_empty())
-            .unwrap_or_else(|| SharedString::new_static("New Thread"));
+            .unwrap_or_else(|| SharedString::new_static(DEFAULT_THREAD_TITLE));
         let uri = MentionUri::Thread {
             id: session_id,
             name: thread_title.to_string(),
@@ -1577,6 +1589,21 @@ impl MessageEditor {
 
     pub fn text(&self, cx: &App) -> String {
         self.editor.read(cx).text(cx)
+    }
+
+    pub fn set_cursor_offset(
+        &mut self,
+        offset: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |editor, cx| {
+            let snapshot = editor.buffer().read(cx).snapshot(cx);
+            let offset = snapshot.clip_offset(MultiBufferOffset(offset), text::Bias::Left);
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections.select_ranges([offset..offset]);
+            });
+        });
     }
 
     pub fn insert_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
