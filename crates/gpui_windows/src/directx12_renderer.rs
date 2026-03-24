@@ -3,10 +3,10 @@ use std::{
     ffi::c_void,
     marker::PhantomData,
     mem::{ManuallyDrop, size_of},
+    ops::Range,
     ptr::{copy_nonoverlapping, null, null_mut},
     slice,
     sync::Arc,
-    thread,
 };
 
 use anyhow::{Context, Result};
@@ -16,7 +16,7 @@ use parking_lot::Mutex;
 use util::ResultExt;
 use windows::{
     Win32::{
-        Foundation::{HWND, RECT},
+        Foundation::{CloseHandle, HANDLE, HWND, RECT},
         Graphics::{
             Direct3D::{
                 D3D_PRIMITIVE_TOPOLOGY, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
@@ -29,6 +29,7 @@ use windows::{
             },
             Dxgi::{Common::*, *},
         },
+        System::Threading::{CreateEventW, WaitForSingleObject},
     },
     core::Interface,
 };
@@ -60,7 +61,10 @@ pub(crate) struct DirectX12Renderer {
     width: u32,
     height: u32,
     skip_draws: bool,
-    srv_descriptor_cursor: usize,
+    current_frame_index: usize,
+    scene_upload_buffers: Vec<FrameUploadBuffer>,
+    path_vertex_scratch: Vec<PathRasterizationSprite>,
+    path_sprite_scratch: Vec<PathSprite>,
 }
 
 struct DirectX12RendererDevices {
@@ -68,12 +72,12 @@ struct DirectX12RendererDevices {
     dxgi_factory: IDXGIFactory6,
     device: ID3D12Device,
     command_queue: ID3D12CommandQueue,
-    executor: DirectX12ImmediateExecutor,
+    executors: Vec<DirectX12ImmediateExecutor>,
+    fence: DirectX12Fence,
     root_signature: ID3D12RootSignature,
     rtv_heap: ID3D12DescriptorHeap,
     rtv_descriptor_size: usize,
-    srv_heap: ID3D12DescriptorHeap,
-    srv_descriptor_size: usize,
+    srv_descriptors: DirectX12SrvDescriptors,
 }
 
 struct DirectX12RendererResources {
@@ -90,6 +94,19 @@ struct DirectX12RendererResources {
 struct DirectX12BackBuffer {
     resource: ID3D12Resource,
     rtv_handle: D3D12_CPU_DESCRIPTOR_HANDLE,
+}
+
+#[derive(Clone)]
+struct DirectX12SrvDescriptors {
+    heap: ID3D12DescriptorHeap,
+    descriptor_size: usize,
+    persistent_allocator: Arc<Mutex<PersistentSrvDescriptorAllocator>>,
+    null_texture_descriptor_slot: usize,
+}
+
+struct PersistentSrvDescriptorAllocator {
+    next_slot: usize,
+    free_slots: Vec<usize>,
 }
 
 struct DirectCompositionLayer {
@@ -127,7 +144,6 @@ struct ConstantBuffer<T> {
 
 struct StructuredBuffer<T> {
     resource: ID3D12Resource,
-    mapped_ptr: *mut u8,
     capacity: usize,
     _marker: PhantomData<T>,
 }
@@ -135,26 +151,42 @@ struct StructuredBuffer<T> {
 struct DirectX12ImmediateExecutor {
     command_allocator: ID3D12CommandAllocator,
     command_list: ID3D12GraphicsCommandList,
+    last_submitted_fence_value: u64,
+}
+
+struct DirectX12Fence {
     fence: ID3D12Fence,
+    fence_event: HANDLE,
     next_fence_value: u64,
+}
+
+struct PersistentUploadBuffer {
+    resource: ID3D12Resource,
+    mapped_ptr: *mut u8,
+    capacity: usize,
+}
+
+struct FrameUploadBuffer {
+    buffer: PersistentUploadBuffer,
+    retired_buffers: Vec<PersistentUploadBuffer>,
+    cursor: usize,
 }
 
 #[derive(Clone)]
 struct ShaderTextureBinding {
-    resource: ID3D12Resource,
-    format: DXGI_FORMAT,
+    descriptor_slot: usize,
 }
 
 pub(crate) struct DirectX12Atlas(Mutex<DirectX12AtlasState>);
 
 struct DirectX12AtlasState {
     device: ID3D12Device,
-    command_queue: ID3D12CommandQueue,
-    executor: DirectX12ImmediateExecutor,
+    srv_descriptors: DirectX12SrvDescriptors,
     monochrome_textures: AtlasTextureList<DirectX12AtlasTexture>,
     polychrome_textures: AtlasTextureList<DirectX12AtlasTexture>,
     subpixel_textures: AtlasTextureList<DirectX12AtlasTexture>,
     tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
+    pending_uploads: Vec<PendingAtlasUpload>,
 }
 
 struct DirectX12AtlasTexture {
@@ -163,7 +195,14 @@ struct DirectX12AtlasTexture {
     allocator: BucketedAtlasAllocator,
     resource: ID3D12Resource,
     format: DXGI_FORMAT,
+    descriptor_slot: usize,
     live_atlas_keys: u32,
+}
+
+struct PendingAtlasUpload {
+    texture_id: AtlasTextureId,
+    bounds: Bounds<DevicePixels>,
+    bytes: Vec<u8>,
 }
 
 #[derive(Clone, Copy)]
@@ -190,6 +229,26 @@ struct GlobalParams {
     subpixel_enhanced_contrast: f32,
 }
 
+enum DrawPacket {
+    Shadows(Range<usize>),
+    Quads(Range<usize>),
+    Paths(Range<usize>),
+    Underlines(Range<usize>),
+    MonochromeSprites {
+        texture_id: AtlasTextureId,
+        range: Range<usize>,
+    },
+    SubpixelSprites {
+        texture_id: AtlasTextureId,
+        range: Range<usize>,
+    },
+    PolychromeSprites {
+        texture_id: AtlasTextureId,
+        range: Range<usize>,
+    },
+    Surfaces(Range<usize>),
+}
+
 impl DirectX12Renderer {
     pub(crate) fn new(
         hwnd: HWND,
@@ -202,10 +261,7 @@ impl DirectX12Renderer {
 
         let devices = DirectX12RendererDevices::new(directx_devices, disable_direct_composition)
             .context("Creating Direct3D 12 devices")?;
-        let atlas = Arc::new(DirectX12Atlas::new(
-            &devices.device,
-            &devices.command_queue,
-        )?);
+        let atlas = Arc::new(DirectX12Atlas::new(&devices)?);
         let resources =
             DirectX12RendererResources::new(&devices, 1, 1, hwnd, disable_direct_composition)
                 .context("Creating Direct3D 12 resources")?;
@@ -228,6 +284,8 @@ impl DirectX12Renderer {
         Ok(Self {
             hwnd,
             atlas,
+            scene_upload_buffers: create_frame_upload_buffers(&devices.device)
+                .context("Creating Direct3D 12 scene upload buffers")?,
             devices,
             resources,
             globals,
@@ -237,7 +295,9 @@ impl DirectX12Renderer {
             width: 1,
             height: 1,
             skip_draws: false,
-            srv_descriptor_cursor: 0,
+            current_frame_index: 0,
+            path_vertex_scratch: Vec::new(),
+            path_sprite_scratch: Vec::new(),
         })
     }
 
@@ -283,16 +343,19 @@ impl DirectX12Renderer {
             }
         };
 
-        self.atlas
-            .handle_device_lost(&devices.device, &devices.command_queue)?;
+        self.atlas.handle_device_lost(&devices)?;
 
+        self.scene_upload_buffers = create_frame_upload_buffers(&devices.device)
+            .context("Recreating Direct3D 12 scene upload buffers")?;
         self.devices = devices;
         self.resources = resources;
         self.globals = globals;
         self.pipelines = pipelines;
         self.direct_composition = direct_composition;
         self.skip_draws = true;
-        self.srv_descriptor_cursor = 0;
+        self.current_frame_index = 0;
+        self.path_vertex_scratch.clear();
+        self.path_sprite_scratch.clear();
         Ok(())
     }
 
@@ -322,29 +385,31 @@ impl DirectX12Renderer {
             _ => [0.0, 0.0, 0.0, 0.0],
         };
 
+        let draw_packets = collect_draw_packets(scene);
+
         self.pre_draw(clear_color)?;
         self.upload_scene_buffers(scene)?;
 
-        for batch in scene.batches() {
-            match batch {
-                PrimitiveBatch::Shadows(range) => self.draw_shadows(range.start, range.len()),
-                PrimitiveBatch::Quads(range) => self.draw_quads(range.start, range.len()),
-                PrimitiveBatch::Paths(range) => {
+        for packet in draw_packets {
+            match packet {
+                DrawPacket::Shadows(range) => self.draw_shadows(range.start, range.len()),
+                DrawPacket::Quads(range) => self.draw_quads(range.start, range.len()),
+                DrawPacket::Paths(range) => {
                     let paths = &scene.paths[range];
                     self.draw_paths_to_intermediate(paths)?;
                     self.draw_paths_from_intermediate(paths)
                 }
-                PrimitiveBatch::Underlines(range) => self.draw_underlines(range.start, range.len()),
-                PrimitiveBatch::MonochromeSprites { texture_id, range } => {
+                DrawPacket::Underlines(range) => self.draw_underlines(range.start, range.len()),
+                DrawPacket::MonochromeSprites { texture_id, range } => {
                     self.draw_monochrome_sprites(texture_id, range.start, range.len())
                 }
-                PrimitiveBatch::SubpixelSprites { texture_id, range } => {
+                DrawPacket::SubpixelSprites { texture_id, range } => {
                     self.draw_subpixel_sprites(texture_id, range.start, range.len())
                 }
-                PrimitiveBatch::PolychromeSprites { texture_id, range } => {
+                DrawPacket::PolychromeSprites { texture_id, range } => {
                     self.draw_polychrome_sprites(texture_id, range.start, range.len())
                 }
-                PrimitiveBatch::Surfaces(range) => self.draw_surfaces(&scene.surfaces[range]),
+                DrawPacket::Surfaces(range) => self.draw_surfaces(&scene.surfaces[range]),
             }
             .context(format!(
                 "scene too large: {} paths, {} shadows, {} quads, {} underlines, {} mono, {} subpixel, {} poly, {} surfaces",
@@ -371,7 +436,6 @@ impl DirectX12Renderer {
 
         self.devices.wait_for_gpu_idle()?;
         self.devices
-            .executor
             .release_recorded_references()
             .context("Releasing Direct3D 12 command-list references before resize")?;
         if let Some(direct_composition) = &self.direct_composition {
@@ -432,7 +496,6 @@ impl DirectX12Renderer {
             grayscale_enhanced_contrast: self.font_info.grayscale_enhanced_contrast,
             subpixel_enhanced_contrast: self.font_info.subpixel_enhanced_contrast,
         });
-        self.srv_descriptor_cursor = 0;
 
         let back_buffer_index =
             unsafe { self.resources.swap_chain.GetCurrentBackBufferIndex() as usize };
@@ -442,13 +505,21 @@ impl DirectX12Renderer {
             .get(back_buffer_index)
             .context("Direct3D 12 back buffer index is out of range")?;
 
-        self.devices.executor.reset()?;
-        let command_list = &self.devices.executor.command_list;
+        self.current_frame_index = back_buffer_index;
+        self.devices.begin_frame(back_buffer_index)?;
+        self.scene_upload_buffers[back_buffer_index].reset();
+        let command_list = self.devices.command_list(back_buffer_index)?;
+        self.atlas.flush_pending_uploads(
+            &command_list,
+            self.scene_upload_buffers
+                .get_mut(back_buffer_index)
+                .context("Direct3D 12 frame upload buffer index is out of range")?,
+        )?;
         unsafe {
             command_list.SetGraphicsRootSignature(&self.devices.root_signature);
             command_list.RSSetViewports(&[self.resources.viewport]);
             command_list.RSSetScissorRects(&[self.resources.scissor_rect]);
-            command_list.SetDescriptorHeaps(&[Some(self.devices.srv_heap.clone())]);
+            command_list.SetDescriptorHeaps(&[Some(self.devices.srv_descriptors.heap.clone())]);
 
             let to_render_target = transition_barrier(
                 &back_buffer.resource,
@@ -468,13 +539,7 @@ impl DirectX12Renderer {
     }
 
     fn present(&mut self) -> Result<()> {
-        let back_buffer_index =
-            unsafe { self.resources.swap_chain.GetCurrentBackBufferIndex() as usize };
-        let back_buffer = self
-            .resources
-            .back_buffers
-            .get(back_buffer_index)
-            .context("Direct3D 12 back buffer index is out of range")?;
+        let back_buffer = self.current_back_buffer()?;
 
         unsafe {
             let to_present = transition_barrier(
@@ -482,18 +547,14 @@ impl DirectX12Renderer {
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
                 D3D12_RESOURCE_STATE_PRESENT,
             );
-            self.devices
-                .executor
-                .command_list
-                .ResourceBarrier(&[to_present]);
-            self.devices
-                .executor
-                .command_list
+            let command_list = self.current_command_list()?;
+            command_list.ResourceBarrier(&[to_present]);
+            command_list
                 .Close()
                 .context("Closing Direct3D 12 command list")?;
         }
 
-        self.devices.execute_and_wait()?;
+        self.devices.submit_frame(self.current_frame_index)?;
 
         unsafe {
             self.resources
@@ -502,40 +563,62 @@ impl DirectX12Renderer {
                 .ok()
                 .context("Presenting Direct3D 12 swap chain failed")?;
         }
-        self.devices.wait_for_gpu_idle()?;
         Ok(())
     }
 
     fn upload_scene_buffers(&mut self, scene: &Scene) -> Result<()> {
+        let command_list = self.current_command_list()?;
+        let upload_buffer = self
+            .scene_upload_buffers
+            .get_mut(self.current_frame_index)
+            .context("Direct3D 12 frame upload buffer index is out of range")?;
         if !scene.shadows.is_empty() {
-            self.pipelines
-                .shadow_pipeline
-                .update_buffer(&self.devices.device, &scene.shadows)?;
+            self.pipelines.shadow_pipeline.update_buffer(
+                &self.devices.device,
+                &command_list,
+                upload_buffer,
+                &scene.shadows,
+            )?;
         }
         if !scene.quads.is_empty() {
-            self.pipelines
-                .quad_pipeline
-                .update_buffer(&self.devices.device, &scene.quads)?;
+            self.pipelines.quad_pipeline.update_buffer(
+                &self.devices.device,
+                &command_list,
+                upload_buffer,
+                &scene.quads,
+            )?;
         }
         if !scene.underlines.is_empty() {
-            self.pipelines
-                .underline_pipeline
-                .update_buffer(&self.devices.device, &scene.underlines)?;
+            self.pipelines.underline_pipeline.update_buffer(
+                &self.devices.device,
+                &command_list,
+                upload_buffer,
+                &scene.underlines,
+            )?;
         }
         if !scene.monochrome_sprites.is_empty() {
-            self.pipelines
-                .mono_sprites
-                .update_buffer(&self.devices.device, &scene.monochrome_sprites)?;
+            self.pipelines.mono_sprites.update_buffer(
+                &self.devices.device,
+                &command_list,
+                upload_buffer,
+                &scene.monochrome_sprites,
+            )?;
         }
         if !scene.subpixel_sprites.is_empty() {
-            self.pipelines
-                .subpixel_sprites
-                .update_buffer(&self.devices.device, &scene.subpixel_sprites)?;
+            self.pipelines.subpixel_sprites.update_buffer(
+                &self.devices.device,
+                &command_list,
+                upload_buffer,
+                &scene.subpixel_sprites,
+            )?;
         }
         if !scene.polychrome_sprites.is_empty() {
-            self.pipelines
-                .poly_sprites
-                .update_buffer(&self.devices.device, &scene.polychrome_sprites)?;
+            self.pipelines.poly_sprites.update_buffer(
+                &self.devices.device,
+                &command_list,
+                upload_buffer,
+                &scene.polychrome_sprites,
+            )?;
         }
         Ok(())
     }
@@ -556,11 +639,9 @@ impl DirectX12Renderer {
             None,
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
         )?;
+        let command_list = self.current_command_list()?;
         unsafe {
-            self.devices
-                .executor
-                .command_list
-                .DrawInstanced(4, len as u32, 0, 0);
+            command_list.DrawInstanced(4, len as u32, 0, 0);
         }
         Ok(())
     }
@@ -581,11 +662,9 @@ impl DirectX12Renderer {
             None,
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
         )?;
+        let command_list = self.current_command_list()?;
         unsafe {
-            self.devices
-                .executor
-                .command_list
-                .DrawInstanced(4, len as u32, 0, 0);
+            command_list.DrawInstanced(4, len as u32, 0, 0);
         }
         Ok(())
     }
@@ -595,21 +674,29 @@ impl DirectX12Renderer {
             return Ok(());
         }
 
-        let mut vertices = Vec::new();
+        let required_vertices = paths.iter().map(|path| path.vertices.len()).sum();
+        self.path_vertex_scratch.clear();
+        self.path_vertex_scratch.reserve(required_vertices);
         for path in paths {
-            vertices.extend(path.vertices.iter().map(|vertex| PathRasterizationSprite {
-                xy_position: vertex.xy_position,
-                st_position: vertex.st_position,
-                color: path.color,
-                bounds: path.clipped_bounds(),
-            }));
+            self.path_vertex_scratch
+                .extend(path.vertices.iter().map(|vertex| PathRasterizationSprite {
+                    xy_position: vertex.xy_position,
+                    st_position: vertex.st_position,
+                    color: path.color,
+                    bounds: path.clipped_bounds(),
+                }));
         }
-        self.pipelines
-            .path_rasterization_pipeline
-            .update_buffer(&self.devices.device, &vertices)?;
+        self.pipelines.path_rasterization_pipeline.update_buffer(
+            &self.devices.device,
+            &self.current_command_list()?,
+            self.scene_upload_buffers
+                .get_mut(self.current_frame_index)
+                .context("Direct3D 12 frame upload buffer index is out of range")?,
+            &self.path_vertex_scratch,
+        )?;
 
+        let command_list = self.current_command_list()?;
         unsafe {
-            let command_list = &self.devices.executor.command_list;
             let to_msaa_rtv = transition_barrier(
                 &self.resources.path_intermediate_msaa_resource,
                 D3D12_RESOURCE_STATE_RESOLVE_SOURCE,
@@ -651,9 +738,9 @@ impl DirectX12Renderer {
             None,
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
         )?;
+        let command_list = self.current_command_list()?;
         unsafe {
-            let command_list = &self.devices.executor.command_list;
-            command_list.DrawInstanced(vertices.len() as u32, 1, 0, 0);
+            command_list.DrawInstanced(self.path_vertex_scratch.len() as u32, 1, 0, 0);
             let to_msaa_resolve_source = transition_barrier(
                 &self.resources.path_intermediate_msaa_resource,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -691,24 +778,29 @@ impl DirectX12Renderer {
             return Ok(());
         };
 
-        let sprites = if paths.last().unwrap().order == first_path.order {
-            paths
-                .iter()
-                .map(|path| PathSprite {
+        self.path_sprite_scratch.clear();
+        if paths.last().unwrap().order == first_path.order {
+            self.path_sprite_scratch.reserve(paths.len());
+            self.path_sprite_scratch
+                .extend(paths.iter().map(|path| PathSprite {
                     bounds: path.clipped_bounds(),
-                })
-                .collect::<Vec<_>>()
+                }));
         } else {
             let mut bounds = first_path.clipped_bounds();
             for path in paths.iter().skip(1) {
                 bounds = bounds.union(&path.clipped_bounds());
             }
-            vec![PathSprite { bounds }]
-        };
+            self.path_sprite_scratch.push(PathSprite { bounds });
+        }
 
-        self.pipelines
-            .path_sprite_pipeline
-            .update_buffer(&self.devices.device, &sprites)?;
+        self.pipelines.path_sprite_pipeline.update_buffer(
+            &self.devices.device,
+            &self.current_command_list()?,
+            self.scene_upload_buffers
+                .get_mut(self.current_frame_index)
+                .context("Direct3D 12 frame upload buffer index is out of range")?,
+            &self.path_sprite_scratch,
+        )?;
         let pipeline_state = self.pipelines.path_sprite_pipeline.pipeline_state.clone();
         let gpu_va = self
             .pipelines
@@ -722,11 +814,9 @@ impl DirectX12Renderer {
             Some(&texture),
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
         )?;
+        let command_list = self.current_command_list()?;
         unsafe {
-            self.devices
-                .executor
-                .command_list
-                .DrawInstanced(4, sprites.len() as u32, 0, 0);
+            command_list.DrawInstanced(4, self.path_sprite_scratch.len() as u32, 0, 0);
         }
         Ok(())
     }
@@ -747,11 +837,9 @@ impl DirectX12Renderer {
             None,
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
         )?;
+        let command_list = self.current_command_list()?;
         unsafe {
-            self.devices
-                .executor
-                .command_list
-                .DrawInstanced(4, len as u32, 0, 0);
+            command_list.DrawInstanced(4, len as u32, 0, 0);
         }
         Ok(())
     }
@@ -781,11 +869,9 @@ impl DirectX12Renderer {
             Some(&texture),
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
         )?;
+        let command_list = self.current_command_list()?;
         unsafe {
-            self.devices
-                .executor
-                .command_list
-                .DrawInstanced(4, len as u32, 0, 0);
+            command_list.DrawInstanced(4, len as u32, 0, 0);
         }
         Ok(())
     }
@@ -815,11 +901,9 @@ impl DirectX12Renderer {
             Some(&texture),
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
         )?;
+        let command_list = self.current_command_list()?;
         unsafe {
-            self.devices
-                .executor
-                .command_list
-                .DrawInstanced(4, len as u32, 0, 0);
+            command_list.DrawInstanced(4, len as u32, 0, 0);
         }
         Ok(())
     }
@@ -849,11 +933,9 @@ impl DirectX12Renderer {
             Some(&texture),
             D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
         )?;
+        let command_list = self.current_command_list()?;
         unsafe {
-            self.devices
-                .executor
-                .command_list
-                .DrawInstanced(4, len as u32, 0, 0);
+            command_list.DrawInstanced(4, len as u32, 0, 0);
         }
         Ok(())
     }
@@ -874,7 +956,7 @@ impl DirectX12Renderer {
     ) -> Result<()> {
         let texture_handle = self.stage_texture_descriptor(texture)?;
 
-        let command_list = &self.devices.executor.command_list;
+        let command_list = self.current_command_list()?;
         unsafe {
             command_list.SetPipelineState(pipeline_state);
             command_list.SetGraphicsRootSignature(&self.devices.root_signature);
@@ -895,31 +977,14 @@ impl DirectX12Renderer {
         &mut self,
         texture: Option<&ShaderTextureBinding>,
     ) -> Result<D3D12_GPU_DESCRIPTOR_HANDLE> {
-        let slot = self.srv_descriptor_cursor;
-        anyhow::ensure!(
-            slot < SRV_DESCRIPTOR_COUNT,
-            "Direct3D 12 SRV descriptor heap exhausted while encoding draw commands"
-        );
-        self.srv_descriptor_cursor += 1;
+        let slot = texture
+            .map(|texture| texture.descriptor_slot)
+            .unwrap_or(self.devices.srv_descriptors.null_texture_descriptor_slot);
+        Ok(self.devices.srv_descriptors.gpu_handle(slot))
+    }
 
-        let cpu_handle = self.devices.srv_cpu_handle(slot);
-        let gpu_handle = self.devices.srv_gpu_handle(slot);
-        unsafe {
-            if let Some(texture) = texture {
-                self.devices.device.CreateShaderResourceView(
-                    Some(&texture.resource),
-                    Some(&texture_srv_desc(texture.format)),
-                    cpu_handle,
-                );
-            } else {
-                self.devices.device.CreateShaderResourceView(
-                    None,
-                    Some(&texture_srv_desc(DXGI_FORMAT_R8G8B8A8_UNORM)),
-                    cpu_handle,
-                );
-            }
-        }
-        Ok(gpu_handle)
+    fn current_command_list(&self) -> Result<ID3D12GraphicsCommandList> {
+        self.devices.command_list(self.current_frame_index)
     }
 
     fn current_back_buffer(&self) -> Result<&DirectX12BackBuffer> {
@@ -958,7 +1023,10 @@ impl DirectX12RendererDevices {
                 .CreateCommandQueue(&command_queue_desc)
                 .context("Creating Direct3D 12 command queue")?
         };
-        let executor = DirectX12ImmediateExecutor::new(&device)
+        let fence = DirectX12Fence::new(&device).context("Creating Direct3D 12 fence")?;
+        let executors = (0..BUFFER_COUNT)
+            .map(|_| DirectX12ImmediateExecutor::new(&device))
+            .collect::<Result<Vec<_>>>()
             .context("Creating Direct3D 12 command execution objects")?;
         let root_signature =
             create_root_signature(&device).context("Creating Direct3D 12 root signature")?;
@@ -986,52 +1054,70 @@ impl DirectX12RendererDevices {
                 .CreateDescriptorHeap(&srv_heap_desc)
                 .context("Creating Direct3D 12 SRV heap")?
         };
+        let srv_descriptors = DirectX12SrvDescriptors::new(&device, &srv_heap, unsafe {
+            device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) as usize
+        })?;
 
         Ok(Self {
             adapter,
             dxgi_factory,
             device: device.clone(),
             command_queue,
-            executor,
+            executors,
+            fence,
             root_signature,
             rtv_heap,
             rtv_descriptor_size: unsafe {
                 device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV) as usize
             },
-            srv_heap,
-            srv_descriptor_size: unsafe {
-                device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
-                    as usize
-            },
+            srv_descriptors,
         })
     }
 
-    fn execute_and_wait(&mut self) -> Result<()> {
-        self.executor.execute_and_wait(&self.command_queue)
+    fn begin_frame(&mut self, frame_index: usize) -> Result<()> {
+        let executor = self
+            .executors
+            .get_mut(frame_index)
+            .context("Direct3D 12 frame executor index is out of range")?;
+        executor.reset(&self.fence)
+    }
+
+    fn command_list(&self, frame_index: usize) -> Result<ID3D12GraphicsCommandList> {
+        self.executors
+            .get(frame_index)
+            .map(|executor| executor.command_list.clone())
+            .context("Direct3D 12 frame executor index is out of range")
+    }
+
+    fn submit_frame(&mut self, frame_index: usize) -> Result<()> {
+        let command_queue = self.command_queue.clone();
+        let executor = self
+            .executors
+            .get_mut(frame_index)
+            .context("Direct3D 12 frame executor index is out of range")?;
+        executor.execute(&command_queue, &mut self.fence)
     }
 
     fn wait_for_gpu_idle(&mut self) -> Result<()> {
-        self.executor.wait_for_gpu_idle(&self.command_queue)
+        for executor in &mut self.executors {
+            executor.wait_until_available(&self.fence)?;
+        }
+
+        let fence_value = self.fence.signal(&self.command_queue)?;
+        self.fence.wait_for_value(fence_value)
+    }
+
+    fn release_recorded_references(&mut self) -> Result<()> {
+        for executor in &mut self.executors {
+            executor.release_recorded_references(&self.fence)?;
+        }
+        Ok(())
     }
 
     fn rtv_handle(&self, slot: usize) -> D3D12_CPU_DESCRIPTOR_HANDLE {
         let start = unsafe { self.rtv_heap.GetCPUDescriptorHandleForHeapStart() };
         D3D12_CPU_DESCRIPTOR_HANDLE {
             ptr: start.ptr + self.rtv_descriptor_size * slot,
-        }
-    }
-
-    fn srv_cpu_handle(&self, slot: usize) -> D3D12_CPU_DESCRIPTOR_HANDLE {
-        let start = unsafe { self.srv_heap.GetCPUDescriptorHandleForHeapStart() };
-        D3D12_CPU_DESCRIPTOR_HANDLE {
-            ptr: start.ptr + self.srv_descriptor_size * slot,
-        }
-    }
-
-    fn srv_gpu_handle(&self, slot: usize) -> D3D12_GPU_DESCRIPTOR_HANDLE {
-        let start = unsafe { self.srv_heap.GetGPUDescriptorHandleForHeapStart() };
-        D3D12_GPU_DESCRIPTOR_HANDLE {
-            ptr: start.ptr + (self.srv_descriptor_size * slot) as u64,
         }
     }
 }
@@ -1085,14 +1171,19 @@ impl DirectX12RendererResources {
                 path_intermediate_msaa_rtv,
             );
         }
+        let path_intermediate_texture = devices
+            .srv_descriptors
+            .create_texture_binding(
+                &devices.device,
+                &path_intermediate_resource,
+                RENDER_TARGET_FORMAT,
+            )
+            .context("Creating Direct3D 12 path intermediate SRV")?;
 
         Ok(Self {
             swap_chain,
             back_buffers,
-            path_intermediate_texture: ShaderTextureBinding {
-                resource: path_intermediate_resource.clone(),
-                format: RENDER_TARGET_FORMAT,
-            },
+            path_intermediate_texture,
             path_intermediate_resource,
             path_intermediate_msaa_resource,
             path_intermediate_msaa_rtv,
@@ -1149,10 +1240,12 @@ impl DirectX12RendererResources {
                 | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
         )
         .context("Recreating Direct3D 12 path intermediate texture")?;
-        let new_path_intermediate_texture = ShaderTextureBinding {
-            resource: new_path_intermediate_resource.clone(),
-            format: RENDER_TARGET_FORMAT,
-        };
+        let new_path_intermediate_texture = devices.srv_descriptors.overwrite_texture_binding(
+            &devices.device,
+            self.path_intermediate_texture.descriptor_slot,
+            &new_path_intermediate_resource,
+            RENDER_TARGET_FORMAT,
+        );
         let new_path_intermediate_msaa_resource = create_texture_resource(
             &devices.device,
             width,
@@ -1295,8 +1388,8 @@ impl<T> PipelineState<T> {
         blend_state: D3D12_BLEND_DESC,
         sample_count: u32,
     ) -> Result<Self> {
-        let vertex = RawShaderBytes::new(shader_module, ShaderTarget::Vertex)?;
-        let fragment = RawShaderBytes::new(shader_module, ShaderTarget::Fragment)?;
+        let vertex = RawShaderBytes::for_direct3d12(shader_module, ShaderTarget::Vertex);
+        let fragment = RawShaderBytes::for_direct3d12(shader_module, ShaderTarget::Fragment);
         let pipeline_state = create_graphics_pipeline_state(
             &devices.device,
             &devices.root_signature,
@@ -1315,7 +1408,13 @@ impl<T> PipelineState<T> {
         })
     }
 
-    fn update_buffer(&mut self, device: &ID3D12Device, data: &[T]) -> Result<()> {
+    fn update_buffer(
+        &mut self,
+        device: &ID3D12Device,
+        command_list: &ID3D12GraphicsCommandList,
+        upload_buffer: &mut FrameUploadBuffer,
+        data: &[T],
+    ) -> Result<()> {
         if self.buffer.capacity < data.len() {
             let new_capacity = data.len().max(1).next_power_of_two();
             log::debug!(
@@ -1326,7 +1425,8 @@ impl<T> PipelineState<T> {
             );
             self.buffer = StructuredBuffer::new(device, new_capacity)?;
         }
-        self.buffer.update(data);
+        self.buffer
+            .update(device, command_list, upload_buffer, data)?;
         Ok(())
     }
 }
@@ -1364,27 +1464,56 @@ impl<T> ConstantBuffer<T> {
 impl<T> StructuredBuffer<T> {
     fn new(device: &ID3D12Device, capacity: usize) -> Result<Self> {
         let capacity = capacity.max(1);
-        let resource = create_upload_buffer_resource(device, size_of::<T>() * capacity)?;
-        let mapped_ptr = map_upload_resource(&resource)?;
+        let resource = create_buffer_resource(
+            device,
+            size_of::<T>() * capacity,
+            D3D12_HEAP_TYPE_DEFAULT,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+        )?;
         Ok(Self {
             resource,
-            mapped_ptr,
             capacity,
             _marker: PhantomData,
         })
     }
 
-    fn update(&self, data: &[T]) {
+    fn update(
+        &self,
+        device: &ID3D12Device,
+        command_list: &ID3D12GraphicsCommandList,
+        upload_buffer: &mut FrameUploadBuffer,
+        data: &[T],
+    ) -> Result<()> {
         if data.is_empty() {
-            return;
+            return Ok(());
         }
+        let byte_len = std::mem::size_of_val(data);
+        let upload_offset = upload_buffer.write(device, data)?;
         unsafe {
-            copy_nonoverlapping(
-                data.as_ptr().cast::<u8>(),
-                self.mapped_ptr,
-                std::mem::size_of_val(data),
+            let to_copy_dest = transition_barrier(
+                &self.resource,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                    | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_COPY_DEST,
             );
+            command_list.ResourceBarrier(&[to_copy_dest]);
+            command_list.CopyBufferRegion(
+                &self.resource,
+                0,
+                &upload_buffer.buffer.resource,
+                upload_offset as u64,
+                byte_len as u64,
+            );
+            let to_shader_read = transition_barrier(
+                &self.resource,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                    | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            );
+            command_list.ResourceBarrier(&[to_shader_read]);
         }
+        Ok(())
     }
 
     fn gpu_virtual_address(&self, first_element: u32) -> u64 {
@@ -1416,21 +1545,16 @@ impl DirectX12ImmediateExecutor {
                 .Close()
                 .context("Closing initial Direct3D 12 command list")?;
         }
-        let fence = unsafe {
-            device
-                .CreateFence(0, D3D12_FENCE_FLAG_NONE)
-                .context("Creating Direct3D 12 fence")?
-        };
 
         Ok(Self {
             command_allocator,
             command_list,
-            fence,
-            next_fence_value: 1,
+            last_submitted_fence_value: 0,
         })
     }
 
-    fn reset(&self) -> Result<()> {
+    fn reset(&mut self, fence: &DirectX12Fence) -> Result<()> {
+        self.wait_until_available(fence)?;
         unsafe {
             self.command_allocator
                 .Reset()
@@ -1442,7 +1566,8 @@ impl DirectX12ImmediateExecutor {
         Ok(())
     }
 
-    fn release_recorded_references(&self) -> Result<()> {
+    fn release_recorded_references(&mut self, fence: &DirectX12Fence) -> Result<()> {
+        self.wait_until_available(fence)?;
         unsafe {
             self.command_allocator
                 .Reset()
@@ -1458,7 +1583,11 @@ impl DirectX12ImmediateExecutor {
         Ok(())
     }
 
-    fn execute_and_wait(&mut self, command_queue: &ID3D12CommandQueue) -> Result<()> {
+    fn execute(
+        &mut self,
+        command_queue: &ID3D12CommandQueue,
+        fence: &mut DirectX12Fence,
+    ) -> Result<()> {
         let command_list: ID3D12CommandList = self
             .command_list
             .cast()
@@ -1466,10 +1595,38 @@ impl DirectX12ImmediateExecutor {
         unsafe {
             command_queue.ExecuteCommandLists(&[Some(command_list)]);
         }
-        self.wait_for_gpu_idle(command_queue)
+        self.last_submitted_fence_value = fence.signal(command_queue)?;
+        Ok(())
     }
 
-    fn wait_for_gpu_idle(&mut self, command_queue: &ID3D12CommandQueue) -> Result<()> {
+    fn wait_until_available(&mut self, fence: &DirectX12Fence) -> Result<()> {
+        if self.last_submitted_fence_value == 0 {
+            return Ok(());
+        }
+        fence.wait_for_value(self.last_submitted_fence_value)?;
+        self.last_submitted_fence_value = 0;
+        Ok(())
+    }
+}
+
+impl DirectX12Fence {
+    fn new(device: &ID3D12Device) -> Result<Self> {
+        let fence = unsafe {
+            device
+                .CreateFence(0, D3D12_FENCE_FLAG_NONE)
+                .context("Creating Direct3D 12 fence")?
+        };
+        let fence_event = unsafe { CreateEventW(None, false, false, None) }
+            .context("Creating Direct3D 12 fence event")?;
+
+        Ok(Self {
+            fence,
+            fence_event,
+            next_fence_value: 1,
+        })
+    }
+
+    fn signal(&mut self, command_queue: &ID3D12CommandQueue) -> Result<u64> {
         let fence_value = self.next_fence_value;
         self.next_fence_value += 1;
         unsafe {
@@ -1477,49 +1634,263 @@ impl DirectX12ImmediateExecutor {
                 .Signal(&self.fence, fence_value)
                 .context("Signaling Direct3D 12 fence")?;
         }
-        while unsafe { self.fence.GetCompletedValue() } < fence_value {
-            thread::yield_now();
+        Ok(fence_value)
+    }
+
+    fn wait_for_value(&self, fence_value: u64) -> Result<()> {
+        if unsafe { self.fence.GetCompletedValue() } >= fence_value {
+            return Ok(());
         }
+
+        unsafe {
+            self.fence
+                .SetEventOnCompletion(fence_value, self.fence_event)
+                .context("Scheduling Direct3D 12 fence completion event")?;
+        }
+        let wait_result = unsafe { WaitForSingleObject(self.fence_event, u32::MAX) };
+        anyhow::ensure!(
+            wait_result == windows::Win32::Foundation::WAIT_OBJECT_0,
+            "Waiting for Direct3D 12 fence failed with status {:?}",
+            wait_result
+        );
         Ok(())
     }
 }
 
+impl Drop for DirectX12Fence {
+    fn drop(&mut self) {
+        if !self.fence_event.is_invalid() {
+            let _ = unsafe { CloseHandle(self.fence_event) };
+        }
+    }
+}
+
+fn collect_draw_packets(scene: &Scene) -> Vec<DrawPacket> {
+    scene
+        .batches()
+        .map(|batch| match batch {
+            PrimitiveBatch::Shadows(range) => DrawPacket::Shadows(range),
+            PrimitiveBatch::Quads(range) => DrawPacket::Quads(range),
+            PrimitiveBatch::Paths(range) => DrawPacket::Paths(range),
+            PrimitiveBatch::Underlines(range) => DrawPacket::Underlines(range),
+            PrimitiveBatch::MonochromeSprites { texture_id, range } => {
+                DrawPacket::MonochromeSprites { texture_id, range }
+            }
+            PrimitiveBatch::SubpixelSprites { texture_id, range } => {
+                DrawPacket::SubpixelSprites { texture_id, range }
+            }
+            PrimitiveBatch::PolychromeSprites { texture_id, range } => {
+                DrawPacket::PolychromeSprites { texture_id, range }
+            }
+            PrimitiveBatch::Surfaces(range) => DrawPacket::Surfaces(range),
+        })
+        .collect()
+}
+
+impl DirectX12SrvDescriptors {
+    fn new(
+        device: &ID3D12Device,
+        heap: &ID3D12DescriptorHeap,
+        descriptor_size: usize,
+    ) -> Result<Self> {
+        let descriptors = Self {
+            heap: heap.clone(),
+            descriptor_size,
+            persistent_allocator: Arc::new(Mutex::new(PersistentSrvDescriptorAllocator {
+                next_slot: 1,
+                free_slots: Vec::new(),
+            })),
+            null_texture_descriptor_slot: 0,
+        };
+        unsafe {
+            device.CreateShaderResourceView(
+                None,
+                Some(&texture_srv_desc(DXGI_FORMAT_R8G8B8A8_UNORM)),
+                descriptors.cpu_handle(descriptors.null_texture_descriptor_slot),
+            );
+        }
+        Ok(descriptors)
+    }
+
+    fn allocate_persistent_slot(&self) -> Result<usize> {
+        let mut allocator = self.persistent_allocator.lock();
+        if let Some(slot) = allocator.free_slots.pop() {
+            return Ok(slot);
+        }
+
+        anyhow::ensure!(
+            allocator.next_slot < SRV_DESCRIPTOR_COUNT,
+            "Direct3D 12 SRV descriptor heap exhausted while allocating persistent texture slots"
+        );
+        let slot = allocator.next_slot;
+        allocator.next_slot += 1;
+        Ok(slot)
+    }
+
+    fn free_persistent_slot(&self, slot: usize) {
+        if slot == self.null_texture_descriptor_slot {
+            return;
+        }
+        self.persistent_allocator.lock().free_slots.push(slot);
+    }
+
+    fn create_texture_binding(
+        &self,
+        device: &ID3D12Device,
+        resource: &ID3D12Resource,
+        format: DXGI_FORMAT,
+    ) -> Result<ShaderTextureBinding> {
+        let slot = self.allocate_persistent_slot()?;
+        Ok(self.overwrite_texture_binding(device, slot, resource, format))
+    }
+
+    fn overwrite_texture_binding(
+        &self,
+        device: &ID3D12Device,
+        slot: usize,
+        resource: &ID3D12Resource,
+        format: DXGI_FORMAT,
+    ) -> ShaderTextureBinding {
+        unsafe {
+            device.CreateShaderResourceView(
+                Some(resource),
+                Some(&texture_srv_desc(format)),
+                self.cpu_handle(slot),
+            );
+        }
+        ShaderTextureBinding {
+            descriptor_slot: slot,
+        }
+    }
+
+    fn cpu_handle(&self, slot: usize) -> D3D12_CPU_DESCRIPTOR_HANDLE {
+        let start = unsafe { self.heap.GetCPUDescriptorHandleForHeapStart() };
+        D3D12_CPU_DESCRIPTOR_HANDLE {
+            ptr: start.ptr + self.descriptor_size * slot,
+        }
+    }
+
+    fn gpu_handle(&self, slot: usize) -> D3D12_GPU_DESCRIPTOR_HANDLE {
+        let start = unsafe { self.heap.GetGPUDescriptorHandleForHeapStart() };
+        D3D12_GPU_DESCRIPTOR_HANDLE {
+            ptr: start.ptr + (self.descriptor_size * slot) as u64,
+        }
+    }
+}
+
+impl PersistentUploadBuffer {
+    fn new(device: &ID3D12Device, size_in_bytes: usize) -> Result<Self> {
+        let capacity = size_in_bytes.max(1).next_power_of_two();
+        let resource = create_upload_buffer_resource(device, capacity)?;
+        let mapped_ptr = map_upload_resource(&resource)?;
+        Ok(Self {
+            resource,
+            mapped_ptr,
+            capacity,
+        })
+    }
+}
+
+impl FrameUploadBuffer {
+    fn new(device: &ID3D12Device, size_in_bytes: usize) -> Result<Self> {
+        Ok(Self {
+            buffer: PersistentUploadBuffer::new(device, size_in_bytes)?,
+            retired_buffers: Vec::new(),
+            cursor: 0,
+        })
+    }
+
+    fn reset(&mut self) {
+        self.retired_buffers.clear();
+        self.cursor = 0;
+    }
+
+    fn write<T>(&mut self, device: &ID3D12Device, data: &[T]) -> Result<usize> {
+        let byte_len = std::mem::size_of_val(data);
+        let offset = self.reserve(device, byte_len, 256)?;
+        unsafe {
+            copy_nonoverlapping(
+                data.as_ptr().cast::<u8>(),
+                self.buffer.mapped_ptr.add(offset),
+                byte_len,
+            );
+        }
+        Ok(offset)
+    }
+
+    fn reserve(
+        &mut self,
+        device: &ID3D12Device,
+        byte_len: usize,
+        alignment: usize,
+    ) -> Result<usize> {
+        let offset = align_up(self.cursor, alignment);
+        let required_size = offset
+            .checked_add(byte_len)
+            .context("Computing Direct3D 12 frame upload cursor")?;
+        self.ensure_capacity(device, required_size)?;
+        self.cursor = required_size;
+        Ok(offset)
+    }
+
+    fn ensure_capacity(&mut self, device: &ID3D12Device, required_size: usize) -> Result<()> {
+        if self.buffer.capacity >= required_size {
+            return Ok(());
+        }
+        let new_buffer = PersistentUploadBuffer::new(device, required_size)
+            .context("Growing Direct3D 12 frame upload buffer")?;
+        let old_buffer = std::mem::replace(&mut self.buffer, new_buffer);
+        self.retired_buffers.push(old_buffer);
+        self.cursor = 0;
+        Ok(())
+    }
+}
+
+fn create_frame_upload_buffers(device: &ID3D12Device) -> Result<Vec<FrameUploadBuffer>> {
+    const INITIAL_SCENE_UPLOAD_BUFFER_SIZE: usize = 256 * 1024;
+    (0..BUFFER_COUNT)
+        .map(|_| FrameUploadBuffer::new(device, INITIAL_SCENE_UPLOAD_BUFFER_SIZE))
+        .collect()
+}
+
 impl DirectX12Atlas {
-    fn new(device: &ID3D12Device, command_queue: &ID3D12CommandQueue) -> Result<Self> {
+    fn new(devices: &DirectX12RendererDevices) -> Result<Self> {
         Ok(Self(Mutex::new(DirectX12AtlasState {
-            device: device.clone(),
-            command_queue: command_queue.clone(),
-            executor: DirectX12ImmediateExecutor::new(device)
-                .context("Creating Direct3D 12 atlas uploader")?,
+            device: devices.device.clone(),
+            srv_descriptors: devices.srv_descriptors.clone(),
             monochrome_textures: Default::default(),
             polychrome_textures: Default::default(),
             subpixel_textures: Default::default(),
             tiles_by_key: Default::default(),
+            pending_uploads: Default::default(),
         })))
     }
 
-    fn handle_device_lost(
-        &self,
-        device: &ID3D12Device,
-        command_queue: &ID3D12CommandQueue,
-    ) -> Result<()> {
+    fn handle_device_lost(&self, devices: &DirectX12RendererDevices) -> Result<()> {
         let mut state = self.0.lock();
-        state.device = device.clone();
-        state.command_queue = command_queue.clone();
-        state.executor = DirectX12ImmediateExecutor::new(device)
-            .context("Recreating Direct3D 12 atlas uploader")?;
+        state.device = devices.device.clone();
+        state.srv_descriptors = devices.srv_descriptors.clone();
         state.monochrome_textures = AtlasTextureList::default();
         state.polychrome_textures = AtlasTextureList::default();
         state.subpixel_textures = AtlasTextureList::default();
         state.tiles_by_key.clear();
+        state.pending_uploads.clear();
         Ok(())
+    }
+
+    fn flush_pending_uploads(
+        &self,
+        command_list: &ID3D12GraphicsCommandList,
+        frame_upload_buffer: &mut FrameUploadBuffer,
+    ) -> Result<()> {
+        let mut state = self.0.lock();
+        state.flush_pending_uploads(command_list, frame_upload_buffer)
     }
 
     fn get_texture_binding(&self, id: AtlasTextureId) -> Option<ShaderTextureBinding> {
         let state = self.0.lock();
         state.texture(id).map(|texture| ShaderTextureBinding {
-            resource: texture.resource.clone(),
-            format: texture.format,
+            descriptor_slot: texture.descriptor_slot,
         })
     }
 }
@@ -1542,7 +1913,7 @@ impl PlatformAtlas for DirectX12Atlas {
         let tile = state
             .allocate(size, key.texture_kind())
             .ok_or_else(|| anyhow::anyhow!("failed to allocate Direct3D 12 atlas tile"))?;
-        state.upload(tile.texture_id, tile.bounds, &bytes)?;
+        state.enqueue_upload(tile.texture_id, tile.bounds, bytes.as_ref());
         state.tiles_by_key.insert(key.clone(), tile.clone());
         Ok(Some(tile))
     }
@@ -1556,14 +1927,23 @@ impl PlatformAtlas for DirectX12Atlas {
         let Some(slot) = textures.textures.get_mut(tile.texture_id.index as usize) else {
             return;
         };
-        let Some(texture) = slot.as_mut() else {
+        let Some((descriptor_slot, texture_index, should_release_texture)) =
+            slot.as_mut().map(|texture| {
+                texture.deallocate(tile.tile_id);
+                texture.decrement_ref_count();
+                (
+                    texture.descriptor_slot,
+                    texture.id.index as usize,
+                    texture.is_unreferenced(),
+                )
+            })
+        else {
             return;
         };
-        texture.deallocate(tile.tile_id);
-        texture.decrement_ref_count();
-        if texture.is_unreferenced() {
-            textures.free_list.push(texture.id.index as usize);
+        if should_release_texture {
             *slot = None;
+            textures.free_list.push(texture_index);
+            state.srv_descriptors.free_persistent_slot(descriptor_slot);
         }
     }
 }
@@ -1589,76 +1969,104 @@ impl DirectX12AtlasState {
         texture.allocate(size)
     }
 
-    fn upload(
+    fn enqueue_upload(
         &mut self,
         texture_id: AtlasTextureId,
         bounds: Bounds<DevicePixels>,
         bytes: &[u8],
+    ) {
+        self.pending_uploads.push(PendingAtlasUpload {
+            texture_id,
+            bounds,
+            bytes: bytes.to_vec(),
+        });
+    }
+
+    fn flush_pending_uploads(
+        &mut self,
+        command_list: &ID3D12GraphicsCommandList,
+        frame_upload_buffer: &mut FrameUploadBuffer,
     ) -> Result<()> {
-        let texture = self
-            .texture(texture_id)
-            .context("Direct3D 12 atlas texture missing during upload")?;
-        let upload_buffer_size =
-            required_texture_upload_size(&self.device, bounds.size, texture.format)?;
-        let upload_buffer = create_upload_buffer_resource(&self.device, upload_buffer_size)
-            .context("Creating Direct3D 12 atlas upload buffer")?;
-        write_texture_upload_buffer(
-            &self.device,
-            &upload_buffer,
-            bounds.size,
-            texture.bytes_per_pixel,
-            bytes,
-            texture.format,
-        )?;
-
-        self.executor.reset()?;
-        let command_list = &self.executor.command_list;
-        unsafe {
-            let to_copy_dest = transition_barrier(
-                &texture.resource,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
-                    | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_COPY_DEST,
-            );
-            command_list.ResourceBarrier(&[to_copy_dest]);
-
-            let footprint = texture_upload_footprint(&self.device, bounds.size, texture.format)?;
-            let src = D3D12_TEXTURE_COPY_LOCATION {
-                pResource: ManuallyDrop::new(Some(upload_buffer.clone())),
-                Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                    PlacedFootprint: footprint,
-                },
-            };
-            let dst = D3D12_TEXTURE_COPY_LOCATION {
-                pResource: ManuallyDrop::new(Some(texture.resource.clone())),
-                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                    SubresourceIndex: 0,
-                },
-            };
-            command_list.CopyTextureRegion(
-                &dst,
-                bounds.left().0 as u32,
-                bounds.top().0 as u32,
-                0,
-                &src,
-                None,
-            );
-
-            let to_shader_read = transition_barrier(
-                &texture.resource,
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
-                    | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            );
-            command_list.ResourceBarrier(&[to_shader_read]);
-            command_list
-                .Close()
-                .context("Closing Direct3D 12 atlas upload command list")?;
+        if self.pending_uploads.is_empty() {
+            return Ok(());
         }
 
-        self.executor.execute_and_wait(&self.command_queue)
+        let pending_uploads = std::mem::take(&mut self.pending_uploads);
+        for pending_upload in pending_uploads {
+            let (texture_resource, texture_format, texture_bytes_per_pixel) = {
+                let texture = self
+                    .texture(pending_upload.texture_id)
+                    .context("Direct3D 12 atlas texture missing during upload")?;
+                (
+                    texture.resource.clone(),
+                    texture.format,
+                    texture.bytes_per_pixel,
+                )
+            };
+            let upload_buffer_size = required_texture_upload_size(
+                &self.device,
+                pending_upload.bounds.size,
+                texture_format,
+            )?;
+            let upload_offset = frame_upload_buffer.reserve(
+                &self.device,
+                upload_buffer_size,
+                D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT as usize,
+            )?;
+            let upload_buffer = &frame_upload_buffer.buffer;
+            let mut footprint = write_texture_upload_buffer(
+                &self.device,
+                unsafe { upload_buffer.mapped_ptr.add(upload_offset) },
+                upload_buffer.capacity - upload_offset,
+                pending_upload.bounds.size,
+                texture_bytes_per_pixel,
+                &pending_upload.bytes,
+                texture_format,
+            )?;
+            footprint.Offset += upload_offset as u64;
+
+            unsafe {
+                let to_copy_dest = transition_barrier(
+                    &texture_resource,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                        | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                );
+                command_list.ResourceBarrier(&[to_copy_dest]);
+
+                let src = D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: ManuallyDrop::new(Some(upload_buffer.resource.clone())),
+                    Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                        PlacedFootprint: footprint,
+                    },
+                };
+                let dst = D3D12_TEXTURE_COPY_LOCATION {
+                    pResource: ManuallyDrop::new(Some(texture_resource.clone())),
+                    Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                        SubresourceIndex: 0,
+                    },
+                };
+                command_list.CopyTextureRegion(
+                    &dst,
+                    pending_upload.bounds.left().0 as u32,
+                    pending_upload.bounds.top().0 as u32,
+                    0,
+                    &src,
+                    None,
+                );
+
+                let to_shader_read = transition_barrier(
+                    &texture_resource,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                        | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                );
+                command_list.ResourceBarrier(&[to_shader_read]);
+            }
+        }
+        Ok(())
     }
 
     fn push_texture(
@@ -1692,6 +2100,14 @@ impl DirectX12AtlasState {
                 | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
         )
         .ok()?;
+        let descriptor_slot = self.srv_descriptors.allocate_persistent_slot().ok()?;
+        unsafe {
+            self.device.CreateShaderResourceView(
+                Some(&texture),
+                Some(&texture_srv_desc(format)),
+                self.srv_descriptors.cpu_handle(descriptor_slot),
+            );
+        }
 
         let textures = self.texture_list_mut(kind);
         let index = textures.free_list.pop();
@@ -1704,6 +2120,7 @@ impl DirectX12AtlasState {
             allocator: BucketedAtlasAllocator::new(device_size_to_etagere(size)),
             resource: texture,
             format,
+            descriptor_slot,
             live_atlas_keys: 0,
         };
         if let Some(index) = index {
@@ -2021,8 +2438,22 @@ fn create_upload_buffer_resource(
     device: &ID3D12Device,
     size_in_bytes: usize,
 ) -> Result<ID3D12Resource> {
+    create_buffer_resource(
+        device,
+        size_in_bytes,
+        D3D12_HEAP_TYPE_UPLOAD,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+    )
+}
+
+fn create_buffer_resource(
+    device: &ID3D12Device,
+    size_in_bytes: usize,
+    heap_type: D3D12_HEAP_TYPE,
+    initial_state: D3D12_RESOURCE_STATES,
+) -> Result<ID3D12Resource> {
     let heap_properties = D3D12_HEAP_PROPERTIES {
-        Type: D3D12_HEAP_TYPE_UPLOAD,
+        Type: heap_type,
         CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
         MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
         CreationNodeMask: 1,
@@ -2051,7 +2482,7 @@ fn create_upload_buffer_resource(
                 &heap_properties,
                 D3D12_HEAP_FLAG_NONE,
                 &resource_desc,
-                D3D12_RESOURCE_STATE_GENERIC_READ,
+                initial_state,
                 None,
                 &mut resource,
             )
@@ -2183,12 +2614,13 @@ fn texture_upload_footprint(
 
 fn write_texture_upload_buffer(
     device: &ID3D12Device,
-    upload_buffer: &ID3D12Resource,
+    mapped_ptr: *mut u8,
+    mapped_capacity: usize,
     size: Size<DevicePixels>,
     bytes_per_pixel: u32,
     bytes: &[u8],
     format: DXGI_FORMAT,
-) -> Result<()> {
+) -> Result<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> {
     let footprint = texture_upload_footprint(device, size, format)?;
     let row_pitch = footprint.Footprint.RowPitch as usize;
     let row_count = size.height.0.max(0) as usize;
@@ -2212,11 +2644,9 @@ fn write_texture_upload_buffer(
         size
     );
     if expected_len == 0 {
-        return Ok(());
+        return Ok(footprint);
     }
 
-    let mapped_ptr =
-        map_upload_resource(upload_buffer).context("Mapping Direct3D 12 texture upload buffer")?;
     anyhow::ensure!(
         !mapped_ptr.is_null(),
         "Direct3D 12 texture upload buffer map returned a null pointer"
@@ -2225,6 +2655,11 @@ fn write_texture_upload_buffer(
     let mapped_len = row_pitch
         .checked_mul(row_count)
         .context("Computing Direct3D 12 mapped upload byte count")?;
+    anyhow::ensure!(
+        mapped_capacity >= mapped_len,
+        "Direct3D 12 upload buffer is smaller than required: capacity={}, required={mapped_len}",
+        mapped_capacity
+    );
     unsafe {
         let mapped_bytes = slice::from_raw_parts_mut(mapped_ptr, mapped_len);
         mapped_bytes.fill(0);
@@ -2234,9 +2669,8 @@ fn write_texture_upload_buffer(
         {
             dst_row[..src_row_pitch].copy_from_slice(src_row);
         }
-        upload_buffer.Unmap(0, None);
     }
-    Ok(())
+    Ok(footprint)
 }
 
 fn texture_srv_desc(format: DXGI_FORMAT) -> D3D12_SHADER_RESOURCE_VIEW_DESC {
