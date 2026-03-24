@@ -303,7 +303,16 @@ impl WindowsWindowInner {
             while let Some(Ok(runnable)) = runnables.next() {
                 WindowsDispatcher::execute_runnable(runnable);
             }
-            self.handle_paint_msg(handle)
+
+            // During a move-only interactive loop, Windows already moves the native
+            // window for us and the VSync thread is skipping periodic invalidation.
+            // Avoid driving an extra paint from the timer unless this loop has
+            // actually observed a size change that needs a refreshed frame.
+            if self.state.pending_device_size_during_resize.get().is_none() {
+                Some(0)
+            } else {
+                self.handle_paint_msg(handle)
+            }
         } else {
             None
         }
@@ -321,14 +330,16 @@ impl WindowsWindowInner {
     }
 
     fn clear_destroyed_window_state(&self, handle: HWND) {
-        self.state.in_size_move_loop.set(false);
+        let was_in_size_move_loop = self.state.in_size_move_loop.replace(false);
         self.state.pending_device_size_during_resize.set(None);
         self.state.size_move_started_maximized.set(false);
         self.state.restore_from_minimized.take();
         self.state.input_handler.take();
         self.state.callbacks.clear_for_destroy();
-        unsafe {
-            KillTimer(Some(handle), SIZE_MOVE_LOOP_TIMER_ID).log_err();
+        if was_in_size_move_loop {
+            unsafe {
+                let _ = KillTimer(Some(handle), SIZE_MOVE_LOOP_TIMER_ID);
+            }
         }
     }
 
