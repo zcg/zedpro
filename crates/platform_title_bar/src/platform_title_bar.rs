@@ -120,9 +120,7 @@ impl Render for PlatformTitleBar {
             PlatformTitleBar::is_multi_workspace_enabled(cx) && self.is_workspace_sidebar_open();
 
         let title_bar = h_flex()
-            .when(self.platform_style != PlatformStyle::Windows, |this| {
-                this.window_control_area(WindowControlArea::Drag)
-            })
+            .window_control_area(WindowControlArea::Drag)
             .w_full()
             .h(height)
             .map(|this| {
@@ -149,6 +147,7 @@ impl Render for PlatformTitleBar {
                 }))
             })
             .map(|this| {
+                // Note: On Windows the title bar behavior is handled by the platform implementation.
                 this.id(self.id.clone())
                     .when(self.platform_style == PlatformStyle::Mac, |this| {
                         this.on_click(|event, window, _| {
@@ -158,13 +157,6 @@ impl Render for PlatformTitleBar {
                         })
                     })
                     .when(self.platform_style == PlatformStyle::Linux, |this| {
-                        this.on_click(|event, window, _| {
-                            if event.click_count() == 2 {
-                                window.zoom_window();
-                            }
-                        })
-                    })
-                    .when(self.platform_style == PlatformStyle::Windows, |this| {
                         this.on_click(|event, window, _| {
                             if event.click_count() == 2 {
                                 window.zoom_window();
@@ -245,13 +237,9 @@ impl Render for PlatformTitleBar {
                             title_bar
                         }
                     }
-                    PlatformStyle::Windows => title_bar
-                        .when(supported_controls.window_menu, |titlebar| {
-                            titlebar.on_mouse_down(MouseButton::Right, move |ev, window, _| {
-                                window.show_window_menu(ev.position)
-                            })
-                        })
-                        .child(platform_windows::WindowsWindowControls::new(height)),
+                    PlatformStyle::Windows => {
+                        title_bar.child(platform_windows::WindowsWindowControls::new(height))
+                    }
                 }
             });
 

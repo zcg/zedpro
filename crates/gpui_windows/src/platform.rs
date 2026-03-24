@@ -415,12 +415,6 @@ impl WindowsPlatform {
                         break;
                     };
                     for hwnd in all_windows.read().iter() {
-                        if window_from_hwnd(hwnd.as_raw())
-                            .is_some_and(|window| window.has_synthetic_window_move())
-                        {
-                            continue;
-                        }
-
                         unsafe {
                             let _ = RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE);
                         }
