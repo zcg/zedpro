@@ -608,6 +608,10 @@ impl DispatchTree {
         self.focusable_node_ids.get(&target).copied()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
     pub fn root_node_id(&self) -> DispatchNodeId {
         debug_assert!(!self.nodes.is_empty());
         DispatchNodeId(0)

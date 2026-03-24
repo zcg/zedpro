@@ -1439,7 +1439,7 @@ impl Sidebar {
                 let workspace_for_remove = workspace_for_remove.clone();
                 let multi_workspace = multi_workspace.clone();
 
-                let menu = ContextMenu::build_persistent(window, cx, move |menu, _window, cx| {
+                let menu = ContextMenu::build(window, cx, move |menu, _window, cx| {
                     let worktrees: Vec<_> = workspace
                         .read(cx)
                         .visible_worktrees(cx)

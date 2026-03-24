@@ -2220,6 +2220,10 @@ impl Window {
 
     /// Determine whether the given action is available along the dispatch path to the currently focused element.
     pub fn is_action_available(&self, action: &dyn Action, cx: &App) -> bool {
+        if self.rendered_frame.dispatch_tree.is_empty() {
+            return false;
+        }
+
         let node_id =
             self.focus_node_id_in_rendered_frame(self.focused(cx).map(|handle| handle.id));
         self.rendered_frame
@@ -2229,6 +2233,10 @@ impl Window {
 
     /// Determine whether the given action is available along the dispatch path to the given focus_handle.
     pub fn is_action_available_in(&self, action: &dyn Action, focus_handle: &FocusHandle) -> bool {
+        if self.rendered_frame.dispatch_tree.is_empty() {
+            return false;
+        }
+
         let node_id = self.focus_node_id_in_rendered_frame(Some(focus_handle.id));
         self.rendered_frame
             .dispatch_tree
@@ -4817,6 +4825,10 @@ impl Window {
 
     /// Returns the current context stack.
     pub fn context_stack(&self) -> Vec<KeyContext> {
+        if self.rendered_frame.dispatch_tree.is_empty() {
+            return Vec::new();
+        }
+
         let node_id = self.focus_node_id_in_rendered_frame(self.focus);
         let dispatch_tree = &self.rendered_frame.dispatch_tree;
         dispatch_tree
@@ -4828,6 +4840,21 @@ impl Window {
 
     /// Returns all available actions for the focused element.
     pub fn available_actions(&self, cx: &App) -> Vec<Box<dyn Action>> {
+        if self.rendered_frame.dispatch_tree.is_empty() {
+            let mut actions = Vec::new();
+            for action_type in cx.global_action_listeners.keys() {
+                if let Err(ix) = actions.binary_search_by_key(action_type, |a: &Box<dyn Action>| {
+                    a.as_any().type_id()
+                }) {
+                    let action = cx.actions.build_action_type(action_type).ok();
+                    if let Some(action) = action {
+                        actions.insert(ix, action);
+                    }
+                }
+            }
+            return actions;
+        }
+
         let node_id = self.focus_node_id_in_rendered_frame(self.focus);
         let mut actions = self.rendered_frame.dispatch_tree.available_actions(node_id);
         for action_type in cx.global_action_listeners.keys() {
