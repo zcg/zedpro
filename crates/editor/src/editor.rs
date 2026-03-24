@@ -561,6 +561,7 @@ pub enum SoftWrap {
 pub struct EditorStyle {
     pub background: Hsla,
     pub border: Hsla,
+    pub placeholder_text_color: Option<Hsla>,
     pub local_player: PlayerColor,
     pub text: TextStyle,
     pub scrollbar_width: Pixels,
@@ -577,6 +578,7 @@ impl Default for EditorStyle {
         Self {
             background: Hsla::default(),
             border: Hsla::default(),
+            placeholder_text_color: None,
             local_player: PlayerColor::default(),
             text: TextStyle::default(),
             scrollbar_width: Pixels::default(),
@@ -25812,6 +25814,7 @@ impl Editor {
         EditorStyle {
             background,
             border: cx.theme().colors().border,
+            placeholder_text_color: None,
             local_player: cx.theme().players().local(),
             text: text_style,
             scrollbar_width: EditorElement::SCROLLBAR_WIDTH,

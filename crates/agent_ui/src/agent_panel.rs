@@ -4011,11 +4011,7 @@ impl AgentPanel {
             .flex_none()
             .justify_between()
             .gap_2()
-            .bg(material_surface_color(
-                cx.theme().colors().panel_background,
-                0.82,
-                cx,
-            ))
+            .bg(cx.theme().colors().ghost_element_background)
             .border_b_1()
             .border_color(cx.theme().colors().border);
 
@@ -4627,6 +4623,7 @@ impl Render for AgentPanel {
             .relative()
             .size_full()
             .justify_between()
+            .bg(cx.theme().colors().ghost_element_background)
             .when(self.zoomed, |this| {
                 this.occlude().bg(material_popup_surface_color(
                     cx.theme().colors().panel_background,

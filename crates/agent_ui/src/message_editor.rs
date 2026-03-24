@@ -37,7 +37,7 @@ use theme::ThemeSettings;
 use ui::{ContextMenu, Disclosure, ElevationIndex, prelude::*};
 use util::paths::PathStyle;
 use util::{ResultExt, debug_panic};
-use workspace::{CollaboratorId, Workspace, material_surface_color};
+use workspace::{CollaboratorId, Workspace};
 use zed_actions::agent::{Chat, PasteRaw};
 
 #[derive(Default)]
@@ -1669,11 +1669,8 @@ impl Render for MessageEditor {
                 EditorElement::new(
                     &self.editor,
                     EditorStyle {
-                        background: material_surface_color(
-                            cx.theme().colors().editor_background,
-                            0.84,
-                            cx,
-                        ),
+                        background: cx.theme().colors().ghost_element_background,
+                        placeholder_text_color: Some(cx.theme().colors().text_muted),
                         local_player: cx.theme().players().local(),
                         text: text_style,
                         syntax: cx.theme().syntax().clone(),

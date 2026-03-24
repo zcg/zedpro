@@ -28,7 +28,7 @@ use ui::{
     ScrollAxes, StatefulInteractiveElement, Tooltip, WithScrollbar, prelude::*,
 };
 use util::rel_path::RelPath;
-use workspace::{Workspace, material_root_surface_color, material_surface_color};
+use workspace::{Workspace, material_surface_color};
 use zed_actions::{ToggleEnableBreakpoint, UnsetBreakpoint};
 
 actions!(
@@ -873,10 +873,7 @@ impl Render for BreakpointList {
             .id("breakpoint-list")
             .key_context("BreakpointList")
             .track_focus(&self.focus_handle)
-            .bg(material_root_surface_color(
-                cx.theme().colors().panel_background,
-                cx,
-            ))
+            .bg(cx.theme().colors().ghost_element_background)
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_previous))
             .on_action(cx.listener(Self::select_first))
@@ -895,7 +892,7 @@ impl Render for BreakpointList {
                     .tracked_scroll_handle(&self.scroll_handle)
                     .with_track_along(
                         ScrollAxes::Both,
-                        material_root_surface_color(cx.theme().colors().panel_background, cx),
+                        cx.theme().colors().ghost_element_background,
                     )
                     .tracked_entity(cx.entity_id()),
                 window,

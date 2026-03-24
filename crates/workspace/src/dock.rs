@@ -786,6 +786,14 @@ impl Render for Dock {
         let dispatch_context = Self::dispatch_context();
         if let Some(entry) = self.visible_entry() {
             let size = entry.panel.size(window, cx);
+            let dock_background = if matches!(
+                entry.panel.persistent_name(),
+                "AgentPanel" | "TerminalPanel" | "GitPanel" | "DebugPanel"
+            ) {
+                cx.theme().colors().ghost_element_background
+            } else {
+                crate::material_root_surface_color(cx.theme().colors().panel_background, cx)
+            };
 
             let position = self.position;
             let create_resize_handle = || {
@@ -851,10 +859,7 @@ impl Render for Dock {
                 .key_context(dispatch_context)
                 .track_focus(&self.focus_handle(cx))
                 .flex()
-                .bg(crate::material_root_surface_color(
-                    cx.theme().colors().panel_background,
-                    cx,
-                ))
+                .bg(dock_background)
                 .border_color(cx.theme().colors().border)
                 .overflow_hidden()
                 .map(|this| match self.position().axis() {

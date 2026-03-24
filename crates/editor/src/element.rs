@@ -3778,7 +3778,9 @@ impl EditorElement {
         // Show the placeholder when the editor is empty
         if snapshot.is_empty() {
             let font_size = style.text.font_size.to_pixels(window.rem_size());
-            let placeholder_color = cx.theme().colors().text_placeholder;
+            let placeholder_color = style
+                .placeholder_text_color
+                .unwrap_or(cx.theme().colors().text_placeholder);
             let placeholder_text = snapshot.placeholder_text();
 
             let placeholder_lines = placeholder_text
