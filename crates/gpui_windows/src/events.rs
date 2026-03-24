@@ -49,7 +49,7 @@ impl WindowsWindowInner {
             WM_ACTIVATE => self.handle_activate_msg(wparam),
             WM_CREATE => self.handle_create_msg(handle),
             WM_MOVE => self.handle_move_msg(handle, lparam),
-            WM_SIZE => self.handle_size_msg(wparam, lparam),
+            WM_SIZE => self.handle_size_msg(handle, wparam, lparam),
             WM_GETMINMAXINFO => self.handle_get_min_max_info_msg(lparam),
             WM_ENTERSIZEMOVE | WM_ENTERMENULOOP => self.handle_size_move_loop(handle),
             WM_EXITSIZEMOVE | WM_EXITMENULOOP => self.handle_size_move_loop_exit(handle),
@@ -170,7 +170,7 @@ impl WindowsWindowInner {
         Some(0)
     }
 
-    fn handle_size_msg(&self, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
+    fn handle_size_msg(&self, handle: HWND, wparam: WPARAM, lparam: LPARAM) -> Option<isize> {
         // Don't resize the renderer when the window is minimized, but record that it was minimized so
         // that on restore the swap chain can be recreated via `update_drawable_size_even_if_unchanged`.
         if wparam.0 == SIZE_MINIMIZED as usize {
@@ -184,6 +184,9 @@ impl WindowsWindowInner {
         let height = lparam.hiword().max(1) as i32;
         let new_size = size(DevicePixels(width), DevicePixels(height));
         let uses_direct3d12 = self.state.renderer.borrow().uses_direct3d12();
+        let is_maximized_restore_during_drag = self.state.in_size_move_loop.get()
+            && self.state.size_move_started_maximized.get()
+            && wparam.0 == SIZE_RESTORED as usize;
 
         let scale_factor = self.state.scale_factor.get();
         let mut should_resize_renderer = false;
@@ -192,6 +195,19 @@ impl WindowsWindowInner {
                 .callbacks
                 .request_frame
                 .set(Some(restore_from_minimized));
+        } else if is_maximized_restore_during_drag && uses_direct3d12 {
+            log::trace!(
+                "Applying one immediate Direct3D 12 redraw for maximized restore drag to {}x{}.",
+                width,
+                height
+            );
+            self.state.size_move_started_maximized.set(false);
+            self.state
+                .pending_device_size_during_resize
+                .set(Some(new_size));
+            self.handle_size_change(new_size, scale_factor, true);
+            self.draw_window(handle, true);
+            return Some(0);
         } else if self.state.in_size_move_loop.get() && uses_direct3d12 {
             log::trace!(
                 "Deferring Direct3D 12 size handling during interactive size/move loop to {}x{}.",
@@ -240,6 +256,9 @@ impl WindowsWindowInner {
     fn handle_size_move_loop(&self, handle: HWND) -> Option<isize> {
         self.state.in_size_move_loop.set(true);
         self.state.pending_device_size_during_resize.set(None);
+        self.state
+            .size_move_started_maximized
+            .set(self.state.is_maximized());
         unsafe {
             let ret = SetTimer(
                 Some(handle),
@@ -259,6 +278,7 @@ impl WindowsWindowInner {
 
     fn handle_size_move_loop_exit(&self, handle: HWND) -> Option<isize> {
         self.state.in_size_move_loop.set(false);
+        self.state.size_move_started_maximized.set(false);
         unsafe {
             KillTimer(Some(handle), SIZE_MOVE_LOOP_TIMER_ID).log_err();
         }

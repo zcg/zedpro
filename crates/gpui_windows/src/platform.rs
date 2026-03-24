@@ -415,6 +415,12 @@ impl WindowsPlatform {
                         break;
                     };
                     for hwnd in all_windows.read().iter() {
+                        if window_from_hwnd(hwnd.as_raw())
+                            .is_some_and(|window| window.state.in_size_move_loop.get())
+                        {
+                            continue;
+                        }
+
                         unsafe {
                             let _ = RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE);
                         }

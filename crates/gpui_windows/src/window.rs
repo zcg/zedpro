@@ -43,6 +43,7 @@ pub struct WindowsWindowState {
     pub origin: Cell<Point<Pixels>>,
     pub logical_size: Cell<Size<Pixels>>,
     pub pending_device_size_during_resize: Cell<Option<Size<DevicePixels>>>,
+    pub size_move_started_maximized: Cell<bool>,
     pub min_size: Option<Size<Pixels>>,
     pub fullscreen_restore_bounds: Cell<Bounds<Pixels>>,
     pub border_offset: WindowBorderOffset,
@@ -124,6 +125,7 @@ impl WindowsWindowState {
             size: logical_size,
         };
         let pending_device_size_during_resize = None;
+        let size_move_started_maximized = false;
         let border_offset = WindowBorderOffset::default();
         let in_size_move_loop = false;
         let restore_from_minimized = None;
@@ -144,6 +146,7 @@ impl WindowsWindowState {
             origin: Cell::new(origin),
             logical_size: Cell::new(logical_size),
             pending_device_size_during_resize: Cell::new(pending_device_size_during_resize),
+            size_move_started_maximized: Cell::new(size_move_started_maximized),
             fullscreen_restore_bounds: Cell::new(fullscreen_restore_bounds),
             border_offset,
             appearance: Cell::new(appearance),
