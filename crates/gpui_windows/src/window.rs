@@ -403,6 +403,25 @@ pub(crate) struct Callbacks {
     pub(crate) toggle_tab_bar: Cell<Option<Box<dyn FnMut()>>>,
 }
 
+impl Callbacks {
+    pub(crate) fn clear_for_destroy(&self) {
+        self.request_frame.take();
+        self.input.take();
+        self.active_status_change.take();
+        self.hovered_status_change.take();
+        self.resize.take();
+        self.moved.take();
+        self.should_close.take();
+        self.hit_test_window_control.take();
+        self.appearance_changed.take();
+        self.move_tab_to_new_window.take();
+        self.merge_all_windows.take();
+        self.select_next_tab.take();
+        self.select_previous_tab.take();
+        self.toggle_tab_bar.take();
+    }
+}
+
 struct WindowCreateContext {
     inner: Option<Result<Rc<WindowsWindowInner>>>,
     handle: AnyWindowHandle,

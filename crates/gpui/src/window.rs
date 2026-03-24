@@ -76,6 +76,14 @@ fn is_closed_window_error(error: &anyhow::Error) -> bool {
         .any(|cause| cause.to_string() == "window not found")
 }
 
+fn log_window_callback_error(error: anyhow::Error, callback_name: &str) {
+    if is_closed_window_error(&error) {
+        log::debug!("Ignoring {callback_name} for a window that is already closed.");
+    } else {
+        log::error!("{error:#}");
+    }
+}
+
 /// Represents the two different phases when dispatching events.
 #[derive(Default, Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DispatchPhase {
@@ -1214,12 +1222,15 @@ impl Window {
             let next_frame_callbacks = next_frame_callbacks.clone();
             let input_rate_tracker = input_rate_tracker.clone();
             move |request_frame_options| {
-                let thermal_state = handle
-                    .update(&mut cx, |_, _, cx| cx.thermal_state())
-                    .log_err();
+                let thermal_state = match handle.update(&mut cx, |_, _, cx| cx.thermal_state()) {
+                    Ok(thermal_state) => thermal_state,
+                    Err(error) => {
+                        log_window_callback_error(error, "request-frame callback");
+                        return;
+                    }
+                };
 
-                if thermal_state == Some(ThermalState::Serious)
-                    || thermal_state == Some(ThermalState::Critical)
+                if thermal_state == ThermalState::Serious || thermal_state == ThermalState::Critical
                 {
                     let now = Instant::now();
                     let last_frame_time = last_frame_time.replace(Some(now));
@@ -1233,13 +1244,14 @@ impl Window {
 
                 let next_frame_callbacks = next_frame_callbacks.take();
                 if !next_frame_callbacks.is_empty() {
-                    handle
-                        .update(&mut cx, |_, window, cx| {
-                            for callback in next_frame_callbacks {
-                                callback(window, cx);
-                            }
-                        })
-                        .log_err();
+                    if let Err(error) = handle.update(&mut cx, |_, window, cx| {
+                        for callback in next_frame_callbacks {
+                            callback(window, cx);
+                        }
+                    }) {
+                        log_window_callback_error(error, "request-frame callback");
+                        return;
+                    }
                 }
 
                 // Keep presenting if input was recently arriving at a high rate (>= 60fps).
@@ -1250,58 +1262,69 @@ impl Window {
                     || (active.get() && input_rate_tracker.borrow_mut().is_high_rate());
 
                 if invalidator.is_dirty() || request_frame_options.force_render {
-                    measure("frame duration", || {
-                        handle
-                            .update(&mut cx, |_, window, cx| {
-                                let arena_clear_needed = window.draw(cx);
-                                window.present();
-                                arena_clear_needed.clear();
-                            })
-                            .log_err();
-                    })
-                } else if needs_present {
-                    handle
-                        .update(&mut cx, |_, window, _| window.present())
-                        .log_err();
+                    let frame_result = measure("frame duration", || {
+                        handle.update(&mut cx, |_, window, cx| {
+                            let arena_clear_needed = window.draw(cx);
+                            window.present();
+                            arena_clear_needed.clear();
+                        })
+                    });
+                    if let Err(error) = frame_result {
+                        log_window_callback_error(error, "request-frame callback");
+                        return;
+                    }
+                } else if needs_present
+                    && let Err(error) = handle.update(&mut cx, |_, window, _| window.present())
+                {
+                    log_window_callback_error(error, "request-frame callback");
+                    return;
                 }
 
-                handle
-                    .update(&mut cx, |_, window, _| {
-                        window.complete_frame();
-                    })
-                    .log_err();
+                if let Err(error) = handle.update(&mut cx, |_, window, _| {
+                    window.complete_frame();
+                }) {
+                    log_window_callback_error(error, "request-frame callback");
+                }
             }
         }));
         platform_window.on_resize(Box::new({
             let mut cx = cx.to_async();
             move |_, _| {
-                handle
-                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                    .log_err();
+                if let Err(error) =
+                    handle.update(&mut cx, |_, window, cx| window.bounds_changed(cx))
+                {
+                    log_window_callback_error(error, "resize callback");
+                }
             }
         }));
         platform_window.on_moved(Box::new({
             let mut cx = cx.to_async();
             move || {
-                handle
-                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                    .log_err();
+                if let Err(error) =
+                    handle.update(&mut cx, |_, window, cx| window.bounds_changed(cx))
+                {
+                    log_window_callback_error(error, "move callback");
+                }
             }
         }));
         platform_window.on_appearance_changed(Box::new({
             let mut cx = cx.to_async();
             move || {
-                handle
-                    .update(&mut cx, |_, window, cx| window.appearance_changed(cx))
-                    .log_err();
+                if let Err(error) =
+                    handle.update(&mut cx, |_, window, cx| window.appearance_changed(cx))
+                {
+                    log_window_callback_error(error, "appearance-change callback");
+                }
             }
         }));
         platform_window.on_button_layout_changed(Box::new({
             let mut cx = cx.to_async();
             move || {
-                handle
-                    .update(&mut cx, |_, window, cx| window.button_layout_changed(cx))
-                    .log_err();
+                if let Err(error) =
+                    handle.update(&mut cx, |_, window, cx| window.button_layout_changed(cx))
+                {
+                    log_window_callback_error(error, "button-layout callback");
+                }
             }
         }));
         platform_window.on_active_status_change(Box::new({
@@ -1332,37 +1355,43 @@ impl Window {
         platform_window.on_hover_status_change(Box::new({
             let mut cx = cx.to_async();
             move |active| {
-                handle
-                    .update(&mut cx, |_, window, _| {
-                        window.hovered.set(active);
-                        window.refresh();
-                    })
-                    .log_err();
+                if let Err(error) = handle.update(&mut cx, |_, window, _| {
+                    window.hovered.set(active);
+                    window.refresh();
+                }) {
+                    log_window_callback_error(error, "hover-status callback");
+                }
             }
         }));
         platform_window.on_input({
             let mut cx = cx.to_async();
             Box::new(move |event| {
-                handle
-                    .update(&mut cx, |_, window, cx| window.dispatch_event(event, cx))
-                    .log_err()
-                    .unwrap_or(DispatchEventResult::default())
+                match handle.update(&mut cx, |_, window, cx| window.dispatch_event(event, cx)) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        log_window_callback_error(error, "input callback");
+                        DispatchEventResult::default()
+                    }
+                }
             })
         });
         platform_window.on_hit_test_window_control({
             let mut cx = cx.to_async();
             Box::new(move || {
-                handle
-                    .update(&mut cx, |_, window, _cx| {
-                        for (area, hitbox) in &window.rendered_frame.window_control_hitboxes {
-                            if window.mouse_hit_test.ids.contains(&hitbox.id) {
-                                return Some(*area);
-                            }
+                match handle.update(&mut cx, |_, window, _cx| {
+                    for (area, hitbox) in &window.rendered_frame.window_control_hitboxes {
+                        if window.mouse_hit_test.ids.contains(&hitbox.id) {
+                            return Some(*area);
                         }
+                    }
+                    None
+                }) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        log_window_callback_error(error, "window-control hit-test callback");
                         None
-                    })
-                    .log_err()
-                    .unwrap_or(None)
+                    }
+                }
             })
         });
         platform_window.on_move_tab_to_new_window({

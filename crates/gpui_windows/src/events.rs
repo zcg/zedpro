@@ -320,6 +320,18 @@ impl WindowsWindowInner {
         if should_close { None } else { Some(0) }
     }
 
+    fn clear_destroyed_window_state(&self, handle: HWND) {
+        self.state.in_size_move_loop.set(false);
+        self.state.pending_device_size_during_resize.set(None);
+        self.state.size_move_started_maximized.set(false);
+        self.state.restore_from_minimized.take();
+        self.state.input_handler.take();
+        self.state.callbacks.clear_for_destroy();
+        unsafe {
+            KillTimer(Some(handle), SIZE_MOVE_LOOP_TIMER_ID).log_err();
+        }
+    }
+
     fn handle_destroy_msg(&self, handle: HWND) -> Option<isize> {
         // If this window is part of a tab group, ensure another window becomes visible
         if let Some(identifier) = self.tabbing_identifier() {
@@ -328,6 +340,7 @@ impl WindowsWindowInner {
         }
 
         let callback = { self.state.callbacks.close.take() };
+        self.clear_destroyed_window_state(handle);
         // Re-enable parent window if this was a modal dialog
         if let Some(parent_hwnd) = self.parent_hwnd {
             unsafe {
