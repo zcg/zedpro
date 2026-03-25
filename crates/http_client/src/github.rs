@@ -172,6 +172,7 @@ pub async fn get_release_by_tag_name(
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum AssetKind {
     TarGz,
+    TarBz2,
     Gz,
     Zip,
 }
@@ -186,6 +187,7 @@ pub fn build_asset_url(repo_name_with_owner: &str, tag: &str, kind: AssetKind) -
         "{tag}.{extension}",
         extension = match kind {
             AssetKind::TarGz => "tar.gz",
+            AssetKind::TarBz2 => "tar.bz2",
             AssetKind::Gz => "gz",
             AssetKind::Zip => "zip",
         }

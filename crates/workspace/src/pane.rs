@@ -473,6 +473,9 @@ pub struct NavigationEntry {
     pub data: Option<Arc<dyn Any + Send + Sync>>,
     pub timestamp: usize,
     pub is_preview: bool,
+    /// Row position for Neovim-style deduplication. When set, entries with the
+    /// same item and row are considered duplicates and deduplicated.
+    pub row: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -4508,7 +4511,12 @@ impl Render for Pane {
 }
 
 impl ItemNavHistory {
-    pub fn push<D: 'static + Any + Send + Sync>(&mut self, data: Option<D>, cx: &mut App) {
+    pub fn push<D: 'static + Any + Send + Sync>(
+        &mut self,
+        data: Option<D>,
+        row: Option<u32>,
+        cx: &mut App,
+    ) {
         if self
             .item
             .upgrade()
@@ -4516,7 +4524,7 @@ impl ItemNavHistory {
         {
             let is_preview_item = self.history.0.lock().preview_item_id == Some(self.item.id());
             self.history
-                .push(data, self.item.clone(), is_preview_item, cx);
+                .push(data, self.item.clone(), is_preview_item, row, cx);
         }
     }
 
@@ -4524,9 +4532,10 @@ impl ItemNavHistory {
         let is_preview_item = self.history.0.lock().preview_item_id == Some(self.item.id());
         NavigationEntry {
             item: self.item.clone(),
-            data: data,
-            timestamp: 0, // not used
+            data,
+            timestamp: 0,
             is_preview: is_preview_item,
+            row: None,
         }
     }
 
@@ -4630,12 +4639,22 @@ impl NavHistory {
         data: Option<D>,
         item: Arc<dyn WeakItemHandle + Send + Sync>,
         is_preview: bool,
+        row: Option<u32>,
         cx: &mut App,
     ) {
         let state = &mut *self.0.lock();
+        let new_item_id = item.id();
+
+        let is_same_location =
+            |entry: &NavigationEntry| entry.item.id() == new_item_id && entry.row == row;
+
         match state.mode {
             NavigationMode::Disabled => {}
             NavigationMode::Normal | NavigationMode::ReopeningClosedItem => {
+                state
+                    .backward_stack
+                    .retain(|entry| !is_same_location(entry));
+
                 if state.backward_stack.len() >= MAX_NAVIGATION_HISTORY_LEN {
                     state.backward_stack.pop_front();
                 }
@@ -4644,10 +4663,13 @@ impl NavHistory {
                     data: data.map(|data| Arc::new(data) as Arc<dyn Any + Send + Sync>),
                     timestamp: state.next_timestamp.fetch_add(1, Ordering::SeqCst),
                     is_preview,
+                    row,
                 });
                 state.forward_stack.clear();
             }
             NavigationMode::GoingBack => {
+                state.forward_stack.retain(|entry| !is_same_location(entry));
+
                 if state.forward_stack.len() >= MAX_NAVIGATION_HISTORY_LEN {
                     state.forward_stack.pop_front();
                 }
@@ -4656,9 +4678,14 @@ impl NavHistory {
                     data: data.map(|data| Arc::new(data) as Arc<dyn Any + Send + Sync>),
                     timestamp: state.next_timestamp.fetch_add(1, Ordering::SeqCst),
                     is_preview,
+                    row,
                 });
             }
             NavigationMode::GoingForward => {
+                state
+                    .backward_stack
+                    .retain(|entry| !is_same_location(entry));
+
                 if state.backward_stack.len() >= MAX_NAVIGATION_HISTORY_LEN {
                     state.backward_stack.pop_front();
                 }
@@ -4667,6 +4694,7 @@ impl NavHistory {
                     data: data.map(|data| Arc::new(data) as Arc<dyn Any + Send + Sync>),
                     timestamp: state.next_timestamp.fetch_add(1, Ordering::SeqCst),
                     is_preview,
+                    row,
                 });
             }
             NavigationMode::ClosingItem if is_preview => return,
@@ -4679,6 +4707,7 @@ impl NavHistory {
                     data: data.map(|data| Arc::new(data) as Arc<dyn Any + Send + Sync>),
                     timestamp: state.next_timestamp.fetch_add(1, Ordering::SeqCst),
                     is_preview,
+                    row,
                 });
             }
         }
