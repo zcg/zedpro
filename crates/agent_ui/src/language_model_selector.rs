@@ -1001,7 +1001,7 @@ mod tests {
                     .any(|(fav_provider, fav_name)| *fav_provider == provider && *fav_name == name);
                 ModelInfo {
                     model: Arc::new(TestLanguageModel::new(name, provider)),
-                    icon: IconOrSvg::Icon(IconName::Ai),
+                    icon: IconOrSvg::Icon(IconName::ZedAgent),
                     compatible_api_kind: None,
                     is_favorite,
                 }

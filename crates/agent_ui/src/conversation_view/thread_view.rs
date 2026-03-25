@@ -2184,7 +2184,6 @@ impl ThreadView {
         let queue_expanded = self.queue_expanded;
 
         v_flex()
-            .mt_1()
             .mx_2()
             .bg(self.activity_bar_bg(cx))
             .border_1()
@@ -2192,9 +2191,9 @@ impl ThreadView {
             .border_color(cx.theme().colors().border)
             .rounded_t_md()
             .shadow(vec![gpui::BoxShadow {
-                color: gpui::black().opacity(0.15),
+                color: gpui::black().opacity(0.12),
                 offset: point(px(1.), px(-1.)),
-                blur_radius: px(3.),
+                blur_radius: px(2.),
                 spread_radius: px(0.),
             }])
             .when(!plan.is_empty(), |this| {
@@ -2490,7 +2489,10 @@ impl ThreadView {
             .child(
                 Button::new("clear_queue", "Clear All")
                     .label_size(LabelSize::Small)
-                    .key_binding(KeyBinding::for_action(&ClearMessageQueue, cx))
+                    .key_binding(
+                        KeyBinding::for_action(&ClearMessageQueue, cx)
+                            .map(|kb| kb.size(rems_from_px(12.))),
+                    )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.clear_queue(cx);
                         this.can_fast_track_queue = false;
@@ -2779,7 +2781,7 @@ impl ThreadView {
                             })
                             .key_binding(
                                 KeyBinding::for_action_in(&RejectAll, &focus_handle.clone(), cx)
-                                    .map(|kb| kb.size(rems_from_px(10.))),
+                                    .map(|kb| kb.size(rems_from_px(12.))),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.reject_all(&RejectAll, window, cx);
@@ -2794,7 +2796,7 @@ impl ThreadView {
                             })
                             .key_binding(
                                 KeyBinding::for_action_in(&KeepAll, &focus_handle, cx)
-                                    .map(|kb| kb.size(rems_from_px(10.))),
+                                    .map(|kb| kb.size(rems_from_px(12.))),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.keep_all(&KeepAll, window, cx);
@@ -5567,7 +5569,7 @@ impl ThreadView {
             matches!(tool_call.kind, acp::ToolKind::Edit) || tool_call.diffs().next().is_some();
 
         let is_cancelled_edit = is_edit && matches!(tool_call.status, ToolCallStatus::Canceled);
-        let (has_revealed_diff, tool_call_output_focus) = tool_call
+        let (has_revealed_diff, tool_call_output_focus, tool_call_output_focus_handle) = tool_call
             .diffs()
             .next()
             .and_then(|diff| {
@@ -5578,9 +5580,10 @@ impl ThreadView {
                     .and_then(|entry| entry.editor_for_diff(diff))?;
                 let has_revealed_diff = diff.read(cx).has_revealed_range(cx);
                 let has_focus = editor.read(cx).is_focused(window);
-                Some((has_revealed_diff, has_focus))
+                let focus_handle = editor.focus_handle(cx);
+                Some((has_revealed_diff, has_focus, focus_handle))
             })
-            .unwrap_or((false, false));
+            .unwrap_or_else(|| (false, false, focus_handle.clone()));
 
         let use_card_layout = needs_confirmation || is_edit || is_terminal_tool;
 
@@ -5809,7 +5812,6 @@ impl ThreadView {
                             .group(&card_header_id)
                             .relative()
                             .w_full()
-                            .gap_1()
                             .justify_between()
                             .when(use_card_layout, |this| {
                                 this.p_0p5()
@@ -5828,7 +5830,6 @@ impl ThreadView {
                             ))
                             .child(
                                 h_flex()
-                                    .gap_0p5()
                                     .when(is_collapsible || failed_or_canceled, |this| {
                                         let diff_for_discard = if has_revealed_diff
                                             && is_cancelled_edit
@@ -5841,10 +5842,7 @@ impl ThreadView {
 
                                         this.child(
                                             h_flex()
-                                                .px_1()
-                                                .when_some(diff_for_discard.clone(), |this, _| {
-                                                    this.pr_0p5()
-                                                })
+                                                .pr_0p5()
                                                 .gap_1()
                                                 .when(is_collapsible, |this| {
                                                     this.child(
@@ -5952,10 +5950,10 @@ impl ThreadView {
                                     .when(tool_call_output_focus, |this| {
                                         this.child(
                                             Button::new("open-file-button", "Open File")
+                                                .style(ButtonStyle::Outlined)
                                                 .label_size(LabelSize::Small)
-                                                .style(ButtonStyle::OutlinedGhost)
                                                 .key_binding(
-                                                    KeyBinding::for_action(&OpenExcerpts, cx)
+                                                    KeyBinding::for_action_in(&OpenExcerpts, &tool_call_output_focus_handle, cx)
                                                         .map(|s| s.size(rems_from_px(12.))),
                                                 )
                                                 .on_click(|_, window, cx| {
@@ -6094,7 +6092,7 @@ impl ThreadView {
                                         focus_handle,
                                         cx,
                                     )
-                                    .map(|kb| kb.size(rems_from_px(10.))),
+                                    .map(|kb| kb.size(rems_from_px(12.))),
                                 )
                             })
                             .on_click(cx.listener({
@@ -6118,7 +6116,7 @@ impl ThreadView {
                                         focus_handle,
                                         cx,
                                     )
-                                    .map(|kb| kb.size(rems_from_px(10.))),
+                                    .map(|kb| kb.size(rems_from_px(12.))),
                                 )
                             })
                             .on_click(cx.listener({
@@ -6166,7 +6164,7 @@ impl ThreadView {
                                 &self.focus_handle(cx),
                                 cx,
                             )
-                            .map(|kb| kb.size(rems_from_px(10.))),
+                            .map(|kb| kb.size(rems_from_px(12.))),
                         )
                     }),
             )
@@ -6256,7 +6254,7 @@ impl ThreadView {
                                 &self.focus_handle(cx),
                                 cx,
                             )
-                            .map(|kb| kb.size(rems_from_px(10.))),
+                            .map(|kb| kb.size(rems_from_px(12.))),
                         )
                     }),
             )
@@ -6455,7 +6453,7 @@ impl ThreadView {
 
                         this.key_binding(
                             KeyBinding::for_action_in(action, focus_handle, cx)
-                                .map(|kb| kb.size(rems_from_px(10.))),
+                                .map(|kb| kb.size(rems_from_px(12.))),
                         )
                     })
                     .label_size(LabelSize::Small)
@@ -6539,10 +6537,10 @@ impl ThreadView {
 
         let file_icon = if has_location {
             FileIcons::get_icon(&tool_call.locations[0].path, cx)
-                .map(Icon::from_path)
-                .unwrap_or(Icon::new(IconName::ToolPencil))
+                .map(|from_path| Icon::from_path(from_path).color(Color::Muted))
+                .unwrap_or(Icon::new(IconName::ToolPencil).color(Color::Muted))
         } else {
-            Icon::new(IconName::ToolPencil)
+            Icon::new(IconName::ToolPencil).color(Color::Muted)
         };
 
         let tool_icon = if is_file && has_failed && has_revealed_diff {

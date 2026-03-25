@@ -187,20 +187,8 @@ impl TasksModal {
         new_candidates.extend(lsp_tasks.into_iter().filter(|(task_kind, _)| {
             include_lsp_tasks || !matches!(task_kind, TaskSourceKind::Lsp { .. })
         }));
-        let hide_vscode = current_resolved_tasks.iter().any(|(kind, _)| match kind {
-            TaskSourceKind::Worktree {
-                id: _,
-                directory_in_worktree: dir,
-                id_base: _,
-            } => dir.file_name().is_some_and(|name| name == ".zed"),
-            _ => false,
-        });
         new_candidates.extend(current_resolved_tasks.into_iter().filter(|(task_kind, _)| {
             match task_kind {
-                TaskSourceKind::Worktree {
-                    directory_in_worktree: dir,
-                    ..
-                } => !(hide_vscode && dir.file_name().is_some_and(|name| name == ".vscode")),
                 TaskSourceKind::Language { .. } => add_current_language_tasks,
                 TaskSourceKind::Lsp { .. } => include_lsp_tasks,
                 _ => true,

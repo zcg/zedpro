@@ -8430,7 +8430,7 @@ impl Editor {
             provider.discard(reason, cx);
         }
 
-        self.take_active_edit_prediction(cx)
+        self.take_active_edit_prediction(reason == EditPredictionDiscardReason::Ignored, cx)
     }
 
     fn report_edit_prediction_event(&self, id: Option<SharedString>, accepted: bool, cx: &App) {
@@ -8498,14 +8498,22 @@ impl Editor {
         self.active_edit_prediction.is_some()
     }
 
-    fn take_active_edit_prediction(&mut self, cx: &mut Context<Self>) -> bool {
+    fn take_active_edit_prediction(
+        &mut self,
+        preserve_stale_in_menu: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(active_edit_prediction) = self.active_edit_prediction.take() else {
+            if !preserve_stale_in_menu {
+                self.stale_edit_prediction_in_menu = None;
+            }
             return false;
         };
 
         self.splice_inlays(&active_edit_prediction.inlay_ids, Default::default(), cx);
         self.clear_highlights(HighlightKey::EditPredictionHighlight, cx);
-        self.stale_edit_prediction_in_menu = Some(active_edit_prediction);
+        self.stale_edit_prediction_in_menu =
+            preserve_stale_in_menu.then_some(active_edit_prediction);
         true
     }
 
@@ -8718,7 +8726,7 @@ impl Editor {
             return None;
         }
 
-        self.take_active_edit_prediction(cx);
+        self.take_active_edit_prediction(true, cx);
         let Some(provider) = self.edit_prediction_provider() else {
             self.edit_prediction_settings = EditPredictionSettings::Disabled;
             return None;
@@ -8837,6 +8845,7 @@ impl Editor {
             let target = first_edit_start;
             EditPrediction::MoveWithin { target, snapshot }
         } else {
+            let show_completions_in_menu = self.has_visible_completions_menu();
             let show_completions_in_buffer = !self.edit_prediction_visible_in_cursor_popover(true)
                 && !self.edit_predictions_hidden_for_vim_mode;
 
@@ -8850,16 +8859,26 @@ impl Editor {
                 EditDisplayMode::DiffPopover
             };
 
-            if show_completions_in_buffer {
-                if let Some(provider) = &self.edit_prediction_provider {
-                    let suggestion_display_type = match display_mode {
-                        EditDisplayMode::DiffPopover => SuggestionDisplayType::DiffPopover,
-                        EditDisplayMode::Inline | EditDisplayMode::TabAccept => {
-                            SuggestionDisplayType::GhostText
-                        }
-                    };
-                    provider.provider.did_show(suggestion_display_type, cx);
+            let report_shown = match display_mode {
+                EditDisplayMode::DiffPopover | EditDisplayMode::Inline => {
+                    show_completions_in_buffer || show_completions_in_menu
                 }
+                EditDisplayMode::TabAccept => {
+                    show_completions_in_menu || self.edit_prediction_preview_is_active()
+                }
+            };
+
+            if report_shown && let Some(provider) = &self.edit_prediction_provider {
+                let suggestion_display_type = match display_mode {
+                    EditDisplayMode::DiffPopover => SuggestionDisplayType::DiffPopover,
+                    EditDisplayMode::Inline | EditDisplayMode::TabAccept => {
+                        SuggestionDisplayType::GhostText
+                    }
+                };
+                provider.provider.did_show(suggestion_display_type, cx);
+            }
+
+            if show_completions_in_buffer {
                 if edits
                     .iter()
                     .all(|(range, _)| range.to_offset(&multibuffer).is_empty())
@@ -25208,7 +25227,7 @@ impl Editor {
         {
             self.hide_context_menu(window, cx);
         }
-        self.take_active_edit_prediction(cx);
+        self.take_active_edit_prediction(true, cx);
         cx.emit(EditorEvent::Blurred);
         cx.notify();
     }
