@@ -5701,7 +5701,10 @@ impl Render for GitPanel {
             .on_action(cx.listener(Self::toggle_tree_view))
             .size_full()
             .overflow_hidden()
-            .bg(cx.theme().colors().panel_background)
+            .bg(workspace::material_panel_shell_color(
+                cx.theme().colors().panel_background,
+                cx,
+            ))
             .child(
                 v_flex()
                     .size_full()
@@ -5844,7 +5847,10 @@ pub fn panel_editor_container(_window: &mut Window, cx: &mut App) -> Div {
         .size_full()
         .gap(px(8.))
         .p_2()
-        .bg(cx.theme().colors().editor_background)
+        .bg(workspace::material_panel_shell_color(
+            cx.theme().colors().editor_background,
+            cx,
+        ))
 }
 
 pub(crate) fn panel_editor_style(monospace: bool, window: &Window, cx: &App) -> EditorStyle {

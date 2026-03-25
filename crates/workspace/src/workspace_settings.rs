@@ -38,6 +38,7 @@ pub struct WorkspaceSettings {
     pub zoomed_padding: bool,
     pub window_decorations: settings::WindowDecorations,
     pub window_background_material: settings::WindowBackgroundMaterial,
+    pub window_background_material_opacity: settings::WindowBackgroundMaterialOpacity,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -120,6 +121,9 @@ impl Settings for WorkspaceSettings {
             zoomed_padding: workspace.zoomed_padding.unwrap(),
             window_decorations: workspace.window_decorations.unwrap(),
             window_background_material: workspace.window_background_material.unwrap(),
+            window_background_material_opacity: workspace
+                .window_background_material_opacity
+                .unwrap(),
         }
     }
 }
@@ -127,7 +131,12 @@ impl Settings for WorkspaceSettings {
 pub fn effective_window_background_appearance(cx: &App) -> WindowBackgroundAppearance {
     #[cfg(target_os = "windows")]
     {
-        match WorkspaceSettings::get_global(cx).window_background_material {
+        let settings = WorkspaceSettings::get_global(cx);
+        gpui::set_windows_window_background_material_opacity(
+            settings.window_background_material_opacity.0,
+        );
+
+        match settings.window_background_material {
             settings::WindowBackgroundMaterial::Theme => cx.theme().window_background_appearance(),
             settings::WindowBackgroundMaterial::Acrylic => WindowBackgroundAppearance::Blurred,
             settings::WindowBackgroundMaterial::Mica => WindowBackgroundAppearance::MicaBackdrop,
@@ -156,7 +165,48 @@ pub fn material_popup_surface_color(color: Hsla, factor: f32, cx: &App) -> Hsla 
 }
 
 pub fn material_root_surface_color(color: Hsla, cx: &App) -> Hsla {
-    material_surface_color(color, 0.72, cx)
+    if has_custom_window_background_material(cx) {
+        color
+    } else {
+        material_surface_color(color, 0.72, cx)
+    }
+}
+
+pub fn material_panel_shell_color(color: Hsla, _cx: &App) -> Hsla {
+    color
+}
+
+pub fn material_workspace_wash_color(cx: &App) -> Option<Hsla> {
+    if !has_custom_window_background_material(cx) {
+        return None;
+    }
+
+    let settings = WorkspaceSettings::get_global(cx);
+    if matches!(
+        settings.window_background_material,
+        settings::WindowBackgroundMaterial::Acrylic
+    ) {
+        return None;
+    }
+
+    let opacity = settings
+        .window_background_material_opacity
+        .0
+        .clamp(0.0, 1.0);
+    let wash_alpha = if opacity <= 0.35 {
+        lerp(0.16, 0.28, opacity / 0.35)
+    } else {
+        lerp(0.28, 0.40, (opacity - 0.35) / 0.65)
+    };
+
+    Some(
+        material_popup_surface_color(cx.theme().colors().panel_overlay_background, 0.72, cx)
+            .opacity(wash_alpha),
+    )
+}
+
+fn lerp(start: f32, end: f32, t: f32) -> f32 {
+    start + (end - start) * t.clamp(0.0, 1.0)
 }
 
 impl Settings for TabBarSettings {

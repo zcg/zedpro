@@ -1000,7 +1000,10 @@ impl Render for CommitView {
         v_flex()
             .key_context(if is_stash { "StashDiff" } else { "CommitDiff" })
             .size_full()
-            .bg(cx.theme().colors().editor_background)
+            .bg(workspace::material_panel_shell_color(
+                cx.theme().colors().editor_background,
+                cx,
+            ))
             .child(self.render_header(window, cx))
             .when(!self.editor.read(cx).is_empty(cx), |this| {
                 this.child(div().flex_grow().child(self.editor.clone()))

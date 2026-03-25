@@ -4843,9 +4843,9 @@ impl Window {
         if self.rendered_frame.dispatch_tree.is_empty() {
             let mut actions = Vec::new();
             for action_type in cx.global_action_listeners.keys() {
-                if let Err(ix) = actions.binary_search_by_key(action_type, |a: &Box<dyn Action>| {
-                    a.as_any().type_id()
-                }) {
+                if let Err(ix) = actions
+                    .binary_search_by_key(action_type, |a: &Box<dyn Action>| a.as_any().type_id())
+                {
                     let action = cx.actions.build_action_type(action_type).ok();
                     if let Some(action) = action {
                         actions.insert(ix, action);

@@ -135,8 +135,7 @@ pub fn init(themes_to_load: LoadThemes, cx: &mut App) {
     let mut prev_agent_buffer_font_size_settings = settings.agent_buffer_font_size_settings();
     let mut prev_theme_name = settings.theme.name(SystemAppearance::global(cx).0);
     let mut prev_icon_theme_name = settings.icon_theme.name(SystemAppearance::global(cx).0);
-    let mut prev_window_background_material =
-        WindowMaterialThemeSettings::get_global(cx).window_background_material;
+    let mut prev_window_material_settings = *WindowMaterialThemeSettings::get_global(cx);
     let mut prev_theme_overrides = (
         settings.experimental_theme_overrides.clone(),
         settings.theme_overrides.clone(),
@@ -151,8 +150,7 @@ pub fn init(themes_to_load: LoadThemes, cx: &mut App) {
         let agent_buffer_font_size_settings = settings.agent_buffer_font_size_settings();
         let theme_name = settings.theme.name(SystemAppearance::global(cx).0);
         let icon_theme_name = settings.icon_theme.name(SystemAppearance::global(cx).0);
-        let window_background_material =
-            WindowMaterialThemeSettings::get_global(cx).window_background_material;
+        let window_material_settings = *WindowMaterialThemeSettings::get_global(cx);
         let theme_overrides = (
             settings.experimental_theme_overrides.clone(),
             settings.theme_overrides.clone(),
@@ -180,10 +178,10 @@ pub fn init(themes_to_load: LoadThemes, cx: &mut App) {
 
         if theme_name != prev_theme_name
             || theme_overrides != prev_theme_overrides
-            || window_background_material != prev_window_background_material
+            || window_material_settings != prev_window_material_settings
         {
             prev_theme_name = theme_name;
-            prev_window_background_material = window_background_material;
+            prev_window_material_settings = window_material_settings;
             prev_theme_overrides = theme_overrides;
             GlobalTheme::reload_theme(cx);
         }
@@ -211,12 +209,17 @@ impl ActiveTheme for App {
 #[derive(Clone, Copy, PartialEq)]
 struct WindowMaterialThemeSettings {
     window_background_material: ::settings::WindowBackgroundMaterial,
+    window_background_material_opacity: ::settings::WindowBackgroundMaterialOpacity,
 }
 
 impl Settings for WindowMaterialThemeSettings {
     fn from_settings(content: &SettingsContent) -> Self {
         Self {
             window_background_material: content.workspace.window_background_material.unwrap(),
+            window_background_material_opacity: content
+                .workspace
+                .window_background_material_opacity
+                .unwrap(),
         }
     }
 }
@@ -502,8 +505,12 @@ impl GlobalTheme {
         let theme = theme_settings.apply_theme_overrides(theme);
         #[cfg(target_os = "windows")]
         {
-            let material = WindowMaterialThemeSettings::get_global(cx).window_background_material;
-            apply_window_material_theme_overrides(theme, material)
+            let settings = *WindowMaterialThemeSettings::get_global(cx);
+            apply_window_material_theme_overrides(
+                theme,
+                settings.window_background_material,
+                settings.window_background_material_opacity.0,
+            )
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -564,6 +571,7 @@ impl GlobalTheme {
 fn apply_window_material_theme_overrides(
     theme: Arc<Theme>,
     material: ::settings::WindowBackgroundMaterial,
+    opacity: f32,
 ) -> Arc<Theme> {
     use ::settings::WindowBackgroundMaterial;
 
@@ -584,13 +592,14 @@ fn apply_window_material_theme_overrides(
         // Keep Acrylic materially translucent across the whole workspace
         // instead of converging on near-opaque surfaces.
         WindowBackgroundMaterial::Acrylic => {
+            let opacity = opacity.clamp(0.0, 1.0);
             // Tune Acrylic toward a denser Windows Terminal-like material so
             // bright desktop content does not wash out sidebars and editors.
-            let chrome_alpha = 0.34;
-            let surface_alpha = 0.24;
-            let elevated_alpha = 0.30;
-            let content_alpha = 0.22;
-            let overlay_alpha = 0.30;
+            let chrome_alpha = material_density(opacity, 0.08, 0.34, 0.72);
+            let surface_alpha = material_density(opacity, 0.04, 0.24, 0.58);
+            let elevated_alpha = material_density(opacity, 0.06, 0.30, 0.66);
+            let content_alpha = material_density(opacity, 0.03, 0.22, 0.56);
+            let overlay_alpha = material_density(opacity, 0.08, 0.30, 0.72);
             let title_bar_background = material_blend(
                 colors.title_bar_background,
                 colors.background,
@@ -612,8 +621,10 @@ fn apply_window_material_theme_overrides(
                 elevated_alpha,
             );
             let shared_content = set_alpha(
-                shared_surface.blend(colors.editor_background.opacity(0.18)),
-                content_alpha,
+                // Keep editor-like regions closer to sidebars and panels so
+                // Acrylic does not fragment into visibly darker slabs.
+                shared_surface.blend(colors.editor_background.opacity(0.04)),
+                surface_alpha.max(content_alpha),
             );
             let hover_alpha = (overlay_alpha + 0.01_f32).min(0.94_f32);
             let active_alpha = (overlay_alpha + 0.03_f32).min(0.96_f32);
@@ -674,7 +685,7 @@ fn apply_window_material_theme_overrides(
                 elevated_alpha,
             );
             colors.status_bar_background = shared_surface;
-            colors.panel_background = shared_surface;
+            colors.panel_background = shared_content;
             colors.panel_overlay_background = material_blend(
                 shared_elevated,
                 colors.panel_overlay_background,
@@ -736,6 +747,7 @@ fn apply_window_material_theme_overrides(
             );
         }
         WindowBackgroundMaterial::Mica | WindowBackgroundMaterial::MicaAlt => {
+            let opacity = opacity.clamp(0.0, 1.0);
             let (
                 chrome_alpha,
                 background_alpha,
@@ -748,11 +760,29 @@ fn apply_window_material_theme_overrides(
                 elevated_tint,
                 content_tint,
             ) = match material {
-                WindowBackgroundMaterial::Mica => {
-                    (0.14, 0.07, 0.09, 0.12, 0.08, 0.16, 0.01, 0.025, 0.04, 0.02)
-                }
+                WindowBackgroundMaterial::Mica => (
+                    material_density(opacity, 0.04, 0.14, 0.30),
+                    material_density(opacity, 0.02, 0.07, 0.16),
+                    material_density(opacity, 0.04, 0.09, 0.22),
+                    material_density(opacity, 0.06, 0.12, 0.28),
+                    material_density(opacity, 0.04, 0.08, 0.22),
+                    material_density(opacity, 0.08, 0.16, 0.34),
+                    0.01,
+                    0.025,
+                    0.04,
+                    0.02,
+                ),
                 WindowBackgroundMaterial::MicaAlt => (
-                    0.20, 0.09, 0.12, 0.16, 0.10, 0.20, 0.015, 0.035, 0.055, 0.025,
+                    material_density(opacity, 0.06, 0.20, 0.40),
+                    material_density(opacity, 0.03, 0.09, 0.20),
+                    material_density(opacity, 0.05, 0.12, 0.26),
+                    material_density(opacity, 0.08, 0.16, 0.34),
+                    material_density(opacity, 0.05, 0.10, 0.24),
+                    material_density(opacity, 0.10, 0.20, 0.38),
+                    0.015,
+                    0.035,
+                    0.055,
+                    0.025,
                 ),
                 WindowBackgroundMaterial::Acrylic | WindowBackgroundMaterial::Theme => {
                     unreachable!()
@@ -1011,4 +1041,31 @@ fn cap_alpha(color: Hsla, max_alpha: f32) -> Hsla {
 #[cfg(target_os = "windows")]
 fn material_blend(base: Hsla, tint: Hsla, tint_strength: f32, alpha: f32) -> Hsla {
     set_alpha(base.blend(tint.opacity(tint_strength)), alpha)
+}
+
+#[cfg(target_os = "windows")]
+const WINDOW_BACKGROUND_MATERIAL_DEFAULT_OPACITY: f32 = 0.35;
+
+#[cfg(target_os = "windows")]
+fn material_density(opacity: f32, min: f32, current: f32, max: f32) -> f32 {
+    let opacity = opacity.clamp(0.0, 1.0);
+    if opacity <= WINDOW_BACKGROUND_MATERIAL_DEFAULT_OPACITY {
+        lerp(
+            min,
+            current,
+            opacity / WINDOW_BACKGROUND_MATERIAL_DEFAULT_OPACITY,
+        )
+    } else {
+        lerp(
+            current,
+            max,
+            (opacity - WINDOW_BACKGROUND_MATERIAL_DEFAULT_OPACITY)
+                / (1.0 - WINDOW_BACKGROUND_MATERIAL_DEFAULT_OPACITY),
+        )
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn lerp(start: f32, end: f32, t: f32) -> f32 {
+    start + (end - start) * t.clamp(0.0, 1.0)
 }

@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use std::{fmt::Display, num::NonZeroUsize};
 
 use collections::HashMap;
 use schemars::JsonSchema;
@@ -7,7 +7,8 @@ use settings_macros::{MergeFrom, with_fallible_options};
 
 use crate::{
     CenteredPaddingSettings, DelayMs, DockPosition, DockSide, InactiveOpacity, ShowIndentGuides,
-    ShowScrollbar, serialize_optional_f32_with_two_decimal_places,
+    ShowScrollbar, serialize_f32_with_two_decimal_places,
+    serialize_optional_f32_with_two_decimal_places,
 };
 
 #[with_fallible_options]
@@ -131,6 +132,15 @@ pub struct WorkspaceSettingsContent {
     ///
     /// Default: theme
     pub window_background_material: Option<WindowBackgroundMaterial>,
+    /// Windows-only opacity control for custom window background materials.
+    ///
+    /// A value of `0.0` keeps the backdrop as transparent as possible, while
+    /// `1.0` makes Zed's material surfaces much denser. The default `0.35`
+    /// matches the current Acrylic balance.
+    ///
+    /// Default: 0.35
+    #[schemars(range(min = 0.0, max = 1.0))]
+    pub window_background_material_opacity: Option<WindowBackgroundMaterialOpacity>,
 }
 
 #[with_fallible_options]
@@ -218,6 +228,36 @@ pub enum WindowBackgroundMaterial {
     Acrylic,
     Mica,
     MicaAlt,
+}
+
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    PartialEq,
+    PartialOrd,
+    Default,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    derive_more::FromStr,
+)]
+#[serde(transparent)]
+pub struct WindowBackgroundMaterialOpacity(
+    #[serde(serialize_with = "serialize_f32_with_two_decimal_places")] pub f32,
+);
+
+impl Display for WindowBackgroundMaterialOpacity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:.2}", self.0)
+    }
+}
+
+impl From<f32> for WindowBackgroundMaterialOpacity {
+    fn from(value: f32) -> Self {
+        Self(value)
+    }
 }
 
 #[derive(

@@ -147,8 +147,9 @@ use uuid::Uuid;
 pub use workspace_settings::{
     AutosaveSetting, BottomDockLayout, RestoreOnStartupBehavior, StatusBarSettings, TabBarSettings,
     WorkspaceSettings, effective_window_background_appearance,
-    has_custom_window_background_material, material_popup_surface_color,
-    material_root_surface_color, material_surface_color,
+    has_custom_window_background_material, material_panel_shell_color,
+    material_popup_surface_color, material_root_surface_color, material_surface_color,
+    material_workspace_wash_color,
 };
 use zed_actions::{Spawn, feedback::FileBugReport, theme::ToggleMode};
 
@@ -7742,6 +7743,7 @@ impl Render for Workspace {
 
         let theme = cx.theme().clone();
         let colors = theme.colors();
+        let workspace_material_wash = material_workspace_wash_color(cx);
         let notification_entities = self
             .notifications
             .iter()
@@ -7786,6 +7788,9 @@ impl Render for Workspace {
                                 .border_t_1()
                                 .border_b_1()
                                 .border_color(colors.border)
+                                .when_some(workspace_material_wash, |this, wash| {
+                                    this.child(div().absolute().inset_0().bg(wash))
+                                })
                                 .child({
                                     let this = cx.entity();
                                     canvas(

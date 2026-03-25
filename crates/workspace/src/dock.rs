@@ -786,7 +786,9 @@ impl Render for Dock {
         let dispatch_context = Self::dispatch_context();
         if let Some(entry) = self.visible_entry() {
             let size = entry.panel.size(window, cx);
-            let dock_background = if matches!(
+            let dock_background = if crate::has_custom_window_background_material(cx) {
+                cx.theme().colors().ghost_element_background
+            } else if matches!(
                 entry.panel.persistent_name(),
                 "AgentPanel" | "TerminalPanel" | "GitPanel" | "DebugPanel"
             ) {

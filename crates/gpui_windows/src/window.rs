@@ -921,11 +921,16 @@ impl PlatformWindow for WindowsWindow {
                 set_window_composition_attribute(hwnd, None, 2);
             }
             WindowBackgroundAppearance::Blurred => {
+                let opacity = gpui::windows_window_background_material_opacity();
                 let acrylic_tint = match self.state.appearance.get() {
                     // Use a lighter neutral tint so Acrylic keeps the frosted look
                     // without collapsing into a nearly-black overlay.
-                    WindowAppearance::Dark | WindowAppearance::VibrantDark => (54, 58, 64, 48),
-                    WindowAppearance::Light | WindowAppearance::VibrantLight => (250, 250, 250, 44),
+                    WindowAppearance::Dark | WindowAppearance::VibrantDark => {
+                        (54, 58, 64, acrylic_alpha(opacity, 4, 48, 132))
+                    }
+                    WindowAppearance::Light | WindowAppearance::VibrantLight => {
+                        (250, 250, 250, acrylic_alpha(opacity, 4, 44, 120))
+                    }
                 };
                 set_window_composition_attribute(hwnd, Some(acrylic_tint), 4);
             }
@@ -1735,6 +1740,33 @@ fn set_window_composition_attribute(hwnd: HWND, color: Option<Color>, state: u32
             let _ = set_window_composition_attribute(hwnd, &mut data as *mut _ as _);
         }
     }
+}
+
+const WINDOW_BACKGROUND_MATERIAL_DEFAULT_OPACITY: f32 = 0.35;
+
+fn acrylic_alpha(opacity: f32, min: u8, current: u8, max: u8) -> u8 {
+    let opacity = opacity.clamp(0.0, 1.0);
+    let alpha = if opacity <= WINDOW_BACKGROUND_MATERIAL_DEFAULT_OPACITY {
+        lerp_u8(
+            min,
+            current,
+            opacity / WINDOW_BACKGROUND_MATERIAL_DEFAULT_OPACITY,
+        )
+    } else {
+        lerp_u8(
+            current,
+            max,
+            (opacity - WINDOW_BACKGROUND_MATERIAL_DEFAULT_OPACITY)
+                / (1.0 - WINDOW_BACKGROUND_MATERIAL_DEFAULT_OPACITY),
+        )
+    };
+    alpha.max(1)
+}
+
+fn lerp_u8(start: u8, end: u8, t: f32) -> u8 {
+    let start = start as f32;
+    let end = end as f32;
+    (start + (end - start) * t.clamp(0.0, 1.0)).round() as u8
 }
 
 // When the platform title bar is hidden, Windows may think that our application is meant to appear 'fullscreen'

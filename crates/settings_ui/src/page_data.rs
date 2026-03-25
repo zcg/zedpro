@@ -4476,6 +4476,26 @@ fn window_and_layout_page() -> SettingsPage {
             files: USER,
         }));
 
+        #[cfg(target_os = "windows")]
+        items.push(SettingsPageItem::SettingItem(SettingItem {
+            title: "Window Background Material Opacity",
+            description: "(Windows only) controls how transparent or dense custom Acrylic and Mica surfaces appear. 0.35 matches the current default balance.",
+            field: Box::new(SettingField {
+                json_path: Some("window_background_material_opacity"),
+                pick: |settings_content| {
+                    settings_content
+                        .workspace
+                        .window_background_material_opacity
+                        .as_ref()
+                },
+                write: |settings_content, value| {
+                    settings_content.workspace.window_background_material_opacity = value;
+                },
+            }),
+            metadata: None,
+            files: USER,
+        }));
+
         #[cfg(target_os = "linux")]
         items.push(SettingsPageItem::SettingItem(SettingItem {
             title: "Window Decorations",

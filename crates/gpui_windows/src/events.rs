@@ -304,11 +304,24 @@ impl WindowsWindowInner {
                 WindowsDispatcher::execute_runnable(runnable);
             }
 
-            // During a move-only interactive loop, Windows already moves the native
-            // window for us and the VSync thread is skipping periodic invalidation.
-            // Avoid driving an extra paint from the timer unless this loop has
-            // actually observed a size change that needs a refreshed frame.
-            if self.state.pending_device_size_during_resize.get().is_none() {
+            let force_live_redraw = self.state.renderer.borrow().uses_direct3d12()
+                && (self.hide_title_bar
+                    || self.state.background_appearance.get()
+                        != WindowBackgroundAppearance::Opaque);
+
+            if force_live_redraw {
+                if let Some(device_size) = self.state.pending_device_size_during_resize.take() {
+                    let scale_factor = self.state.scale_factor.get();
+                    self.handle_size_change(device_size, scale_factor, true);
+                }
+
+                // Windows enters a modal move/size loop during drag-resize. Our VSync
+                // invalidation thread intentionally pauses while that loop is active, so
+                // windows that rely on custom chrome or translucent materials must keep
+                // rendering from the timer. Otherwise DWM falls back to a blurred
+                // system snapshot and can temporarily show the native drag frame.
+                self.draw_window(handle, true)
+            } else if self.state.pending_device_size_during_resize.get().is_none() {
                 Some(0)
             } else {
                 self.handle_paint_msg(handle)

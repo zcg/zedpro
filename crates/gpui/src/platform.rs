@@ -2,6 +2,9 @@ mod app_menu;
 mod keyboard;
 mod keystroke;
 
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicU32, Ordering};
+
 #[cfg(all(target_os = "linux", feature = "wayland"))]
 #[expect(missing_docs)]
 pub mod layer_shell;
@@ -14,6 +17,26 @@ mod visual_test;
 
 #[cfg(target_os = "windows")]
 pub use windows::Win32::Foundation::HWND;
+
+#[cfg(target_os = "windows")]
+const WINDOWS_WINDOW_BACKGROUND_MATERIAL_DEFAULT_OPACITY_BITS: u32 = 0x3eb33333;
+
+#[cfg(target_os = "windows")]
+static WINDOWS_WINDOW_BACKGROUND_MATERIAL_OPACITY: AtomicU32 =
+    AtomicU32::new(WINDOWS_WINDOW_BACKGROUND_MATERIAL_DEFAULT_OPACITY_BITS);
+
+#[cfg(target_os = "windows")]
+/// Sets the Windows-specific opacity used when applying custom backdrop materials.
+pub fn set_windows_window_background_material_opacity(opacity: f32) {
+    WINDOWS_WINDOW_BACKGROUND_MATERIAL_OPACITY
+        .store(opacity.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+}
+
+#[cfg(target_os = "windows")]
+/// Returns the Windows-specific opacity used for custom backdrop materials.
+pub fn windows_window_background_material_opacity() -> f32 {
+    f32::from_bits(WINDOWS_WINDOW_BACKGROUND_MATERIAL_OPACITY.load(Ordering::Relaxed))
+}
 
 #[cfg(all(
     feature = "screen-capture",

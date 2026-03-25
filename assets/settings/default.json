@@ -207,6 +207,13 @@
   //
   // Default: "theme"
   "window_background_material": "theme",
+  // Windows-only opacity control for custom Acrylic and Mica materials.
+  // 0.0 keeps the material as transparent as possible.
+  // 1.0 makes Zed's material surfaces much denser.
+  // 0.35 matches the current default balance.
+  //
+  // Default: 0.35
+  "window_background_material_opacity": 0.35,
   // Whether to use the system provided dialogs for Open and Save As.
   // When set to false, Zed will use the built-in keyboard-first pickers.
   "use_system_path_prompts": true,

@@ -1141,7 +1141,10 @@ impl Render for ProjectDiff {
             .when(is_branch_diff_view, |this| {
                 this.on_action(cx.listener(Self::review_diff))
             })
-            .bg(cx.theme().colors().editor_background)
+            .bg(workspace::material_panel_shell_color(
+                cx.theme().colors().editor_background,
+                cx,
+            ))
             .flex()
             .items_center()
             .justify_center()
