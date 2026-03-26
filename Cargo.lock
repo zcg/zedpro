@@ -15987,6 +15987,7 @@ dependencies = [
  "action_log",
  "agent",
  "agent-client-protocol",
+ "agent_settings",
  "agent_ui",
  "anyhow",
  "assistant_text_thread",
@@ -21524,6 +21525,7 @@ dependencies = [
 name = "workspace"
 version = "0.1.0"
 dependencies = [
+ "agent_settings",
  "any_vec",
  "anyhow",
  "async-recursion",
