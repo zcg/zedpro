@@ -39,8 +39,7 @@ use util::path_list::PathList;
 use workspace::{
     AddFolderToProject, FocusWorkspaceSidebar, MultiWorkspace, MultiWorkspaceEvent, Open,
     Sidebar as WorkspaceSidebar, SidebarSide, ToggleWorkspaceSidebar, Workspace, WorkspaceId,
-    material_panel_shell_color,
-    sidebar_side_context_menu,
+    material_panel_shell_color, sidebar_side_context_menu,
 };
 
 use zed_actions::OpenRecent;

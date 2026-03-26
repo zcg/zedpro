@@ -6,8 +6,8 @@ use gpui::{
     Tiling, Window, WindowId, actions, deferred, px,
 };
 use project::{DisableAiSettings, Project};
-use settings::{Settings, SettingsStore};
 pub use settings::SidebarSide;
+use settings::{Settings, SettingsStore};
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
