@@ -4518,6 +4518,7 @@ impl EditorElement {
         );
 
         let editor_bg_color = cx.theme().colors().editor_background;
+        let sticky_subheader_bg = workspace::material_sticky_surface_color(editor_bg_color, 0.9, cx);
 
         let selected = selected_buffer_ids.contains(&excerpt.buffer_id);
 
@@ -4526,17 +4527,27 @@ impl EditorElement {
         let mut header = v_flex()
             .w_full()
             .relative()
+            .occlude()
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w(available_width)
+                    .h(FILE_HEADER_HEIGHT as f32 * line_height)
+                    .bg(sticky_subheader_bg),
+            )
             .child(
                 div()
                     .w(available_width)
                     .h(FILE_HEADER_HEIGHT as f32 * line_height)
                     .bg(linear_gradient(
                         0.,
-                        linear_color_stop(editor_bg_color.opacity(0.), 0.),
-                        linear_color_stop(editor_bg_color, 0.6),
+                        linear_color_stop(sticky_subheader_bg.opacity(0.20), 0.),
+                        linear_color_stop(sticky_subheader_bg.opacity(0.), 1.),
                     ))
                     .absolute()
-                    .top_0(),
+                    .bottom_0(),
             )
             .child(
                 self.render_buffer_header(excerpt, false, selected, true, jump_data, window, cx)
@@ -4655,8 +4666,16 @@ impl EditorElement {
 
         Some(StickyHeaders {
             lines,
-            gutter_background: cx.theme().colors().editor_gutter_background,
-            content_background: self.style.background,
+            gutter_background: workspace::material_sticky_surface_color(
+                cx.theme().colors().editor_gutter_background,
+                0.88,
+                cx,
+            ),
+            content_background: workspace::material_sticky_surface_color(
+                self.style.background,
+                0.9,
+                cx,
+            ),
             gutter_right_padding: gutter_dimensions.right_padding,
         })
     }
@@ -8259,6 +8278,11 @@ pub(crate) fn render_buffer_header(
     };
     let focus_handle = editor_read.focus_handle(cx);
     let colors = cx.theme().colors();
+    let sticky_subheader_bg = if is_sticky {
+        workspace::material_sticky_surface_color(colors.editor_subheader_background, 0.9, cx)
+    } else {
+        colors.editor_subheader_background
+    };
 
     let header = div()
         .id(("buffer-header", for_excerpt.buffer_id.to_proto()))
@@ -8285,7 +8309,7 @@ pub(crate) fn render_buffer_header(
                         };
                     border.border_color(border_color)
                 })
-                .bg(colors.editor_subheader_background)
+                .bg(sticky_subheader_bg)
                 .hover(|style| style.bg(colors.element_hover))
                 .map(|header| {
                     let editor = editor.clone();
@@ -11293,6 +11317,22 @@ impl StickyHeaders {
         cx: &mut App,
     ) {
         let line_height = layout.position_map.line_height;
+        let sticky_height = self
+            .lines
+            .last()
+            .map(|last| last.offset + line_height + px(1.))
+            .unwrap_or(line_height);
+
+        let gutter_backdrop_bounds = Bounds::new(
+            layout.gutter_hitbox.origin,
+            size(layout.gutter_hitbox.size.width, sticky_height),
+        );
+        let text_backdrop_bounds = Bounds::new(
+            layout.position_map.text_hitbox.origin,
+            size(layout.position_map.text_hitbox.size.width, sticky_height),
+        );
+        window.paint_quad(fill(gutter_backdrop_bounds, self.gutter_background));
+        window.paint_quad(fill(text_backdrop_bounds, self.content_background));
 
         for line in self.lines.iter_mut().rev() {
             window.paint_layer(

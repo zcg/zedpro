@@ -1000,7 +1000,7 @@ impl Render for CommitView {
         v_flex()
             .key_context(if is_stash { "StashDiff" } else { "CommitDiff" })
             .size_full()
-            .bg(workspace::material_panel_shell_color(
+            .bg(workspace::material_panel_backdrop_color(
                 cx.theme().colors().editor_background,
                 cx,
             ))

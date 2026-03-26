@@ -401,7 +401,7 @@ impl Render for FileHistoryView {
             .on_action(cx.listener(Self::select_last))
             .on_action(cx.listener(Self::confirm))
             .size_full()
-            .bg(workspace::material_panel_shell_color(
+            .bg(workspace::material_panel_backdrop_color(
                 cx.theme().colors().editor_background,
                 cx,
             ))

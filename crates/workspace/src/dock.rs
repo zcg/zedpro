@@ -1021,7 +1021,18 @@ impl Render for Dock {
         let dispatch_context = Self::dispatch_context();
         if let Some(entry) = self.visible_entry() {
             let size = self.resolved_panel_size(entry, window, cx);
-            let dock_background = if crate::has_custom_window_background_material(cx) {
+            let dock_background = if crate::has_custom_window_background_material(cx)
+                && entry.panel.persistent_name() == "ProjectPanel"
+            {
+                crate::material_panel_shell_color(cx.theme().colors().panel_background, cx)
+            } else if crate::has_custom_window_background_material(cx)
+                && matches!(
+                    entry.panel.persistent_name(),
+                    "AgentPanel" | "GitPanel" | "DebugPanel"
+                )
+            {
+                crate::material_panel_backdrop_color(cx.theme().colors().panel_background, cx)
+            } else if crate::has_custom_window_background_material(cx) {
                 cx.theme().colors().ghost_element_background
             } else if matches!(
                 entry.panel.persistent_name(),

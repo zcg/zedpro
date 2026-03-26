@@ -172,8 +172,41 @@ pub fn material_root_surface_color(color: Hsla, cx: &App) -> Hsla {
     }
 }
 
-pub fn material_panel_shell_color(color: Hsla, _cx: &App) -> Hsla {
-    color
+pub fn material_panel_shell_color(color: Hsla, cx: &App) -> Hsla {
+    if !has_custom_window_background_material(cx) {
+        return color;
+    }
+
+    if color.a < 0.995 {
+        return material_popup_surface_color(color, 0.82, cx);
+    }
+
+    material_surface_color(color, 0.96, cx)
+}
+
+pub fn material_panel_backdrop_color(color: Hsla, cx: &App) -> Hsla {
+    if !has_custom_window_background_material(cx) {
+        return color;
+    }
+
+    let opacity = WorkspaceSettings::get_global(cx)
+        .window_background_material_opacity
+        .0
+        .clamp(0.0, 1.0);
+    let backdrop_alpha = if opacity <= 0.35 {
+        lerp(0.10, 0.20, opacity / 0.35)
+    } else {
+        lerp(0.20, 0.34, (opacity - 0.35) / 0.65)
+    };
+
+    material_popup_surface_color(color, 0.66, cx).opacity(backdrop_alpha)
+}
+
+pub fn material_sticky_surface_color(color: Hsla, factor: f32, cx: &App) -> Hsla {
+    if !has_custom_window_background_material(cx) {
+        return color;
+    }
+    material_popup_surface_color(color, factor, cx)
 }
 
 pub fn material_workspace_wash_color(cx: &App) -> Option<Hsla> {

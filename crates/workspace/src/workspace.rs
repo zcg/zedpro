@@ -30,8 +30,8 @@ pub use dock::Panel;
 pub use multi_workspace::{
     CloseWorkspaceSidebar, DraggedSidebar, FocusWorkspaceSidebar, MultiWorkspace,
     MultiWorkspaceEvent, NewWorkspaceInWindow, NextWorkspace, NextWorkspaceInWindow,
-    PreviousWorkspace, PreviousWorkspaceInWindow, Sidebar, SidebarHandle, ToggleWorkspaceSidebar,
-    SidebarRenderState, SidebarSide, sidebar_side_context_menu,
+    PreviousWorkspace, PreviousWorkspaceInWindow, Sidebar, SidebarHandle, SidebarRenderState,
+    SidebarSide, ToggleWorkspaceSidebar, sidebar_side_context_menu,
 };
 pub use path_list::{PathList, SerializedPathList};
 pub use toast_layer::{ToastAction, ToastLayer, ToastView};
@@ -148,9 +148,9 @@ use uuid::Uuid;
 pub use workspace_settings::{
     AutosaveSetting, BottomDockLayout, RestoreOnStartupBehavior, StatusBarSettings, TabBarSettings,
     WorkspaceSettings, effective_window_background_appearance,
-    has_custom_window_background_material, material_panel_shell_color,
-    material_popup_surface_color, material_root_surface_color, material_surface_color,
-    material_workspace_wash_color,
+    has_custom_window_background_material, material_panel_backdrop_color,
+    material_panel_shell_color, material_popup_surface_color, material_root_surface_color,
+    material_sticky_surface_color, material_surface_color, material_workspace_wash_color,
 };
 use zed_actions::{Spawn, feedback::FileBugReport, theme::ToggleMode};
 

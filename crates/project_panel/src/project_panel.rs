@@ -623,15 +623,25 @@ struct ItemColors {
 
 fn get_item_color(is_sticky: bool, cx: &App) -> ItemColors {
     let colors = cx.theme().colors();
+    let sticky_default = if workspace::has_custom_window_background_material(cx) {
+        hsla(0.0, 0.0, 0.0, 0.0)
+    } else {
+        colors.panel_overlay_background
+    };
+    let sticky_hover = if workspace::has_custom_window_background_material(cx) {
+        workspace::material_sticky_surface_color(colors.panel_overlay_hover, 0.94, cx)
+    } else {
+        colors.panel_overlay_hover
+    };
 
     ItemColors {
         default: if is_sticky {
-            colors.panel_overlay_background
+            sticky_default
         } else {
             colors.ghost_element_background
         },
         hover: if is_sticky {
-            colors.panel_overlay_hover
+            sticky_hover
         } else {
             colors.ghost_element_hover
         },
@@ -5374,7 +5384,9 @@ impl ProjectPanel {
             .border_r_2()
             .border_color(border_color)
             .hover(|style| style.bg(bg_hover_color).border_color(border_hover_color))
-            .when(is_sticky, |this| this.block_mouse_except_scroll())
+            .when(is_sticky, |this| {
+                this.w_full().occlude().block_mouse_except_scroll()
+            })
             .when(!is_sticky, |this| {
                 this.when(
                     is_highlighted && folded_directory_drag_target.is_none(),
@@ -6421,6 +6433,11 @@ impl ProjectPanel {
 
         // already checked if non empty above
         let last_item_index = sticky_parents.len() - 1;
+        let sticky_row_background = if workspace::has_custom_window_background_material(cx) {
+            workspace::material_sticky_surface_color(cx.theme().colors().panel_background, 0.88, cx)
+        } else {
+            cx.theme().colors().panel_overlay_background
+        };
         sticky_parents
             .iter()
             .enumerate()
@@ -6442,7 +6459,11 @@ impl ProjectPanel {
                     window,
                     cx,
                 );
-                self.render_entry(entry.id, details, window, cx)
+                div()
+                    .relative()
+                    .w_full()
+                    .bg(sticky_row_background)
+                    .child(self.render_entry(entry.id, details, window, cx))
                     .when(index == last_item_index, |this| {
                         let shadow_color_top = hsla(0.0, 0.0, 0.0, 0.1);
                         let shadow_color_bottom = hsla(0.0, 0.0, 0.0, 0.);
@@ -6661,6 +6682,12 @@ impl Render for ProjectPanel {
                 .track_focus(&self.focus_handle(cx))
                 .child(
                     v_flex()
+                        .when(workspace::has_custom_window_background_material(cx), |this| {
+                            this.bg(workspace::material_panel_backdrop_color(
+                                cx.theme().colors().panel_background,
+                                cx,
+                            ))
+                        })
                         .child(
                             uniform_list("entries", item_count, {
                                 cx.processor(|this, range: Range<usize>, window, cx| {

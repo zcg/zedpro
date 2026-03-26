@@ -520,23 +520,33 @@ impl SplitBufferHeadersElement {
         );
 
         let editor_bg_color = cx.theme().colors().editor_background;
+        let sticky_header_bg = workspace::material_sticky_surface_color(editor_bg_color, 0.9, cx);
         let selected = selected_buffer_ids.contains(&excerpt.buffer_id);
 
         let mut header = v_flex()
             .id("sticky-buffer-header")
             .w(available_width)
             .relative()
+            .occlude()
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(sticky_header_bg),
+            )
             .child(
                 div()
                     .w(available_width)
                     .h(FILE_HEADER_HEIGHT as f32 * line_height)
                     .bg(linear_gradient(
                         0.,
-                        linear_color_stop(editor_bg_color.opacity(0.), 0.),
-                        linear_color_stop(editor_bg_color, 0.6),
+                        linear_color_stop(sticky_header_bg.opacity(0.20), 0.),
+                        linear_color_stop(sticky_header_bg.opacity(0.), 1.),
                     ))
                     .absolute()
-                    .top_0(),
+                    .bottom_0(),
             )
             .child(
                 render_buffer_header(
