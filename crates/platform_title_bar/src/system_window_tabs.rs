@@ -233,6 +233,7 @@ impl SystemWindowTabs {
         let width = self.measured_tab_width.max(rem_size * 10);
         let is_active = window.window_handle().window_id() == item.id;
         let show_active_border = tabs.len() >= 2;
+        let show_single_tab_surface = tabs.len() == 1;
         let title = item.title.to_string();
 
         let label = Label::new(&title)
@@ -620,11 +621,13 @@ impl SystemWindowTabs {
         } else {
             cx.theme().colors().border_transparent
         };
-
         div()
             .flex_1()
             .h_full()
             .min_w(rem_size * 10)
+            .when(show_single_tab_surface, |this| {
+                this.bg(inactive_background_color)
+            })
             .when(is_active, |this| this.bg(active_background_color))
             // Reserve 1px inset on all sides so the top border stays visible in
             // the Windows title bar region instead of being clipped.
@@ -808,8 +811,21 @@ impl SystemWindowTabs {
 impl Render for SystemWindowTabs {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let use_system_window_tabs = WorkspaceSettings::get_global(cx).use_system_window_tabs;
-        let active_background_color = cx.theme().colors().title_bar_background;
-        let inactive_background_color = cx.theme().colors().tab_bar_background;
+        let strip_background_color = if cfg!(target_os = "windows") {
+            hsla(0., 0., 0., 0.)
+        } else {
+            cx.theme().colors().tab_bar_background
+        };
+        let active_background_color = if cfg!(target_os = "windows") {
+            cx.theme().colors().tab_active_background
+        } else {
+            cx.theme().colors().title_bar_background
+        };
+        let inactive_background_color = if cfg!(target_os = "windows") {
+            cx.theme().colors().tab_inactive_background
+        } else {
+            cx.theme().colors().tab_bar_background
+        };
         let entity = cx.entity();
 
         let window_id = window.window_handle().window_id();
@@ -942,7 +958,7 @@ impl Render for SystemWindowTabs {
         let tab_bar = h_flex()
             .w_full()
             .h(Tab::container_height(cx))
-            .bg(inactive_background_color);
+            .bg(strip_background_color);
 
         #[cfg(target_os = "windows")]
         let tab_bar = tab_bar.on_drag_move::<DraggedWindowTab>(cx.listener(
@@ -1080,7 +1096,7 @@ impl Render for SystemWindowTabs {
                     .id("window tabs")
                     .w_full()
                     .h(Tab::container_height(cx))
-                    .bg(inactive_background_color)
+                    .bg(strip_background_color)
                     .drag_over::<DraggedWindowTab>(move |element, _dragged_tab, _, cx| {
                         element
                             .bg(cx.theme().colors().drop_target_background)
