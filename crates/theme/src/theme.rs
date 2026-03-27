@@ -711,7 +711,7 @@ fn apply_window_material_theme_overrides(
             colors.editor_debugger_active_line_background = material_blend(
                 shared_content,
                 colors.editor_debugger_active_line_background,
-                0.12,
+                0.22,
                 active_alpha,
             );
             colors.terminal_background = shared_content;
@@ -893,7 +893,7 @@ fn apply_window_material_theme_overrides(
             colors.editor_debugger_active_line_background = material_blend(
                 content,
                 colors.editor_debugger_active_line_background,
-                0.10,
+                0.20,
                 active_alpha,
             );
             colors.terminal_background = content;

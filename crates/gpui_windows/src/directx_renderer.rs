@@ -74,6 +74,20 @@ impl WindowRenderer {
     }
 
     pub(crate) fn handle_device_lost(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
+        let recovered_backend = directx_devices.active_backend();
+        if self.active_backend() != recovered_backend {
+            let hwnd = self.hwnd();
+            let disable_direct_composition = self.disable_direct_composition();
+            log::warn!(
+                "Switching window renderer from {} to {} after GPU device recovery.",
+                self.active_backend().display_name(),
+                recovered_backend.display_name()
+            );
+            *self = Self::new(hwnd, directx_devices, disable_direct_composition)
+                .context("Recreating window renderer after GPU backend switch")?;
+            return Ok(());
+        }
+
         match self {
             Self::Direct3d11(renderer) => renderer.handle_device_lost(directx_devices),
             Self::Direct3d12(renderer) => renderer.handle_device_lost(directx_devices),
@@ -100,6 +114,27 @@ impl WindowRenderer {
 
     pub(crate) fn uses_direct3d12(&self) -> bool {
         matches!(self, Self::Direct3d12(_))
+    }
+
+    fn active_backend(&self) -> DirectXBackend {
+        match self {
+            Self::Direct3d11(_) => DirectXBackend::Direct3d11,
+            Self::Direct3d12(_) => DirectXBackend::Direct3d12,
+        }
+    }
+
+    fn hwnd(&self) -> HWND {
+        match self {
+            Self::Direct3d11(renderer) => renderer.hwnd(),
+            Self::Direct3d12(renderer) => renderer.hwnd(),
+        }
+    }
+
+    fn disable_direct_composition(&self) -> bool {
+        match self {
+            Self::Direct3d11(renderer) => renderer.disable_direct_composition(),
+            Self::Direct3d12(renderer) => renderer.disable_direct_composition(),
+        }
     }
 
     pub(crate) fn gpu_specs(&self) -> Result<GpuSpecs> {
@@ -268,6 +303,14 @@ impl DirectXRenderer {
 
     pub(crate) fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.atlas.clone()
+    }
+
+    pub(crate) fn hwnd(&self) -> HWND {
+        self.hwnd
+    }
+
+    pub(crate) fn disable_direct_composition(&self) -> bool {
+        self.direct_composition.is_none()
     }
 
     fn pre_draw(&self, clear_color: &[f32; 4]) -> Result<()> {

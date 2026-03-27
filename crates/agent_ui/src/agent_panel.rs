@@ -4623,10 +4623,8 @@ impl Render for AgentPanel {
             .relative()
             .size_full()
             .justify_between()
-            .bg(if workspace::has_custom_window_background_material(cx) {
-                workspace::material_panel_backdrop_color(cx.theme().colors().panel_background, cx)
-            } else {
-                cx.theme().colors().ghost_element_background
+            .when(!workspace::has_custom_window_background_material(cx), |this| {
+                this.bg(cx.theme().colors().ghost_element_background)
             })
             .when(self.zoomed, |this| {
                 this.occlude().bg(material_popup_surface_color(

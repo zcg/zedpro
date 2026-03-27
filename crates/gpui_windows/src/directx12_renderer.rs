@@ -305,6 +305,14 @@ impl DirectX12Renderer {
         self.atlas.clone()
     }
 
+    pub(crate) fn hwnd(&self) -> HWND {
+        self.hwnd
+    }
+
+    pub(crate) fn disable_direct_composition(&self) -> bool {
+        self.direct_composition.is_none()
+    }
+
     pub(crate) fn handle_device_lost(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
         let disable_direct_composition = self.direct_composition.take().is_none();
 

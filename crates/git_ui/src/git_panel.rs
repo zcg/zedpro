@@ -5694,10 +5694,9 @@ impl Render for GitPanel {
             .on_action(cx.listener(Self::toggle_tree_view))
             .size_full()
             .overflow_hidden()
-            .bg(workspace::material_panel_backdrop_color(
-                cx.theme().colors().panel_background,
-                cx,
-            ))
+            .when(!workspace::has_custom_window_background_material(cx), |this| {
+                this.bg(cx.theme().colors().ghost_element_background)
+            })
             .child(
                 v_flex()
                     .size_full()

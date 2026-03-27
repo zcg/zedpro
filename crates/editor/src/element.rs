@@ -5934,6 +5934,9 @@ impl EditorElement {
                     EditorMode::Minimap { .. } => true,
                     _ => false,
                 };
+                let has_active_debug_line = layout.highlighted_rows.values().any(|highlight| {
+                    highlight.type_id == Some(std::any::TypeId::of::<crate::ActiveDebugLine>())
+                });
                 let mut active_rows = layout.active_rows.iter().peekable();
                 while let Some((start_row, contains_non_empty_selection)) = active_rows.next() {
                     let mut end_row = start_row.0;
@@ -5948,7 +5951,10 @@ impl EditorElement {
                         end_row += 1;
                     }
 
-                    if show_active_line_background && !contains_non_empty_selection.selection {
+                    if show_active_line_background
+                        && !contains_non_empty_selection.selection
+                        && !has_active_debug_line
+                    {
                         let highlight_h_range =
                             match layout.position_map.snapshot.current_line_highlight {
                                 CurrentLineHighlight::Gutter => Some(Range {
