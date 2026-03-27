@@ -39,7 +39,7 @@ use util::path_list::PathList;
 use workspace::{
     AddFolderToProject, FocusWorkspaceSidebar, MultiWorkspace, MultiWorkspaceEvent, Open,
     Sidebar as WorkspaceSidebar, SidebarSide, ToggleWorkspaceSidebar, Workspace, WorkspaceId,
-    material_panel_shell_color, sidebar_side_context_menu,
+    material_panel_backdrop_color, sidebar_side_context_menu,
 };
 
 use zed_actions::OpenRecent;
@@ -1635,7 +1635,7 @@ impl Sidebar {
             .unwrap_or(px(0.));
 
         let color = cx.theme().colors();
-        let background = material_panel_shell_color(color.panel_background, cx);
+        let background = material_panel_backdrop_color(color.panel_background, cx);
 
         let element = v_flex()
             .absolute()
@@ -3133,7 +3133,7 @@ impl Render for Sidebar {
         let sticky_header = self.render_sticky_header(window, cx);
 
         let color = cx.theme().colors();
-        let bg = material_panel_shell_color(color.panel_background, cx);
+        let bg = material_panel_backdrop_color(color.panel_background, cx);
 
         let no_open_projects = !self.contents.has_open_projects;
         let no_search_results = self.contents.entries.is_empty();
