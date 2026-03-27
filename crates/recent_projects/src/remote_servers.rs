@@ -5043,7 +5043,7 @@ impl RemoteServerProjects {
         cx: &mut Context<Self>,
     ) {
         let replace_window = window.window_handle().downcast::<MultiWorkspace>();
-
+        let app_state = Arc::downgrade(&app_state);
         cx.spawn_in(window, async move |entity, cx| {
             let (progress_tx, mut progress_rx) = mpsc::unbounded::<DevContainerProgressEvent>();
             let progress_entity = entity.clone();
@@ -5137,6 +5137,9 @@ impl RemoteServerProjects {
                     );
                 })
                 .log_err();
+            let Some(app_state) = app_state.upgrade() else {
+                return;
+            };
             let result = open_remote_project(
                 connection.into(),
                 vec![starting_dir].into_iter().map(PathBuf::from).collect(),
