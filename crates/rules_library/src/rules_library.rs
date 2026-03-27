@@ -20,7 +20,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
-use theme::ThemeSettings;
+use theme_settings::ThemeSettings;
 use ui::{Divider, ListItem, ListItemSpacing, ListSubHeader, Tooltip, prelude::*};
 use ui_input::ErasedEditor;
 use util::{ResultExt, TryFutureExt};
@@ -1406,8 +1406,7 @@ impl RulesLibrary {
 
 impl Render for RulesLibrary {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        window.set_rem_size(theme::get_ui_font_size(cx));
-        let ui_font = theme::get_ui_font(cx);
+        let ui_font = theme_settings::setup_ui_font(window, cx);
         let theme = cx.theme().clone();
 
         client_side_decorations(

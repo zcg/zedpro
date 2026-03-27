@@ -1177,8 +1177,7 @@ impl Render for MultiWorkspace {
             (sidebar, None)
         };
 
-        window.set_rem_size(theme::get_ui_font_size(cx));
-        let ui_font = theme::get_ui_font(cx);
+        let ui_font = theme_settings::setup_ui_font(window, cx);
         let text_color = cx.theme().colors().text;
 
         let workspace = self.workspace().clone();
@@ -1280,7 +1279,7 @@ mod tests {
         cx.update(|cx| {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
-            theme::init(theme::LoadThemes::JustBase, cx);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
             DisableAiSettings::register(cx);
             cx.update_flags(false, vec!["agent-v2".into()]);
         });

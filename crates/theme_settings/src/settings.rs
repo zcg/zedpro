@@ -1,16 +1,18 @@
-use crate::{
-    Appearance, DEFAULT_ICON_THEME_NAME, SyntaxTheme, Theme, status_colors_refinement,
-    syntax_overrides, theme_colors_refinement,
-};
+#![allow(missing_docs)]
+
+use crate::schema::{status_colors_refinement, syntax_overrides, theme_colors_refinement};
+use crate::{merge_accent_colors, merge_player_colors};
 use collections::HashMap;
-use derive_more::{Deref, DerefMut};
-use gpui::{App, Context, Font, FontFallbacks, FontStyle, Global, Pixels, Subscription, px};
+use gpui::{
+    App, Context, Font, FontFallbacks, FontStyle, Global, Pixels, Subscription, Window, px,
+};
 use refineable::Refineable;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 pub use settings::{FontFamilyName, IconThemeName, ThemeAppearanceMode, ThemeName};
 use settings::{IntoGpui, RegisterSetting, Settings, SettingsContent};
 use std::sync::Arc;
+use theme::{Appearance, DEFAULT_ICON_THEME_NAME, SyntaxTheme, Theme};
 
 const MIN_FONT_SIZE: Pixels = px(6.0);
 const MAX_FONT_SIZE: Pixels = px(100.0);
@@ -95,6 +97,13 @@ impl From<UiDensity> for settings::UiDensity {
     }
 }
 
+pub fn appearance_to_mode(appearance: Appearance) -> ThemeAppearanceMode {
+    match appearance {
+        Appearance::Light => ThemeAppearanceMode::Light,
+        Appearance::Dark => ThemeAppearanceMode::Dark,
+    }
+}
+
 /// Customizable settings for the UI and theme system.
 #[derive(Clone, PartialEq, RegisterSetting)]
 pub struct ThemeSettings {
@@ -145,39 +154,6 @@ pub fn default_theme(appearance: Appearance) -> &'static str {
     match appearance {
         Appearance::Light => settings::DEFAULT_LIGHT_THEME,
         Appearance::Dark => settings::DEFAULT_DARK_THEME,
-    }
-}
-
-/// The appearance of the system.
-#[derive(Debug, Clone, Copy, Deref)]
-pub struct SystemAppearance(pub Appearance);
-
-impl Default for SystemAppearance {
-    fn default() -> Self {
-        Self(Appearance::Dark)
-    }
-}
-
-#[derive(Deref, DerefMut, Default)]
-struct GlobalSystemAppearance(SystemAppearance);
-
-impl Global for GlobalSystemAppearance {}
-
-impl SystemAppearance {
-    /// Initializes the [`SystemAppearance`] for the application.
-    pub fn init(cx: &mut App) {
-        *cx.default_global::<GlobalSystemAppearance>() =
-            GlobalSystemAppearance(SystemAppearance(cx.window_appearance().into()));
-    }
-
-    /// Returns the global [`SystemAppearance`].
-    pub fn global(cx: &App) -> Self {
-        cx.global::<GlobalSystemAppearance>().0
-    }
-
-    /// Returns a mutable reference to the global [`SystemAppearance`].
-    pub fn global_mut(cx: &mut App) -> &mut Self {
-        cx.global_mut::<GlobalSystemAppearance>()
     }
 }
 
@@ -330,21 +306,16 @@ pub fn set_theme(
             *theme = theme_name;
         }
         settings::ThemeSelection::Dynamic { mode, light, dark } => {
-            // Update the appropriate theme slot based on appearance.
             match theme_appearance {
                 Appearance::Light => *light = theme_name,
                 Appearance::Dark => *dark = theme_name,
             }
 
-            // Don't update the theme mode if it is set to system and the new theme has the same
-            // appearance.
             let should_update_mode =
                 !(mode == &ThemeAppearanceMode::System && theme_appearance == system_appearance);
 
             if should_update_mode {
-                // Update the mode to the specified appearance (otherwise we might set the theme and
-                // nothing gets updated because the system specified the other mode appearance).
-                *mode = ThemeAppearanceMode::from(theme_appearance);
+                *mode = appearance_to_mode(theme_appearance);
             }
         }
     }
@@ -382,9 +353,6 @@ pub fn set_mode(content: &mut SettingsContent, mode: ThemeAppearanceMode) {
     if let Some(selection) = theme.theme.as_mut() {
         match selection {
             settings::ThemeSelection::Static(_) => {
-                // If the theme was previously set to a single static theme,
-                // reset to the default dynamic light/dark pair and let users
-                // customize light/dark themes explicitly afterward.
                 *selection = settings::ThemeSelection::Dynamic {
                     mode: ThemeAppearanceMode::System,
                     light: ThemeName(settings::DEFAULT_LIGHT_THEME.into()),
@@ -407,9 +375,6 @@ pub fn set_mode(content: &mut SettingsContent, mode: ThemeAppearanceMode) {
     if let Some(selection) = theme.icon_theme.as_mut() {
         match selection {
             settings::IconThemeSelection::Static(icon_theme) => {
-                // If the icon theme was previously set to a single static
-                // theme, we don't know whether it was a light or dark
-                // theme, so we just use it for both.
                 *selection = settings::IconThemeSelection::Dynamic {
                     mode,
                     light: icon_theme.clone(),
@@ -427,7 +392,6 @@ pub fn set_mode(content: &mut SettingsContent, mode: ThemeAppearanceMode) {
         )));
     }
 }
-// }
 
 /// The buffer's line height.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -537,7 +501,6 @@ impl ThemeSettings {
     pub fn buffer_line_height(&self) -> f32 {
         f32::max(self.buffer_line_height.value(), MIN_LINE_HEIGHT)
     }
-
     /// Returns the buffer's line height.
     pub fn line_height(&self) -> f32 {
         self.buffer_line_height()
@@ -545,7 +508,6 @@ impl ThemeSettings {
 
     /// Applies the theme overrides, if there are any, to the current theme.
     pub fn apply_theme_overrides(&self, mut arc_theme: Arc<Theme>) -> Arc<Theme> {
-        // Apply the old overrides setting first, so that the new setting can override those.
         if let Some(experimental_theme_overrides) = &self.experimental_theme_overrides {
             let mut theme = (*arc_theme).clone();
             ThemeSettings::modify_theme(&mut theme, experimental_theme_overrides);
@@ -573,11 +535,11 @@ impl ThemeSettings {
             &status_color_refinement,
         ));
         base_theme.styles.status.refine(&status_color_refinement);
-        base_theme.styles.player.merge(&theme_overrides.players);
-        base_theme.styles.accents.merge(&theme_overrides.accents);
+        merge_player_colors(&mut base_theme.styles.player, &theme_overrides.players);
+        merge_accent_colors(&mut base_theme.styles.accents, &theme_overrides.accents);
         base_theme.styles.syntax = SyntaxTheme::merge(
             base_theme.styles.syntax.clone(),
-            syntax_overrides(&theme_overrides),
+            syntax_overrides(theme_overrides),
         );
     }
 }
@@ -621,14 +583,16 @@ pub fn reset_buffer_font_size(cx: &mut App) {
     }
 }
 
-/// Returns the effective UI font size, including temporary size adjustments.
-pub fn get_ui_font_size(cx: &App) -> Pixels {
-    ThemeSettings::get_global(cx).ui_font_size(cx)
-}
+#[allow(missing_docs)]
+pub fn setup_ui_font(window: &mut Window, cx: &mut App) -> gpui::Font {
+    let (ui_font, ui_font_size) = {
+        let theme_settings = ThemeSettings::get_global(cx);
+        let font = theme_settings.ui_font.clone();
+        (font, theme_settings.ui_font_size(cx))
+    };
 
-/// Returns the configured UI font family/style.
-pub fn get_ui_font(cx: &App) -> gpui::Font {
-    ThemeSettings::get_global(cx).ui_font.clone()
+    window.set_rem_size(ui_font_size);
+    ui_font
 }
 
 /// Sets the adjusted UI font size.

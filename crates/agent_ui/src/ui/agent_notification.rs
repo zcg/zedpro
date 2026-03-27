@@ -5,7 +5,6 @@ use gpui::{
 };
 use release_channel::ReleaseChannel;
 use std::rc::Rc;
-use theme;
 use ui::{Render, prelude::*};
 
 pub struct AgentNotification {
@@ -87,8 +86,7 @@ impl AgentNotification {
 
 impl Render for AgentNotification {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        window.set_rem_size(theme::get_ui_font_size(cx));
-        let ui_font = theme::get_ui_font(cx);
+        let ui_font = theme_settings::setup_ui_font(window, cx);
         let line_height = window.line_height();
 
         let bg = cx.theme().colors().elevated_surface_background;

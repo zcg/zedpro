@@ -8,7 +8,7 @@ use gpui::{
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash as _, Hasher as _};
-use theme::ThemeSettings;
+use theme_settings::ThemeSettings;
 use ui::{
     Color, ContextMenu, DynamicSpacing, IconButton, IconButtonShape, IconName, IconSize, Label,
     LabelSize, Tab, h_flex, prelude::*, right_click_menu,

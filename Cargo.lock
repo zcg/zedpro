@@ -59,7 +59,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
- "theme",
+ "theme_settings",
  "ui",
  "util",
  "workspace",
@@ -407,6 +407,7 @@ dependencies = [
  "terminal_view",
  "text",
  "theme",
+ "theme_settings",
  "time",
  "time_format",
  "tree-sitter-md",
@@ -2973,6 +2974,7 @@ dependencies = [
  "cloud_llm_client",
  "collections",
  "credentials_provider",
+ "db",
  "derive_more",
  "feature_flags",
  "fs",
@@ -3258,6 +3260,7 @@ dependencies = [
  "telemetry_events",
  "text",
  "theme",
+ "theme_settings",
  "time",
  "tokio",
  "toml 0.8.23",
@@ -3303,6 +3306,7 @@ dependencies = [
  "smallvec",
  "telemetry",
  "theme",
+ "theme_settings",
  "time",
  "time_format",
  "title_bar",
@@ -3375,6 +3379,7 @@ dependencies = [
  "settings",
  "telemetry",
  "theme",
+ "theme_settings",
  "time",
  "ui",
  "util",
@@ -3428,6 +3433,7 @@ dependencies = [
  "session",
  "settings",
  "theme",
+ "theme_settings",
  "ui",
  "ui_input",
  "uuid",
@@ -3625,6 +3631,7 @@ dependencies = [
  "settings",
  "sum_tree",
  "theme",
+ "theme_settings",
  "util",
  "workspace",
  "zlog",
@@ -4695,6 +4702,7 @@ dependencies = [
  "terminal_view",
  "text",
  "theme",
+ "theme_settings",
  "tree-sitter",
  "tree-sitter-go",
  "tree-sitter-json",
@@ -4883,6 +4891,7 @@ dependencies = [
  "settings",
  "text",
  "theme",
+ "theme_settings",
  "ui",
  "unindent",
  "util",
@@ -5399,6 +5408,7 @@ dependencies = [
  "telemetry",
  "text",
  "theme",
+ "theme_settings",
  "time",
  "ui",
  "util",
@@ -5467,6 +5477,7 @@ dependencies = [
  "telemetry",
  "text",
  "theme",
+ "theme_settings",
  "time",
  "tracing",
  "tree-sitter-bash",
@@ -6046,7 +6057,7 @@ dependencies = [
  "settings_content",
  "snippet_provider",
  "task",
- "theme",
+ "theme_settings",
  "tokio",
  "toml 0.8.23",
  "tree-sitter",
@@ -6095,6 +6106,7 @@ dependencies = [
  "tempfile",
  "theme",
  "theme_extension",
+ "theme_settings",
  "toml 0.8.23",
  "tracing",
  "url",
@@ -6133,7 +6145,7 @@ dependencies = [
  "smallvec",
  "strum 0.27.2",
  "telemetry",
- "theme",
+ "theme_settings",
  "ui",
  "util",
  "vim_mode_setting",
@@ -6290,6 +6302,7 @@ dependencies = [
  "serde_json",
  "settings",
  "theme",
+ "theme_settings",
  "ui",
  "util",
  "workspace",
@@ -7305,6 +7318,7 @@ dependencies = [
  "settings",
  "smallvec",
  "theme",
+ "theme_settings",
  "time",
  "ui",
  "workspace",
@@ -7380,6 +7394,7 @@ dependencies = [
  "strum 0.27.2",
  "telemetry",
  "theme",
+ "theme_settings",
  "time",
  "time_format",
  "tracing",
@@ -7608,7 +7623,6 @@ dependencies = [
  "block",
  "cbindgen",
  "chrono",
- "circular-buffer",
  "cocoa 0.26.0",
  "cocoa-foundation 0.2.0",
  "collections",
@@ -8732,7 +8746,7 @@ dependencies = [
  "project",
  "serde",
  "settings",
- "theme",
+ "theme_settings",
  "ui",
  "util",
  "workspace",
@@ -8848,7 +8862,7 @@ dependencies = [
  "project",
  "serde_json",
  "serde_json_lenient",
- "theme",
+ "theme_settings",
  "ui",
  "util",
  "util_macros",
@@ -9291,6 +9305,7 @@ dependencies = [
  "telemetry",
  "tempfile",
  "theme",
+ "theme_settings",
  "tree-sitter-json",
  "tree-sitter-rust",
  "ui",
@@ -9401,6 +9416,7 @@ dependencies = [
  "task",
  "text",
  "theme",
+ "theme_settings",
  "toml 0.8.23",
  "tracing",
  "tree-sitter",
@@ -9616,6 +9632,7 @@ dependencies = [
  "sysinfo 0.37.2",
  "telemetry",
  "theme",
+ "theme_settings",
  "tree-sitter",
  "ui",
  "util",
@@ -10294,6 +10311,7 @@ dependencies = [
  "stacksafe",
  "sum_tree",
  "theme",
+ "theme_settings",
  "ui",
  "util",
 ]
@@ -10310,7 +10328,7 @@ dependencies = [
  "markdown",
  "settings",
  "tempfile",
- "theme",
+ "theme_settings",
  "ui",
  "urlencoding",
  "util",
@@ -10670,7 +10688,7 @@ dependencies = [
  "rpc",
  "serde_json",
  "smol",
- "theme",
+ "theme_settings",
  "util",
  "workspace",
  "zed_actions",
@@ -11561,6 +11579,7 @@ dependencies = [
  "settings",
  "telemetry",
  "theme",
+ "theme_settings",
  "ui",
  "util",
  "vim_mode_setting",
@@ -11667,6 +11686,7 @@ dependencies = [
  "serde_json",
  "settings",
  "theme",
+ "theme_settings",
  "ui",
  "util",
  "workspace",
@@ -11845,6 +11865,7 @@ dependencies = [
  "settings",
  "smol",
  "theme",
+ "theme_settings",
  "ui",
  "util",
  "workspace",
@@ -11877,6 +11898,7 @@ dependencies = [
  "smallvec",
  "smol",
  "theme",
+ "theme_settings",
  "ui",
  "util",
  "workspace",
@@ -12742,6 +12764,7 @@ dependencies = [
  "serde",
  "settings",
  "theme",
+ "theme_settings",
  "ui",
  "ui_input",
  "workspace",
@@ -12850,6 +12873,7 @@ dependencies = [
  "settings",
  "smallvec",
  "theme",
+ "theme_settings",
  "ui",
  "windows 0.61.3",
  "workspace",
@@ -13348,6 +13372,7 @@ dependencies = [
  "telemetry",
  "tempfile",
  "theme",
+ "theme_settings",
  "ui",
  "util",
  "workspace",
@@ -13374,6 +13399,7 @@ dependencies = [
  "serde_json",
  "settings",
  "theme",
+ "theme_settings",
  "util",
  "workspace",
 ]
@@ -14367,7 +14393,7 @@ dependencies = [
  "remote",
  "semver",
  "settings",
- "theme",
+ "theme_settings",
  "ui",
  "ui_input",
  "workspace",
@@ -14435,6 +14461,7 @@ dependencies = [
  "sysinfo 0.37.2",
  "task",
  "theme",
+ "theme_settings",
  "thiserror 2.0.17",
  "toml 0.8.23",
  "unindent",
@@ -14505,6 +14532,7 @@ dependencies = [
  "terminal",
  "terminal_view",
  "theme",
+ "theme_settings",
  "tree-sitter-md",
  "tree-sitter-python",
  "tree-sitter-typescript",
@@ -14844,7 +14872,7 @@ dependencies = [
  "rope",
  "serde",
  "settings",
- "theme",
+ "theme_settings",
  "ui",
  "ui_input",
  "util",
@@ -14880,9 +14908,9 @@ dependencies = [
 
 [[package]]
 name = "rust-embed"
-version = "8.7.2"
+version = "8.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "025908b8682a26ba8d12f6f2d66b987584a4a87bc024abc5bbc12553a8cd178a"
+checksum = "04113cb9355a377d83f06ef1f0a45b8ab8cd7d8b1288160717d66df5c7988d27"
 dependencies = [
  "rust-embed-impl",
  "rust-embed-utils",
@@ -14891,9 +14919,9 @@ dependencies = [
 
 [[package]]
 name = "rust-embed-impl"
-version = "8.7.2"
+version = "8.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6065f1a4392b71819ec1ea1df1120673418bf386f50de1d6f54204d836d4349c"
+checksum = "da0902e4c7c8e997159ab384e6d0fc91c221375f6894346ae107f47dd0f3ccaa"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -14904,9 +14932,9 @@ dependencies = [
 
 [[package]]
 name = "rust-embed-utils"
-version = "8.7.2"
+version = "8.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6cc0c81648b20b70c491ff8cce00c1c3b223bb8ed2b5d41f0e54c6c4c0a3594"
+checksum = "5bcdef0be6fe7f6fa333b1073c949729274b05f123a0ad7efcb8efd878e5c3b1"
 dependencies = [
  "globset",
  "sha2",
@@ -15258,6 +15286,7 @@ dependencies = [
  "serde_json",
  "settings",
  "theme",
+ "theme_settings",
 ]
 
 [[package]]
@@ -15481,6 +15510,7 @@ dependencies = [
  "settings",
  "smol",
  "theme",
+ "theme_settings",
  "tracing",
  "ui",
  "unindent",
@@ -15825,6 +15855,7 @@ dependencies = [
  "serde_json",
  "settings",
  "theme",
+ "theme_settings",
  "ui",
  "workspace",
  "zed_actions",
@@ -15873,6 +15904,7 @@ dependencies = [
  "strum 0.27.2",
  "telemetry",
  "theme",
+ "theme_settings",
  "title_bar",
  "ui",
  "util",
@@ -16008,6 +16040,7 @@ dependencies = [
  "serde_json",
  "settings",
  "theme",
+ "theme_settings",
  "ui",
  "util",
  "vim_mode_setting",
@@ -16663,6 +16696,7 @@ dependencies = [
  "story",
  "strum 0.27.2",
  "theme",
+ "theme_settings",
  "title_bar",
  "ui",
 ]
@@ -17313,6 +17347,7 @@ dependencies = [
  "settings",
  "smol",
  "theme",
+ "theme_settings",
  "ui",
  "util",
  "workspace",
@@ -17497,6 +17532,7 @@ dependencies = [
  "sysinfo 0.37.2",
  "task",
  "theme",
+ "theme_settings",
  "thiserror 2.0.17",
  "url",
  "urlencoding",
@@ -17544,6 +17580,7 @@ dependencies = [
  "task",
  "terminal",
  "theme",
+ "theme_settings",
  "ui",
  "util",
  "workspace",
@@ -17578,10 +17615,7 @@ dependencies = [
  "anyhow",
  "collections",
  "derive_more",
- "fs",
- "futures 0.3.31",
  "gpui",
- "log",
  "palette",
  "parking_lot",
  "refineable",
@@ -17592,7 +17626,6 @@ dependencies = [
  "settings",
  "strum 0.27.2",
  "thiserror 2.0.17",
- "util",
  "uuid",
 ]
 
@@ -17605,6 +17638,7 @@ dependencies = [
  "fs",
  "gpui",
  "theme",
+ "theme_settings",
 ]
 
 [[package]]
@@ -17624,6 +17658,7 @@ dependencies = [
  "simplelog",
  "strum 0.27.2",
  "theme",
+ "theme_settings",
  "vscode_theme",
 ]
 
@@ -17640,10 +17675,31 @@ dependencies = [
  "settings",
  "telemetry",
  "theme",
+ "theme_settings",
  "ui",
  "util",
  "workspace",
  "zed_actions",
+]
+
+[[package]]
+name = "theme_settings"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "collections",
+ "gpui",
+ "gpui_util",
+ "log",
+ "palette",
+ "refineable",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_json_lenient",
+ "settings",
+ "theme",
+ "uuid",
 ]
 
 [[package]]
@@ -18778,6 +18834,7 @@ dependencies = [
  "documented",
  "gpui",
  "gpui_macros",
+ "gpui_util",
  "icons",
  "itertools 0.14.0",
  "menu",
@@ -18788,8 +18845,8 @@ dependencies = [
  "story",
  "strum 0.27.2",
  "theme",
+ "theme_settings",
  "ui_macros",
- "util",
  "windows 0.61.3",
 ]
 
@@ -18820,7 +18877,7 @@ dependencies = [
  "markdown",
  "menu",
  "settings",
- "theme",
+ "theme_settings",
  "ui",
  "workspace",
 ]
@@ -19220,6 +19277,7 @@ dependencies = [
  "task",
  "text",
  "theme",
+ "theme_settings",
  "tokio",
  "ui",
  "util",
@@ -20347,7 +20405,7 @@ dependencies = [
  "gpui",
  "serde",
  "settings",
- "theme",
+ "theme_settings",
  "ui",
  "util",
  "workspace",
@@ -21569,6 +21627,7 @@ dependencies = [
  "telemetry",
  "tempfile",
  "theme",
+ "theme_settings",
  "ui",
  "util",
  "uuid",
@@ -22130,6 +22189,7 @@ dependencies = [
  "theme",
  "theme_extension",
  "theme_selector",
+ "theme_settings",
  "time",
  "time_format",
  "title_bar",

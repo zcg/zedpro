@@ -204,8 +204,9 @@ use task::TaskVariables;
 use text::{BufferId, FromAnchor, OffsetUtf16, Rope, ToOffset as _, ToPoint as _};
 use theme::{
     AccentColors, ActiveTheme, GlobalTheme, PlayerColor, StatusColors, SyntaxTheme, Theme,
-    ThemeSettings, material_surface_color, observe_buffer_font_size_adjustment,
+    material_surface_color,
 };
+use theme_settings::{ThemeSettings, observe_buffer_font_size_adjustment};
 use ui::{
     Avatar, ButtonSize, ButtonStyle, ContextMenu, Disclosure, IconButton, IconButtonShape,
     IconName, IconSize, Indicator, Key, Tooltip, h_flex, prelude::*, scrollbars::ScrollbarAutoHide,
@@ -9939,7 +9940,11 @@ impl Editor {
         h_flex()
             .px_0p5()
             .when(is_platform_style_mac, |parent| parent.gap_0p5())
-            .font(theme::ThemeSettings::get_global(cx).buffer_font.clone())
+            .font(
+                theme_settings::ThemeSettings::get_global(cx)
+                    .buffer_font
+                    .clone(),
+            )
             .text_size(TextSize::XSmall.rems(cx))
             .child(h_flex().children(ui::render_modifiers(
                 keystroke.modifiers(),
@@ -9953,7 +9958,7 @@ impl Editor {
             })
             .when(!is_platform_style_mac, |parent| {
                 parent.child(
-                    Key::new(util::capitalize(keystroke.key()), Some(Color::Default))
+                    Key::new(ui::utils::capitalize(keystroke.key()), Some(Color::Default))
                         .size(Some(IconSize::XSmall.rems().into())),
                 )
             })
@@ -9970,7 +9975,11 @@ impl Editor {
 
         if keystroke.modifiers().modified() {
             h_flex()
-                .font(theme::ThemeSettings::get_global(cx).buffer_font.clone())
+                .font(
+                    theme_settings::ThemeSettings::get_global(cx)
+                        .buffer_font
+                        .clone(),
+                )
                 .when(is_platform_style_mac, |parent| parent.gap_1())
                 .child(h_flex().children(ui::render_modifiers(
                     keystroke.modifiers(),
@@ -9981,7 +9990,7 @@ impl Editor {
                 )))
                 .into_any()
         } else {
-            Key::new(util::capitalize(keystroke.key()), Some(color))
+            Key::new(ui::utils::capitalize(keystroke.key()), Some(color))
                 .size(Some(IconSize::XSmall.rems().into()))
                 .into_any_element()
         }
@@ -10476,7 +10485,11 @@ impl Editor {
                         .gap_2()
                         .pr_1()
                         .overflow_x_hidden()
-                        .font(theme::ThemeSettings::get_global(cx).buffer_font.clone())
+                        .font(
+                            theme_settings::ThemeSettings::get_global(cx)
+                                .buffer_font
+                                .clone(),
+                        )
                         .child(left)
                         .child(preview),
                 )
@@ -16122,11 +16135,8 @@ impl Editor {
         };
 
         let mut new_selections = Vec::new();
-
-        let reversed = self
-            .selections
-            .oldest::<MultiBufferOffset>(&display_map)
-            .reversed;
+        let initial_selection = self.selections.oldest::<MultiBufferOffset>(&display_map);
+        let reversed = initial_selection.reversed;
         let buffer = display_map.buffer_snapshot();
         let query_matches = select_next_state
             .query
@@ -16140,21 +16150,33 @@ impl Editor {
                 MultiBufferOffset(query_match.start())..MultiBufferOffset(query_match.end())
             };
 
-            if !select_next_state.wordwise
-                || (!buffer.is_inside_word(offset_range.start, None)
-                    && !buffer.is_inside_word(offset_range.end, None))
-            {
-                new_selections.push(offset_range.start..offset_range.end);
+            let is_partial_word_match = select_next_state.wordwise
+                && (buffer.is_inside_word(offset_range.start, None)
+                    || buffer.is_inside_word(offset_range.end, None));
+
+            let is_initial_selection = MultiBufferOffset(query_match.start())
+                == initial_selection.start
+                && MultiBufferOffset(query_match.end()) == initial_selection.end;
+
+            if !is_partial_word_match && !is_initial_selection {
+                new_selections.push(offset_range);
             }
         }
 
+        // Ensure that the initial range is the last selection, as
+        // `MutableSelectionsCollection::select_ranges` makes the last selection
+        // the newest selection, which the editor then relies on as the primary
+        // cursor for scroll targeting. Without this, the last match would then
+        // be automatically focused when the user started editing the selected
+        // matches.
+        let initial_directed_range = if reversed {
+            initial_selection.end..initial_selection.start
+        } else {
+            initial_selection.start..initial_selection.end
+        };
+        new_selections.push(initial_directed_range);
+
         select_next_state.done = true;
-
-        if new_selections.is_empty() {
-            log::error!("bug: new_selections is empty in select_all_matches");
-            return Ok(());
-        }
-
         self.unfold_ranges(&new_selections, false, false, cx);
         self.change_selections(SelectionEffects::no_scroll(), window, cx, |selections| {
             selections.select_ranges(new_selections)
@@ -24440,7 +24462,7 @@ impl Editor {
             return None;
         }
 
-        let theme_settings = theme::ThemeSettings::get_global(cx);
+        let theme_settings = theme_settings::ThemeSettings::get_global(cx);
         let theme = cx.theme();
         let accent_colors = theme.accents().clone();
 
