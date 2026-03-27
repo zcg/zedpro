@@ -1396,22 +1396,28 @@ impl Window {
         });
         platform_window.on_move_tab_to_new_window({
             let mut cx = cx.to_async();
+            let window_id = handle.window_id();
             Box::new(move || {
-                handle
-                    .update(&mut cx, |_, _window, cx| {
-                        SystemWindowTabController::move_tab_to_new_window(cx, handle.window_id());
-                    })
-                    .log_err();
+                cx.update(|cx| {
+                    cx.defer(move |cx| {
+                        SystemWindowTabController::move_tab_to_new_window_and_sync_platform(
+                            cx, window_id,
+                        );
+                    });
+                });
             })
         });
         platform_window.on_merge_all_windows({
             let mut cx = cx.to_async();
+            let window_id = handle.window_id();
             Box::new(move || {
-                handle
-                    .update(&mut cx, |_, _window, cx| {
-                        SystemWindowTabController::merge_all_windows(cx, handle.window_id());
-                    })
-                    .log_err();
+                cx.update(|cx| {
+                    cx.defer(move |cx| {
+                        SystemWindowTabController::merge_all_windows_and_sync_platform(
+                            cx, window_id,
+                        );
+                    });
+                });
             })
         });
         platform_window.on_select_next_tab({
