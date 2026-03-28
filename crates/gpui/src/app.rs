@@ -690,8 +690,7 @@ impl SystemWindowTabController {
             .find(|handle| handle.window_id() == id)
     }
 
-    /// Windows-only helper: merge tab state and trigger platform regrouping in one place.
-    #[cfg(target_os = "windows")]
+    /// Merge tab state and, on Windows, trigger platform regrouping in one place.
     pub fn merge_window_into_group_and_sync_platform(
         cx: &mut App,
         source_id: WindowId,
@@ -703,9 +702,14 @@ impl SystemWindowTabController {
             return;
         }
 
+        let mut to_refresh = Self::tab_group_window_ids(cx, source_id);
+        to_refresh.extend(Self::tab_group_window_ids(cx, target_id));
+
+        #[cfg(target_os = "windows")]
         let Some(target_handle) = Self::find_window_handle(cx, target_id) else {
             return;
         };
+        #[cfg(target_os = "windows")]
         let Ok((target_identifier, target_hwnd)) =
             target_handle.update(cx, |_, target_window, _| {
                 (
@@ -716,23 +720,25 @@ impl SystemWindowTabController {
         else {
             return;
         };
+        #[cfg(target_os = "windows")]
         let Some(target_identifier) = target_identifier else {
             return;
         };
+        #[cfg(target_os = "windows")]
         let Some(source_handle) = Self::find_window_handle(cx, source_id) else {
             return;
         };
 
+        #[cfg(target_os = "windows")]
         Self::sync_window_snapshot_from_platform(cx, source_id);
+        #[cfg(target_os = "windows")]
         Self::sync_window_snapshot_from_platform(cx, target_id);
-
-        let mut to_refresh = Self::tab_group_window_ids(cx, source_id);
-        to_refresh.extend(Self::tab_group_window_ids(cx, target_id));
 
         Self::merge_window_into_group(cx, source_id, target_id, insert_ix);
         Self::refresh_window_ids(cx, to_refresh);
 
         // Delegate actual window regrouping to the platform abstraction.
+        #[cfg(target_os = "windows")]
         let _ = source_handle.update(cx, |_, source_window, _| {
             source_window.merge_into_tabbing_group(target_identifier, target_hwnd);
         });
@@ -763,8 +769,7 @@ impl SystemWindowTabController {
         controller.tab_groups.insert(0, all_tabs);
     }
 
-    /// Windows-only helper: update controller state and request platform merge-all.
-    #[cfg(target_os = "windows")]
+    /// Update controller state and, on Windows, request platform merge-all.
     pub fn merge_all_windows_and_sync_platform(cx: &mut App, id: WindowId) {
         let to_refresh = cx
             .windows()
@@ -775,6 +780,7 @@ impl SystemWindowTabController {
         Self::merge_all_windows(cx, id);
         Self::refresh_window_ids(cx, to_refresh);
 
+        #[cfg(target_os = "windows")]
         if let Some(handle) = Self::find_window_handle(cx, id) {
             let _ = handle.update(cx, |_, window, _| {
                 window.merge_all_windows();
@@ -782,13 +788,13 @@ impl SystemWindowTabController {
         }
     }
 
-    /// Windows-only helper: update controller state and request platform detach.
-    #[cfg(target_os = "windows")]
+    /// Update controller state and, on Windows, request platform detach.
     pub fn move_tab_to_new_window_and_sync_platform(cx: &mut App, id: WindowId) {
         let to_refresh = Self::tab_group_window_ids(cx, id);
         Self::move_tab_to_new_window(cx, id);
         Self::refresh_window_ids(cx, to_refresh);
 
+        #[cfg(target_os = "windows")]
         if let Some(handle) = Self::find_window_handle(cx, id) {
             let _ = handle.update(cx, |_, window, _| {
                 window.move_tab_to_new_window();
@@ -796,8 +802,7 @@ impl SystemWindowTabController {
         }
     }
 
-    /// Windows-only helper: detach a set of windows into independent groups.
-    #[cfg(target_os = "windows")]
+    /// Detach a set of windows into independent groups and, on Windows, sync the platform tabs.
     pub fn move_tabs_to_new_windows_and_sync_platform(cx: &mut App, window_ids: Vec<WindowId>) {
         let unique_window_ids = window_ids.into_iter().collect::<FxHashSet<_>>();
         if unique_window_ids.is_empty() {
@@ -810,6 +815,7 @@ impl SystemWindowTabController {
         }
         Self::refresh_window_ids(cx, to_refresh);
 
+        #[cfg(target_os = "windows")]
         for window_id in unique_window_ids {
             if let Some(handle) = Self::find_window_handle(cx, window_id) {
                 let _ = handle.update(cx, |_, window, _| {
