@@ -464,7 +464,6 @@ fn devcontainer_host_from_remote_options(
             user: options.user.clone(),
         }),
         RemoteConnectionOptions::Docker(_) => None,
-        #[cfg(any(test, feature = "test-support"))]
         RemoteConnectionOptions::Mock(_) => None,
     }
 }
@@ -819,7 +818,6 @@ fn build_remote_command(
         RemoteConnectionOptions::Docker(_) => Err(DevContainerError::DevContainerUpFailed(
             "Unsupported remote connection for devcontainer command".to_string(),
         )),
-        #[cfg(any(test, feature = "test-support"))]
         RemoteConnectionOptions::Mock(_) => Err(DevContainerError::DevContainerUpFailed(
             "Unsupported remote connection for devcontainer command".to_string(),
         )),

@@ -89,7 +89,6 @@ impl DevContainerContext {
                     };
                     (host_remote, Some(options))
                 }
-                #[cfg(any(test, feature = "test-support"))]
                 Some(RemoteConnectionOptions::Mock(_)) => (None, None),
                 None => (None, None),
             };

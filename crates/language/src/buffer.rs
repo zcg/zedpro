@@ -5871,6 +5871,7 @@ impl File for TestFile {
         if self.local_root.is_some() {
             DiskState::Present {
                 mtime: MTime::from_seconds_and_nanos(0, 0),
+                size: 0,
             }
         } else {
             DiskState::New

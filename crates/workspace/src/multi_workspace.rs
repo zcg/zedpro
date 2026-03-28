@@ -827,7 +827,7 @@ impl MultiWorkspace {
             #[cfg(target_os = "windows")]
             {
                 let Some(target_window_handle) = window.window_handle().downcast::<Self>() else {
-                    return;
+                    return Task::ready(());
                 };
                 let create_window_task =
                     Workspace::new_local(Vec::new(), app_state, None, None, None, true, cx);
@@ -877,7 +877,7 @@ impl MultiWorkspace {
                 crate::open_new(crate::OpenOptions::default(), app_state, cx, |_, _, _| {})
                     .detach_and_log_err(cx);
             }
-            return;
+            return Task::ready(());
         }
 
         let project = Project::local(
