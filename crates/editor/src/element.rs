@@ -4519,7 +4519,8 @@ impl EditorElement {
         );
 
         let editor_bg_color = cx.theme().colors().editor_background;
-        let sticky_subheader_bg = workspace::material_sticky_surface_color(editor_bg_color, 0.9, cx);
+        let sticky_subheader_bg =
+            workspace::material_sticky_surface_color(editor_bg_color, 0.9, cx);
 
         let selected = selected_buffer_ids.contains(&excerpt.buffer_id);
 

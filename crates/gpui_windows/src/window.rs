@@ -61,7 +61,7 @@ pub struct WindowsWindowState {
     pub last_reported_modifiers: Cell<Option<Modifiers>>,
     pub last_reported_capslock: Cell<Option<Capslock>>,
     pub hovered: Cell<bool>,
-    pub direct_manipulation: DirectManipulationHandler,
+    pub direct_manipulation: RefCell<Option<DirectManipulationHandler>>,
 
     pub renderer: RefCell<WindowRenderer>,
 
@@ -178,8 +178,12 @@ impl WindowsWindowState {
             invalidate_devices,
             tabbing_identifier: Cell::new(None),
             tab_bar_visible: Cell::new(false),
-            direct_manipulation,
+            direct_manipulation: RefCell::new(Some(direct_manipulation)),
         })
+    }
+
+    pub(crate) fn clear_direct_manipulation(&self) {
+        self.direct_manipulation.borrow_mut().take();
     }
 
     #[inline]

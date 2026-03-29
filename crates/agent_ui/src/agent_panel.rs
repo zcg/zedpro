@@ -4009,7 +4009,11 @@ impl AgentPanel {
             .justify_between()
             .gap_2()
             .bg(if workspace::has_custom_window_background_material(cx) {
-                workspace::material_sticky_surface_color(cx.theme().colors().panel_background, 0.86, cx)
+                workspace::material_sticky_surface_color(
+                    cx.theme().colors().panel_background,
+                    0.86,
+                    cx,
+                )
             } else {
                 cx.theme().colors().ghost_element_background
             })
@@ -4307,7 +4311,10 @@ impl AgentPanel {
             div()
                 .when(text_thread_view, |this| {
                     this.bg(if workspace::has_custom_window_background_material(cx) {
-                        workspace::material_panel_backdrop_color(cx.theme().colors().panel_background, cx)
+                        workspace::material_panel_backdrop_color(
+                            cx.theme().colors().panel_background,
+                            cx,
+                        )
                     } else {
                         cx.theme().colors().ghost_element_background
                     })
@@ -4628,9 +4635,10 @@ impl Render for AgentPanel {
             .relative()
             .size_full()
             .justify_between()
-            .when(!workspace::has_custom_window_background_material(cx), |this| {
-                this.bg(cx.theme().colors().ghost_element_background)
-            })
+            .when(
+                !workspace::has_custom_window_background_material(cx),
+                |this| this.bg(cx.theme().colors().ghost_element_background),
+            )
             .when(self.zoomed, |this| {
                 this.occlude().bg(material_popup_surface_color(
                     cx.theme().colors().panel_background,

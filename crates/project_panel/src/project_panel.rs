@@ -6682,12 +6682,15 @@ impl Render for ProjectPanel {
                 .track_focus(&self.focus_handle(cx))
                 .child(
                     v_flex()
-                        .when(workspace::has_custom_window_background_material(cx), |this| {
-                            this.bg(workspace::material_panel_backdrop_color(
-                                cx.theme().colors().panel_background,
-                                cx,
-                            ))
-                        })
+                        .when(
+                            workspace::has_custom_window_background_material(cx),
+                            |this| {
+                                this.bg(workspace::material_panel_backdrop_color(
+                                    cx.theme().colors().panel_background,
+                                    cx,
+                                ))
+                            },
+                        )
                         .child(
                             uniform_list("entries", item_count, {
                                 cx.processor(|this, range: Range<usize>, window, cx| {
