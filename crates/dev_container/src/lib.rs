@@ -69,6 +69,7 @@ impl DevContainerContext {
         let (project_directory, remote_connection, docker_connection) = {
             let project = workspace.project().read(cx);
             let project_directory = project.active_project_directory(cx)?;
+            #[allow(unreachable_patterns)]
             let (remote_connection, docker_connection) = match project.remote_connection_options(cx)
             {
                 Some(RemoteConnectionOptions::Ssh(options)) => {
@@ -89,7 +90,7 @@ impl DevContainerContext {
                     };
                     (host_remote, Some(options))
                 }
-                Some(RemoteConnectionOptions::Mock(_)) => (None, None),
+                Some(_) => (None, None),
                 None => (None, None),
             };
             (project_directory, remote_connection, docker_connection)

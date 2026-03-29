@@ -147,9 +147,13 @@ pub trait RemoteClientDelegate: Send + Sync {
 
 const MAX_MISSED_HEARTBEATS: usize = 5;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
+// Windows debug builds routinely run a slower remote server when WSL/dev container
+// setup is compiling and uploading binaries on demand. Give heartbeats more headroom
+// there so a busy server is less likely to be treated as disconnected.
+const HEARTBEAT_TIMEOUT: Duration =
+    Duration::from_secs(if cfg!(debug_assertions) { 15 } else { 5 });
 const INITIAL_CONNECTION_TIMEOUT: Duration =
-    Duration::from_secs(if cfg!(debug_assertions) { 5 } else { 60 });
+    Duration::from_secs(if cfg!(debug_assertions) { 30 } else { 60 });
 
 pub const MAX_RECONNECT_ATTEMPTS: usize = 3;
 

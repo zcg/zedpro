@@ -452,6 +452,7 @@ pub async fn start_dev_container_with_progress(
 fn devcontainer_host_from_remote_options(
     options: &RemoteConnectionOptions,
 ) -> Option<DevContainerHost> {
+    #[allow(unreachable_patterns)]
     match options {
         RemoteConnectionOptions::Ssh(options) => Some(DevContainerHost::Ssh {
             host: options.host.to_string(),
@@ -464,7 +465,7 @@ fn devcontainer_host_from_remote_options(
             user: options.user.clone(),
         }),
         RemoteConnectionOptions::Docker(_) => None,
-        RemoteConnectionOptions::Mock(_) => None,
+        _ => None,
     }
 }
 
@@ -721,6 +722,7 @@ fn build_remote_command(
     args: &[String],
     interactive: bool,
 ) -> Result<Command, DevContainerError> {
+    #[allow(unreachable_patterns)]
     match options {
         RemoteConnectionOptions::Wsl(options) => {
             #[cfg(target_os = "windows")]
@@ -818,7 +820,7 @@ fn build_remote_command(
         RemoteConnectionOptions::Docker(_) => Err(DevContainerError::DevContainerUpFailed(
             "Unsupported remote connection for devcontainer command".to_string(),
         )),
-        RemoteConnectionOptions::Mock(_) => Err(DevContainerError::DevContainerUpFailed(
+        _ => Err(DevContainerError::DevContainerUpFailed(
             "Unsupported remote connection for devcontainer command".to_string(),
         )),
     }
