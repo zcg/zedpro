@@ -26,6 +26,7 @@ use windows::{
     core::*,
 };
 
+use crate::direct_manipulation::DirectManipulationHandler;
 use crate::*;
 use gpui::*;
 
@@ -60,6 +61,7 @@ pub struct WindowsWindowState {
     pub last_reported_modifiers: Cell<Option<Modifiers>>,
     pub last_reported_capslock: Cell<Option<Capslock>>,
     pub hovered: Cell<bool>,
+    pub direct_manipulation: DirectManipulationHandler,
 
     pub renderer: RefCell<WindowRenderer>,
 
@@ -142,6 +144,9 @@ impl WindowsWindowState {
         let fullscreen = None;
         let initial_placement = None;
 
+        let direct_manipulation = DirectManipulationHandler::new(hwnd, scale_factor)
+            .context("initializing Direct Manipulation")?;
+
         Ok(Self {
             origin: Cell::new(origin),
             logical_size: Cell::new(logical_size),
@@ -173,6 +178,7 @@ impl WindowsWindowState {
             invalidate_devices,
             tabbing_identifier: Cell::new(None),
             tab_bar_visible: Cell::new(false),
+            direct_manipulation,
         })
     }
 
