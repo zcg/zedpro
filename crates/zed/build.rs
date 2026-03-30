@@ -74,10 +74,8 @@ fn main() {
         }
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        #[cfg(target_env = "msvc")]
-        {
+    if cfg!(windows) {
+        if cfg!(target_env = "msvc") {
             // todo(windows): This is to avoid stack overflow. Remove it when solved.
             println!("cargo:rustc-link-arg=/stack:{}", 8 * 1024 * 1024);
         }
@@ -219,21 +217,24 @@ fn main() {
         println!("cargo:rerun-if-env-changed=RELEASE_CHANNEL");
         println!("cargo:rerun-if-changed={}", icon.display());
 
-        let mut res = winresource::WindowsResource::new();
+        #[cfg(windows)]
+        {
+            let mut res = winresource::WindowsResource::new();
 
-        // Depending on the security applied to the computer, winresource might fail
-        // fetching the RC path. Therefore, we add a way to explicitly specify the
-        // toolkit path, allowing winresource to use a valid RC path.
-        if let Some(explicit_rc_toolkit_path) = std::env::var("ZED_RC_TOOLKIT_PATH").ok() {
-            res.set_toolkit_path(explicit_rc_toolkit_path.as_str());
-        }
-        res.set_icon(icon.to_str().unwrap());
-        res.set("FileDescription", "ZedPro");
-        res.set("ProductName", "ZedPro");
+            // Depending on the security applied to the computer, winresource might fail
+            // fetching the RC path. Therefore, we add a way to explicitly specify the
+            // toolkit path, allowing winresource to use a valid RC path.
+            if let Some(explicit_rc_toolkit_path) = std::env::var("ZED_RC_TOOLKIT_PATH").ok() {
+                res.set_toolkit_path(explicit_rc_toolkit_path.as_str());
+            }
+            res.set_icon(icon.to_str().unwrap());
+            res.set("FileDescription", "ZedPro");
+            res.set("ProductName", "ZedPro");
 
-        if let Err(e) = res.compile() {
-            eprintln!("{}", e);
-            std::process::exit(1);
+            if let Err(e) = res.compile() {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
         }
     }
 }
