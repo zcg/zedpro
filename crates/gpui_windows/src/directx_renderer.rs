@@ -77,12 +77,23 @@ impl WindowRenderer {
         let recovered_backend = directx_devices.active_backend();
         if self.active_backend() != recovered_backend {
             let hwnd = self.hwnd();
-            let disable_direct_composition = self.disable_direct_composition();
+            let disable_direct_composition = self.disable_direct_composition()
+                || matches!(
+                    (self.active_backend(), recovered_backend),
+                    (DirectXBackend::Direct3d12, DirectXBackend::Direct3d11)
+                );
             log::warn!(
                 "Switching window renderer from {} to {} after GPU device recovery.",
                 self.active_backend().display_name(),
                 recovered_backend.display_name()
             );
+            if disable_direct_composition && !self.disable_direct_composition() {
+                log::warn!(
+                    "Disabling Direct Composition while recreating the {} renderer after a {} device-loss recovery.",
+                    recovered_backend.display_name(),
+                    self.active_backend().display_name()
+                );
+            }
             *self = Self::new(hwnd, directx_devices, disable_direct_composition)
                 .context("Recreating window renderer after GPU backend switch")?;
             return Ok(());
