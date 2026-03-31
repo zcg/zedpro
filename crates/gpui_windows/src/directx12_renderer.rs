@@ -22,6 +22,8 @@ use windows::{
                 D3D_PRIMITIVE_TOPOLOGY, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
                 D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
             },
+            Direct3D11::{D3D11_CREATE_DEVICE_BGRA_SUPPORT, ID3D11Device, ID3D11DeviceContext},
+            Direct3D11on12::{D3D11On12CreateDevice, ID3D11On12Device},
             Direct3D12::*,
             DirectComposition::{
                 DCompositionCreateDevice2, IDCompositionDevice, IDCompositionTarget,
@@ -48,6 +50,7 @@ const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 const PATH_MULTISAMPLE_COUNT: u32 = 4;
 const RTV_DESCRIPTOR_COUNT: usize = BUFFER_COUNT + 1;
 const SRV_DESCRIPTOR_COUNT: usize = 4096;
+const DIRECT_COMPOSITION_CLEAR_ALPHA_FLOOR: f32 = 1.0 / 255.0;
 
 pub(crate) struct DirectX12Renderer {
     hwnd: HWND,
@@ -72,6 +75,10 @@ struct DirectX12RendererDevices {
     dxgi_factory: IDXGIFactory6,
     device: ID3D12Device,
     command_queue: ID3D12CommandQueue,
+    _d3d11_device: Option<ID3D11Device>,
+    _d3d11_device_context: Option<ID3D11DeviceContext>,
+    _d3d11_on12_device: Option<ID3D11On12Device>,
+    dxgi_device: Option<IDXGIDevice>,
     executors: Vec<DirectX12ImmediateExecutor>,
     fence: DirectX12Fence,
     root_signature: ID3D12RootSignature,
@@ -273,8 +280,14 @@ impl DirectX12Renderer {
         let direct_composition = if disable_direct_composition {
             None
         } else {
-            let composition = DirectCompositionLayer::new(hwnd)
-                .context("Creating DirectComposition for Direct3D 12")?;
+            let composition = DirectCompositionLayer::new(
+                devices
+                    .dxgi_device
+                    .as_ref()
+                    .context("Missing Direct3D 11-on-12 DXGI bridge device")?,
+                hwnd,
+            )
+            .context("Creating DirectComposition for Direct3D 12")?;
             composition
                 .set_swap_chain(&resources.swap_chain)
                 .context("Binding Direct3D 12 swap chain to DirectComposition")?;
@@ -333,14 +346,20 @@ impl DirectX12Renderer {
         let direct_composition = if disable_direct_composition {
             None
         } else {
-            match DirectCompositionLayer::new(self.hwnd)
-                .context("Recreating DirectComposition for Direct3D 12")
-                .and_then(|composition| {
-                    composition
-                        .set_swap_chain(&resources.swap_chain)
-                        .context("Rebinding Direct3D 12 swap chain to DirectComposition")?;
-                    Ok(composition)
-                }) {
+            match DirectCompositionLayer::new(
+                devices
+                    .dxgi_device
+                    .as_ref()
+                    .context("Missing Direct3D 11-on-12 DXGI bridge device")?,
+                self.hwnd,
+            )
+            .context("Recreating DirectComposition for Direct3D 12")
+            .and_then(|composition| {
+                composition
+                    .set_swap_chain(&resources.swap_chain)
+                    .context("Rebinding Direct3D 12 swap chain to DirectComposition")?;
+                Ok(composition)
+            }) {
                 Ok(composition) => Some(composition),
                 Err(error) => {
                     log::warn!(
@@ -390,6 +409,9 @@ impl DirectX12Renderer {
 
         let clear_color = match background_appearance {
             WindowBackgroundAppearance::Opaque => [1.0, 1.0, 1.0, 1.0],
+            _ if self.direct_composition.is_some() => {
+                [0.0, 0.0, 0.0, DIRECT_COMPOSITION_CLEAR_ALPHA_FLOOR]
+            }
             _ => [0.0, 0.0, 0.0, 0.0],
         };
 
@@ -1031,6 +1053,48 @@ impl DirectX12RendererDevices {
                 .CreateCommandQueue(&command_queue_desc)
                 .context("Creating Direct3D 12 command queue")?
         };
+        let (d3d11_device, d3d11_device_context, d3d11_on12_device, dxgi_device) =
+            if _disable_direct_composition {
+                (None, None, None, None)
+            } else {
+                let rendering_device: windows::core::IUnknown = device
+                    .cast()
+                    .context("Casting Direct3D 12 device for Direct3D 11-on-12")?;
+                let rendering_queue: windows::core::IUnknown = command_queue
+                    .cast()
+                    .context("Casting Direct3D 12 command queue for Direct3D 11-on-12")?;
+                let mut d3d11_device = None;
+                let mut d3d11_device_context = None;
+                unsafe {
+                    D3D11On12CreateDevice(
+                        &rendering_device,
+                        D3D11_CREATE_DEVICE_BGRA_SUPPORT.0 as u32,
+                        None,
+                        Some(&[Some(rendering_queue)]),
+                        0,
+                        Some(&mut d3d11_device),
+                        Some(&mut d3d11_device_context),
+                        None,
+                    )
+                    .context("Creating Direct3D 11-on-12 bridge device")?;
+                }
+                let d3d11_device =
+                    d3d11_device.context("Missing Direct3D 11-on-12 bridge device")?;
+                let d3d11_device_context = d3d11_device_context
+                    .context("Missing Direct3D 11-on-12 bridge device context")?;
+                let d3d11_on12_device = d3d11_device
+                    .cast()
+                    .context("Casting Direct3D 11-on-12 bridge device")?;
+                let dxgi_device = d3d11_device
+                    .cast()
+                    .context("Creating DXGI device from Direct3D 11-on-12 bridge")?;
+                (
+                    Some(d3d11_device),
+                    Some(d3d11_device_context),
+                    Some(d3d11_on12_device),
+                    Some(dxgi_device),
+                )
+            };
         let fence = DirectX12Fence::new(&device).context("Creating Direct3D 12 fence")?;
         let executors = (0..BUFFER_COUNT)
             .map(|_| DirectX12ImmediateExecutor::new(&device))
@@ -1071,6 +1135,10 @@ impl DirectX12RendererDevices {
             dxgi_factory,
             device: device.clone(),
             command_queue,
+            _d3d11_device: d3d11_device,
+            _d3d11_device_context: d3d11_device_context,
+            _d3d11_on12_device: d3d11_on12_device,
+            dxgi_device,
             executors,
             fence,
             root_signature,
@@ -1282,12 +1350,9 @@ impl DirectX12RendererResources {
 }
 
 impl DirectCompositionLayer {
-    fn new(hwnd: HWND) -> Result<Self> {
-        let comp_device = unsafe {
-            DCompositionCreateDevice2::<Option<&windows::core::IUnknown>, IDCompositionDevice>(
-                None,
-            )?
-        };
+    fn new(dxgi_device: &IDXGIDevice, hwnd: HWND) -> Result<Self> {
+        let comp_device =
+            unsafe { DCompositionCreateDevice2::<&IDXGIDevice, IDCompositionDevice>(dxgi_device)? };
         let comp_target = unsafe { comp_device.CreateTargetForHwnd(hwnd, true) }?;
         let comp_visual = unsafe { comp_device.CreateVisual() }?;
         Ok(Self {

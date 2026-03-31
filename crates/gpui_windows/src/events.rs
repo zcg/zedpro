@@ -1248,6 +1248,7 @@ impl WindowsWindowInner {
     fn handle_device_lost(&self, lparam: LPARAM) -> Option<isize> {
         let devices = lparam.0 as *const DirectXDevices;
         let devices = unsafe { &*devices };
+        let devices = self.state.effective_recovery_devices(devices);
         if let Err(err) = self
             .state
             .renderer

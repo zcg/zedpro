@@ -64,6 +64,7 @@ pub struct WindowsWindowState {
     pub direct_manipulation: RefCell<Option<DirectManipulationHandler>>,
 
     pub renderer: RefCell<WindowRenderer>,
+    pub renderer_backend_override: Cell<Option<DirectXBackend>>,
 
     pub click_state: ClickState,
     pub current_cursor: Cell<Option<HCURSOR>>,
@@ -109,6 +110,7 @@ impl WindowsWindowState {
         appearance: WindowAppearance,
         disable_direct_composition: bool,
         invalidate_devices: Arc<AtomicBool>,
+        renderer_backend_override: Option<DirectXBackend>,
     ) -> Result<Self> {
         let scale_factor = {
             let monitor_dpi = unsafe { GetDpiForWindow(hwnd) } as f32;
@@ -168,6 +170,7 @@ impl WindowsWindowState {
             last_reported_capslock: Cell::new(last_reported_capslock),
             hovered: Cell::new(hovered),
             renderer: RefCell::new(renderer),
+            renderer_backend_override: Cell::new(renderer_backend_override),
             click_state,
             current_cursor: Cell::new(current_cursor),
             nc_button_pressed: Cell::new(nc_button_pressed),
@@ -184,6 +187,15 @@ impl WindowsWindowState {
 
     pub(crate) fn clear_direct_manipulation(&self) {
         self.direct_manipulation.borrow_mut().take();
+    }
+
+    pub(crate) fn effective_recovery_devices(&self, directx_devices: &DirectXDevices) -> DirectXDevices {
+        match self.renderer_backend_override.get() {
+            Some(backend) if directx_devices.active_backend() != backend => {
+                directx_devices.with_active_backend(backend)
+            }
+            _ => directx_devices.clone(),
+        }
     }
 
     #[inline]
@@ -257,6 +269,7 @@ impl WindowsWindowInner {
             context.appearance,
             context.disable_direct_composition,
             context.invalidate_devices.clone(),
+            context.renderer_backend_override,
         )?;
 
         Ok(Rc::new(Self {
@@ -450,13 +463,14 @@ struct WindowCreateContext {
     directx_devices: DirectXDevices,
     invalidate_devices: Arc<AtomicBool>,
     parent_hwnd: Option<HWND>,
+    renderer_backend_override: Option<DirectXBackend>,
     tab_coordinator: Rc<WindowsTabCoordinator>,
 }
 
 impl WindowsWindow {
     pub(crate) fn new(
         handle: AnyWindowHandle,
-        params: WindowParams,
+        params: &WindowParams,
         creation_info: WindowCreationInfo,
     ) -> Result<Self> {
         let WindowCreationInfo {
@@ -470,23 +484,11 @@ impl WindowsWindow {
             disable_direct_composition,
             directx_devices,
             invalidate_devices,
+            parent_hwnd,
+            renderer_backend_override,
             tab_coordinator,
         } = creation_info;
         register_window_class(icon);
-        let parent_hwnd = if params.kind == WindowKind::Dialog {
-            let parent_window = unsafe { GetActiveWindow() };
-            if parent_window.is_invalid() {
-                None
-            } else {
-                // Disable the parent window to make this dialog modal
-                unsafe {
-                    EnableWindow(parent_window, false).as_bool();
-                };
-                Some(parent_window)
-            }
-        } else {
-            None
-        };
         let hide_title_bar = params
             .titlebar
             .as_ref()
@@ -552,6 +554,7 @@ impl WindowsWindow {
             directx_devices,
             invalidate_devices,
             parent_hwnd,
+            renderer_backend_override,
             tab_coordinator,
         };
         let creation_result = unsafe {

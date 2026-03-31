@@ -67,7 +67,7 @@ pub(crate) struct WindowsPlatformState {
     hidden_other_app_windows: RefCell<Vec<SafeHwnd>>,
     // NOTE: standard cursor handles don't need to close.
     pub(crate) current_cursor: Cell<Option<HCURSOR>>,
-    directx_devices: RefCell<Option<DirectXDevices>>,
+    directx_devices: Arc<RwLock<Option<DirectXDevices>>>,
 }
 
 #[derive(Default)]
@@ -167,7 +167,7 @@ impl WindowsPlatformState {
             callbacks,
             jump_list: RefCell::new(jump_list),
             current_cursor: Cell::new(current_cursor),
-            directx_devices: RefCell::new(directx_devices),
+            directx_devices: Arc::new(RwLock::new(directx_devices)),
             menus: RefCell::new(Vec::new()),
             hidden_other_app_windows: RefCell::new(Vec::new()),
         }
@@ -301,7 +301,12 @@ impl WindowsPlatform {
         }
     }
 
-    fn generate_creation_info(&self) -> WindowCreationInfo {
+    fn generate_creation_info_with_devices(
+        &self,
+        directx_devices: DirectXDevices,
+        parent_hwnd: Option<HWND>,
+        renderer_backend_override: Option<DirectXBackend>,
+    ) -> WindowCreationInfo {
         WindowCreationInfo {
             icon: self.icon,
             executor: self.foreground_executor.clone(),
@@ -311,8 +316,10 @@ impl WindowsPlatform {
             main_receiver: self.inner.main_receiver.clone(),
             platform_window_handle: self.handle,
             disable_direct_composition: self.disable_direct_composition,
-            directx_devices: self.inner.state.directx_devices.borrow().clone().unwrap(),
+            directx_devices,
             invalidate_devices: self.invalidate_devices.clone(),
+            parent_hwnd,
+            renderer_backend_override,
             tab_coordinator: self.tab_coordinator.clone(),
         }
     }
@@ -379,13 +386,13 @@ impl WindowsPlatform {
     }
 
     fn begin_vsync_thread(&self) {
-        let Some(directx_devices) = self.inner.state.directx_devices.borrow().clone() else {
+        if self.inner.state.directx_devices.read().is_none() {
             return;
-        };
+        }
         let Some(direct_write_text_system) = &self.direct_write_text_system else {
             return;
         };
-        let mut directx_device = directx_devices;
+        let directx_devices = self.inner.state.directx_devices.clone();
         let platform_window: SafeHwnd = self.handle.into();
         let validation_number = self.inner.validation_number;
         let all_windows = Arc::downgrade(&self.raw_window_handles);
@@ -398,11 +405,23 @@ impl WindowsPlatform {
                 let vsync_provider = VSyncProvider::new();
                 loop {
                     vsync_provider.wait_for_vsync();
-                    if check_device_lost(&directx_device)
-                        || invalidate_devices.fetch_and(false, Ordering::Acquire)
-                    {
+                    let device_lost = {
+                        let directx_devices = directx_devices.read();
+                        let Some(directx_devices) = directx_devices.as_ref() else {
+                            break;
+                        };
+                        check_device_lost(directx_devices)
+                    };
+                    if device_lost || invalidate_devices.fetch_and(false, Ordering::Acquire) {
+                        let mut recovered_devices = {
+                            let directx_devices = directx_devices.read();
+                            let Some(directx_devices) = directx_devices.as_ref() else {
+                                break;
+                            };
+                            directx_devices.clone()
+                        };
                         if let Err(err) = handle_gpu_device_lost(
-                            &mut directx_device,
+                            &mut recovered_devices,
                             platform_window.as_raw(),
                             validation_number,
                             &all_windows,
@@ -410,6 +429,11 @@ impl WindowsPlatform {
                         ) {
                             panic!("Device lost: {err}");
                         }
+                        let mut directx_devices = directx_devices.write();
+                        let Some(current_devices) = directx_devices.as_mut() else {
+                            break;
+                        };
+                        *current_devices = recovered_devices;
                     }
                     let Some(all_windows) = all_windows.upgrade() else {
                         break;
@@ -646,7 +670,76 @@ impl Platform for WindowsPlatform {
         handle: AnyWindowHandle,
         options: WindowParams,
     ) -> Result<Box<dyn PlatformWindow>> {
-        let window = WindowsWindow::new(handle, options, self.generate_creation_info())?;
+        let parent_hwnd = dialog_parent_hwnd(&options);
+        if let Some(parent_hwnd) = parent_hwnd {
+            unsafe {
+                EnableWindow(parent_hwnd, false).as_bool();
+            };
+        }
+
+        let window = match WindowsWindow::new(
+            handle,
+            &options,
+            self.generate_creation_info_with_devices(
+                self.inner.state.directx_devices.read().clone().unwrap(),
+                parent_hwnd,
+                None,
+            ),
+        ) {
+            Ok(window) => window,
+            Err(error) => {
+                let should_retry = self
+                    .inner
+                    .state
+                    .directx_devices
+                    .read()
+                    .as_ref()
+                    .is_some_and(|directx_devices| {
+                        directx_devices.active_backend() == DirectXBackend::Direct3d12
+                    })
+                    && should_retry_window_creation_with_d3d11(&error);
+                if !should_retry {
+                    restore_modal_parent(parent_hwnd);
+                    return Err(error);
+                }
+
+                let fallback_reason = format!("{error:#}");
+                let fallback_devices =
+                    create_window_creation_fallback_devices().with_context(|| {
+                        format!(
+                            "Recreating {} devices for window-creation fallback after a {} failure",
+                            DirectXBackend::Direct3d11.display_name(),
+                            DirectXBackend::Direct3d12.display_name(),
+                        )
+                    })?;
+                let fallback_window = WindowsWindow::new(
+                    handle,
+                    &options,
+                    self.generate_creation_info_with_devices(
+                        fallback_devices.clone(),
+                        parent_hwnd,
+                        Some(DirectXBackend::Direct3d11),
+                    ),
+                )
+                .with_context(|| {
+                    format!(
+                        "Retrying window creation after falling back to {}",
+                        DirectXBackend::Direct3d11.display_name()
+                    )
+                })
+                .map_err(|error| {
+                    restore_modal_parent(parent_hwnd);
+                    error
+                })?;
+                log::warn!(
+                    "Requested {} window creation failed; retrying only the new window with {} using freshly recreated devices: {}",
+                    DirectXBackend::Direct3d12.display_name(),
+                    DirectXBackend::Direct3d11.display_name(),
+                    fallback_reason
+                );
+                fallback_window
+            }
+        };
         let handle = window.get_raw_handle();
         self.raw_window_handles.write().push(handle.into());
 
@@ -1170,8 +1263,7 @@ impl WindowsPlatformInner {
     fn handle_device_lost(&self, lparam: LPARAM) -> Option<isize> {
         let directx_devices = lparam.0 as *const DirectXDevices;
         let directx_devices = unsafe { &*directx_devices };
-        self.state.directx_devices.borrow_mut().take();
-        *self.state.directx_devices.borrow_mut() = Some(directx_devices.clone());
+        *self.state.directx_devices.write() = Some(directx_devices.clone());
 
         Some(0)
     }
@@ -1201,6 +1293,8 @@ pub(crate) struct WindowCreationInfo {
     /// Flag to instruct the `VSyncProvider` thread to invalidate the directx devices
     /// as resizing them has failed, causing us to have lost at least the render target.
     pub(crate) invalidate_devices: Arc<AtomicBool>,
+    pub(crate) parent_hwnd: Option<HWND>,
+    pub(crate) renderer_backend_override: Option<DirectXBackend>,
     /// Coordinator for managing window tabs
     pub(crate) tab_coordinator: Rc<WindowsTabCoordinator>,
 }
@@ -1496,6 +1590,25 @@ fn log_windows_renderer_startup(directx_devices: &DirectXDevices, startup_note: 
     }
 }
 
+fn should_retry_window_creation_with_d3d11(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains("Creating DirectX renderer")
+            || message.contains("Creating DirectComposition for Direct3D 12")
+            || message.contains("Creating Direct3D 12 devices")
+            || message.contains("Creating Direct3D 12 resources")
+            || message.contains("Creating Direct3D 12 swap chain")
+    })
+}
+
+fn create_window_creation_fallback_devices() -> Result<DirectXDevices> {
+    try_to_recover_from_device_lost(|| {
+        DirectXDevices::new()
+            .map(|devices| devices.with_active_backend(DirectXBackend::Direct3d11))
+            .context("Creating fresh Direct3D 11 fallback devices")
+    })
+}
+
 fn handle_gpu_device_lost(
     directx_devices: &mut DirectXDevices,
     platform_window: HWND,
@@ -1541,14 +1654,33 @@ fn handle_gpu_device_lost(
     log_windows_renderer_startup(directx_devices, Some("GPU device recovery completed"));
     log::info!("DirectX devices successfully recreated.");
 
+    notify_windows_of_gpu_device_change(
+        platform_window,
+        validation_number,
+        all_windows,
+        directx_devices,
+        true,
+    );
+    Ok(())
+}
+
+fn notify_windows_of_gpu_device_change(
+    platform_window: HWND,
+    validation_number: usize,
+    all_windows: &std::sync::Weak<RwLock<SmallVec<[SafeHwnd; 4]>>>,
+    directx_devices: &DirectXDevices,
+    notify_platform_window: bool,
+) {
     let lparam = LPARAM(directx_devices as *const _ as _);
-    unsafe {
-        SendMessageW(
-            platform_window,
-            WM_GPUI_GPU_DEVICE_LOST,
-            Some(WPARAM(validation_number)),
-            Some(lparam),
-        );
+    if notify_platform_window {
+        unsafe {
+            SendMessageW(
+                platform_window,
+                WM_GPUI_GPU_DEVICE_LOST,
+                Some(WPARAM(validation_number)),
+                Some(lparam),
+            );
+        }
     }
 
     if let Some(all_windows) = all_windows.upgrade() {
@@ -1574,7 +1706,30 @@ fn handle_gpu_device_lost(
             }
         }
     }
-    Ok(())
+}
+
+fn dialog_parent_hwnd(options: &WindowParams) -> Option<HWND> {
+    if options.kind != WindowKind::Dialog {
+        return None;
+    }
+
+    let parent_hwnd = unsafe { GetActiveWindow() };
+    if parent_hwnd.is_invalid() {
+        None
+    } else {
+        Some(parent_hwnd)
+    }
+}
+
+fn restore_modal_parent(parent_hwnd: Option<HWND>) {
+    let Some(parent_hwnd) = parent_hwnd else {
+        return;
+    };
+
+    unsafe {
+        let _ = EnableWindow(parent_hwnd, true);
+        let _ = SetForegroundWindow(parent_hwnd);
+    }
 }
 
 const PLATFORM_WINDOW_CLASS_NAME: PCWSTR = w!("Zed::PlatformWindow");
