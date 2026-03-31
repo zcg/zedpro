@@ -2309,7 +2309,7 @@ impl ConversationView {
 
     fn play_notification_sound(&self, window: &Window, cx: &mut App) {
         let settings = AgentSettings::get_global(cx);
-        let visible = window.is_window_active()
+        let _visible = window.is_window_active()
             && if let Some(mw) = window.root::<MultiWorkspace>().flatten() {
                 self.agent_panel_visible(&mw, cx)
             } else {
@@ -2317,7 +2317,8 @@ impl ConversationView {
                     .upgrade()
                     .is_some_and(|workspace| AgentPanel::is_visible(&workspace, cx))
             };
-        if settings.play_sound_when_agent_done && !visible {
+        #[cfg(feature = "audio")]
+        if settings.play_sound_when_agent_done && !_visible {
             Audio::play_sound(Sound::AgentDone, cx);
         }
     }
@@ -2412,7 +2413,7 @@ impl ConversationView {
                                     .update(cx, |multi_workspace, window, cx| {
                                         window.activate_window();
                                         if let Some(workspace) = workspace_handle.upgrade() {
-                                            multi_workspace.activate(workspace.clone(), cx);
+                                            multi_workspace.activate(workspace.clone(), window, cx);
                                             workspace.update(cx, |workspace, cx| {
                                                 workspace.focus_panel::<AgentPanel>(window, cx);
                                             });
@@ -6211,13 +6212,13 @@ pub(crate) mod tests {
             match error {
                 Some(ThreadError::Other { message, .. }) => {
                     assert!(
-                        message.contains("Max tokens reached"),
-                        "Expected 'Max tokens reached' error, got: {}",
+                        message.contains("Maximum tokens reached"),
+                        "Expected 'Maximum tokens reached' error, got: {}",
                         message
                     );
                 }
                 other => panic!(
-                    "Expected ThreadError::Other with 'Max tokens reached', got: {:?}",
+                    "Expected ThreadError::Other with 'Maximum tokens reached', got: {:?}",
                     other.is_some()
                 ),
             }

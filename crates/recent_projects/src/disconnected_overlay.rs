@@ -15,7 +15,7 @@ use ui::{
     ModalHeader, ParentElement, Section, Styled, StyledExt, Window, div, h_flex, rems,
 };
 use workspace::{
-    ModalView, MultiWorkspace, OpenOptions, Workspace, notifications::DetachAndPromptErr,
+    ModalView, MultiWorkspace, OpenMode, OpenOptions, Workspace, notifications::DetachAndPromptErr,
 };
 
 use crate::{open_remote_project, remote_connections::RemoteSettings};
@@ -194,7 +194,7 @@ impl DisconnectedOverlay {
                 paths,
                 app_state,
                 OpenOptions {
-                    replace_window: Some(window_handle),
+                    requesting_window: Some(window_handle),
                     ..Default::default()
                 },
                 cx,
@@ -241,7 +241,7 @@ impl DisconnectedOverlay {
                     paths,
                     app_state,
                     OpenOptions {
-                        replace_window,
+                        requesting_window: replace_window,
                         ..Default::default()
                     },
                     cx,
@@ -251,13 +251,7 @@ impl DisconnectedOverlay {
                     let _ = old_window.update(cx, |_, window, _| window.remove_window());
                 } else if let Some(window_handle) = cleanup_window {
                     let _ = window_handle.update(cx, |multi_workspace, window, cx| {
-                        if let Some(index) = multi_workspace
-                            .workspaces()
-                            .iter()
-                            .position(|workspace| *workspace == old_workspace)
-                        {
-                            multi_workspace.remove_workspace(index, window, cx);
-                        }
+                        multi_workspace.remove(&old_workspace, window, cx);
                     });
                 }
                 Ok(())
@@ -273,7 +267,7 @@ impl DisconnectedOverlay {
             cx.spawn_in(window, async move |_, cx| {
                 if let Some(task) = workspace_handle
                     .update_in(cx, |workspace, window, cx| {
-                        workspace.open_workspace_for_paths(true, paths, window, cx)
+                        workspace.open_workspace_for_paths(OpenMode::Replace, paths, window, cx)
                     })
                     .log_err()
                 {
@@ -316,7 +310,7 @@ impl DisconnectedOverlay {
                     paths,
                     app_state,
                     OpenOptions {
-                        replace_window,
+                        requesting_window: replace_window,
                         ..Default::default()
                     },
                     cx,
@@ -326,13 +320,7 @@ impl DisconnectedOverlay {
                     let _ = old_window.update(cx, |_, window, _| window.remove_window());
                 } else if let Some(window_handle) = cleanup_window {
                     let _ = window_handle.update(cx, |multi_workspace, window, cx| {
-                        if let Some(index) = multi_workspace
-                            .workspaces()
-                            .iter()
-                            .position(|workspace| *workspace == old_workspace)
-                        {
-                            multi_workspace.remove_workspace(index, window, cx);
-                        }
+                        multi_workspace.remove(&old_workspace, window, cx);
                     });
                 }
                 Ok(())
@@ -348,7 +336,7 @@ impl DisconnectedOverlay {
             cx.spawn_in(window, async move |_, cx| {
                 if let Some(task) = workspace_handle
                     .update_in(cx, |workspace, window, cx| {
-                        workspace.open_workspace_for_paths(true, paths, window, cx)
+                        workspace.open_workspace_for_paths(OpenMode::Replace, paths, window, cx)
                     })
                     .log_err()
                 {

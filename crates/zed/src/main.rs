@@ -564,6 +564,7 @@ To build it, run: cargo build -p cli",
             tx.send(Some(options)).log_err();
         })
         .detach();
+        ui::on_new_scrollbars::<SettingsStore>(cx);
 
         let node_runtime = NodeRuntime::new(client.http_client(), Some(shell_env_loaded_rx), rx);
 
@@ -623,6 +624,8 @@ To build it, run: cargo build -p cli",
             }
         })
         .detach();
+
+        let is_new_install = matches!(&installation_id, Some(IdType::New(_)));
 
         // We should rename these in the future to `first app open`, `first app open for release channel`, and `app open`
         if let (Some(system_id), Some(installation_id)) = (&system_id, &installation_id) {
@@ -710,6 +713,7 @@ To build it, run: cargo build -p cli",
             app_state.client.clone(),
             prompt_builder.clone(),
             app_state.languages.clone(),
+            is_new_install,
             false,
             cx,
         );
@@ -1419,7 +1423,7 @@ pub(crate) async fn restore_or_create_workspace(
                     paths.paths().iter().map(PathBuf::from).collect(),
                     app_state,
                     workspace::OpenOptions {
-                        replace_window,
+                        requesting_window: replace_window,
                         ..Default::default()
                     },
                     cx,

@@ -11,6 +11,7 @@ use feature_flags::FeatureFlagAppExt as _;
 use fs::FakeFs;
 use gpui::TestAppContext;
 use pretty_assertions::assert_eq;
+use project::AgentId;
 use settings::SettingsStore;
 use std::{path::PathBuf, sync::Arc};
 use util::path_list::PathList;
@@ -30,9 +31,11 @@ fn init_test(cx: &mut TestAppContext) {
 }
 
 fn has_thread_entry(sidebar: &Sidebar, session_id: &acp::SessionId) -> bool {
-    sidebar.contents.entries.iter().any(
-        |entry| matches!(entry, ListEntry::Thread(t) if &t.session_info.session_id == session_id),
-    )
+    sidebar
+        .contents
+        .entries
+        .iter()
+        .any(|entry| matches!(entry, ListEntry::Thread(t) if &t.metadata.session_id == session_id))
 }
 
 async fn init_test_project(
@@ -176,12 +179,7 @@ fn visible_entries_as_strings(
                         format!("{} [{}]{}", icon, label, selected)
                     }
                     ListEntry::Thread(thread) => {
-                        let title = thread
-                            .session_info
-                            .title
-                            .as_ref()
-                            .map(|s| s.as_ref())
-                            .unwrap_or("Untitled");
+                        let title = thread.metadata.title.as_ref();
                         let active = if thread.is_live { " *" } else { "" };
                         let status_str = match thread.status {
                             AgentThreadStatus::Running => " (running)",
@@ -191,7 +189,7 @@ fn visible_entries_as_strings(
                         };
                         let notified = if sidebar
                             .contents
-                            .is_thread_notified(&thread.session_info.session_id)
+                            .is_thread_notified(&thread.metadata.session_id)
                         {
                             " (!)"
                         } else {
@@ -224,8 +222,21 @@ fn visible_entries_as_strings(
                             format!("  + View More{}", selected)
                         }
                     }
-                    ListEntry::NewThread { .. } => {
-                        format!("  [+ New Thread]{}", selected)
+                    ListEntry::NewThread { worktrees, .. } => {
+                        let worktree = if worktrees.is_empty() {
+                            String::new()
+                        } else {
+                            let mut seen = Vec::new();
+                            let mut chips = Vec::new();
+                            for wt in worktrees {
+                                if !seen.contains(&wt.name) {
+                                    seen.push(wt.name.clone());
+                                    chips.push(format!("{{{}}}", wt.name));
+                                }
+                            }
+                            format!(" {}", chips.join(", "))
+                        };
+                        format!("  [+ New Thread{}]{}", worktree, selected)
                     }
                 }
             })
@@ -387,7 +398,8 @@ async fn test_workspace_lifecycle(cx: &mut TestAppContext) {
 
     // Remove the second workspace
     multi_workspace.update_in(cx, |mw, window, cx| {
-        mw.remove_workspace(1, window, cx);
+        let workspace = mw.workspaces()[1].clone();
+        mw.remove(&workspace, window, cx);
     });
     cx.run_until_parked();
 
@@ -565,14 +577,14 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                 is_active: true,
             },
             ListEntry::Thread(ThreadEntry {
-                agent: Agent::NativeAgent,
-                session_info: acp_thread::AgentSessionInfo {
+                metadata: ThreadMetadata {
                     session_id: acp::SessionId::new(Arc::from("t-1")),
-                    work_dirs: None,
-                    title: Some("Completed thread".into()),
-                    updated_at: Some(Utc::now()),
+                    agent_id: AgentId::new("zed-agent"),
+                    folder_paths: PathList::default(),
+                    title: "Completed thread".into(),
+                    updated_at: Utc::now(),
                     created_at: Some(Utc::now()),
-                    meta: None,
+                    archived: false,
                 },
                 icon: IconName::ZedAgent,
                 icon_from_external_svg: None,
@@ -587,14 +599,14 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
             }),
             // Active thread with Running status
             ListEntry::Thread(ThreadEntry {
-                agent: Agent::NativeAgent,
-                session_info: acp_thread::AgentSessionInfo {
+                metadata: ThreadMetadata {
                     session_id: acp::SessionId::new(Arc::from("t-2")),
-                    work_dirs: None,
-                    title: Some("Running thread".into()),
-                    updated_at: Some(Utc::now()),
+                    agent_id: AgentId::new("zed-agent"),
+                    folder_paths: PathList::default(),
+                    title: "Running thread".into(),
+                    updated_at: Utc::now(),
                     created_at: Some(Utc::now()),
-                    meta: None,
+                    archived: false,
                 },
                 icon: IconName::ZedAgent,
                 icon_from_external_svg: None,
@@ -609,14 +621,14 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
             }),
             // Active thread with Error status
             ListEntry::Thread(ThreadEntry {
-                agent: Agent::NativeAgent,
-                session_info: acp_thread::AgentSessionInfo {
+                metadata: ThreadMetadata {
                     session_id: acp::SessionId::new(Arc::from("t-3")),
-                    work_dirs: None,
-                    title: Some("Error thread".into()),
-                    updated_at: Some(Utc::now()),
+                    agent_id: AgentId::new("zed-agent"),
+                    folder_paths: PathList::default(),
+                    title: "Error thread".into(),
+                    updated_at: Utc::now(),
                     created_at: Some(Utc::now()),
-                    meta: None,
+                    archived: false,
                 },
                 icon: IconName::ZedAgent,
                 icon_from_external_svg: None,
@@ -631,14 +643,14 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
             }),
             // Thread with WaitingForConfirmation status, not active
             ListEntry::Thread(ThreadEntry {
-                agent: Agent::NativeAgent,
-                session_info: acp_thread::AgentSessionInfo {
+                metadata: ThreadMetadata {
                     session_id: acp::SessionId::new(Arc::from("t-4")),
-                    work_dirs: None,
-                    title: Some("Waiting thread".into()),
-                    updated_at: Some(Utc::now()),
+                    agent_id: AgentId::new("zed-agent"),
+                    folder_paths: PathList::default(),
+                    title: "Waiting thread".into(),
+                    updated_at: Utc::now(),
                     created_at: Some(Utc::now()),
-                    meta: None,
+                    archived: false,
                 },
                 icon: IconName::ZedAgent,
                 icon_from_external_svg: None,
@@ -653,14 +665,14 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
             }),
             // Background thread that completed (should show notification)
             ListEntry::Thread(ThreadEntry {
-                agent: Agent::NativeAgent,
-                session_info: acp_thread::AgentSessionInfo {
+                metadata: ThreadMetadata {
                     session_id: acp::SessionId::new(Arc::from("t-5")),
-                    work_dirs: None,
-                    title: Some("Notified thread".into()),
-                    updated_at: Some(Utc::now()),
+                    agent_id: AgentId::new("zed-agent"),
+                    folder_paths: PathList::default(),
+                    title: "Notified thread".into(),
+                    updated_at: Utc::now(),
                     created_at: Some(Utc::now()),
-                    meta: None,
+                    archived: false,
                 },
                 icon: IconName::ZedAgent,
                 icon_from_external_svg: None,
@@ -1739,7 +1751,8 @@ async fn test_confirm_on_historical_thread_activates_workspace(cx: &mut TestAppC
 
     // Switch to workspace 1 so we can verify the confirm switches back.
     multi_workspace.update_in(cx, |mw, window, cx| {
-        mw.activate_index(1, window, cx);
+        let workspace = mw.workspaces()[1].clone();
+        mw.activate(workspace, window, cx);
     });
     cx.run_until_parked();
     assert_eq!(
@@ -1919,14 +1932,14 @@ async fn test_focused_thread_tracks_user_intent(cx: &mut TestAppContext) {
 
     sidebar.update_in(cx, |sidebar, window, cx| {
         sidebar.activate_thread(
-            Agent::NativeAgent,
-            acp_thread::AgentSessionInfo {
+            ThreadMetadata {
                 session_id: session_id_a.clone(),
-                work_dirs: None,
-                title: Some("Test".into()),
-                updated_at: None,
+                agent_id: agent::ZED_AGENT_ID.clone(),
+                title: "Test".into(),
+                updated_at: Utc::now(),
                 created_at: None,
-                meta: None,
+                folder_paths: PathList::default(),
+                archived: false,
             },
             &workspace_a,
             window,
@@ -1974,14 +1987,14 @@ async fn test_focused_thread_tracks_user_intent(cx: &mut TestAppContext) {
     // which also triggers a workspace switch.
     sidebar.update_in(cx, |sidebar, window, cx| {
         sidebar.activate_thread(
-            Agent::NativeAgent,
-            acp_thread::AgentSessionInfo {
+            ThreadMetadata {
                 session_id: session_id_b.clone(),
-                work_dirs: None,
-                title: Some("Thread B".into()),
-                updated_at: None,
+                agent_id: agent::ZED_AGENT_ID.clone(),
+                title: "Thread B".into(),
+                updated_at: Utc::now(),
                 created_at: None,
-                meta: None,
+                folder_paths: PathList::default(),
+                archived: false,
             },
             &workspace_b,
             window,
@@ -2003,7 +2016,8 @@ async fn test_focused_thread_tracks_user_intent(cx: &mut TestAppContext) {
     });
 
     multi_workspace.update_in(cx, |mw, window, cx| {
-        mw.activate_index(0, window, cx);
+        let workspace = mw.workspaces()[0].clone();
+        mw.activate(workspace, window, cx);
     });
     cx.run_until_parked();
 
@@ -2058,7 +2072,8 @@ async fn test_focused_thread_tracks_user_intent(cx: &mut TestAppContext) {
     // a workspace header) should clear focused_thread.
     multi_workspace.update_in(cx, |mw, window, cx| {
         if let Some(index) = mw.workspaces().iter().position(|w| w == &workspace_b) {
-            mw.activate_index(index, window, cx);
+            let workspace = mw.workspaces()[index].clone();
+            mw.activate(workspace, window, cx);
         }
     });
     cx.run_until_parked();
@@ -2128,9 +2143,9 @@ async fn test_new_thread_button_works_after_adding_folder(cx: &mut TestAppContex
 
     // The "New Thread" button should NOT be in "active/draft" state
     // because the panel has a thread with messages.
-    sidebar.read_with(cx, |sidebar, _cx| {
+    sidebar.read_with(cx, |sidebar, cx| {
         assert!(
-            !sidebar.active_thread_is_draft,
+            !sidebar.active_thread_is_draft(cx),
             "Panel has a thread with messages, so it should not be a draft"
         );
     });
@@ -2160,9 +2175,9 @@ async fn test_new_thread_button_works_after_adding_folder(cx: &mut TestAppContex
     // The "New Thread" button must still be clickable (not stuck in
     // "active/draft" state). Verify that `active_thread_is_draft` is
     // false — the panel still has the old thread with messages.
-    sidebar.read_with(cx, |sidebar, _cx| {
+    sidebar.read_with(cx, |sidebar, cx| {
         assert!(
-            !sidebar.active_thread_is_draft,
+            !sidebar.active_thread_is_draft(cx),
             "After adding a folder the panel still has a thread with messages, \
                  so active_thread_is_draft should be false"
         );
@@ -2178,9 +2193,9 @@ async fn test_new_thread_button_works_after_adding_folder(cx: &mut TestAppContex
 
     // After creating a new thread, the panel should now be in draft
     // state (no messages on the new thread).
-    sidebar.read_with(cx, |sidebar, _cx| {
+    sidebar.read_with(cx, |sidebar, cx| {
         assert!(
-            sidebar.active_thread_is_draft,
+            sidebar.active_thread_is_draft(cx),
             "After creating a new thread the panel should be in draft state"
         );
     });
@@ -2232,13 +2247,13 @@ async fn test_cmd_n_shows_new_thread_entry(cx: &mut TestAppContext) {
         "After Cmd-N the sidebar should show a highlighted New Thread entry"
     );
 
-    sidebar.read_with(cx, |sidebar, _cx| {
+    sidebar.read_with(cx, |sidebar, cx| {
         assert!(
             sidebar.focused_thread.is_none(),
             "focused_thread should be cleared after Cmd-N"
         );
         assert!(
-            sidebar.active_thread_is_draft,
+            sidebar.active_thread_is_draft(cx),
             "the new blank thread should be a draft"
         );
     });
@@ -2319,7 +2334,8 @@ async fn test_cmd_n_shows_new_thread_entry_in_absorbed_worktree(cx: &mut TestApp
 
     // Switch to the worktree workspace.
     multi_workspace.update_in(cx, |mw, window, cx| {
-        mw.activate_index(1, window, cx);
+        let workspace = mw.workspaces()[1].clone();
+        mw.activate(workspace, window, cx);
     });
 
     let sidebar = setup_sidebar(&multi_workspace, cx);
@@ -2339,7 +2355,11 @@ async fn test_cmd_n_shows_new_thread_entry_in_absorbed_worktree(cx: &mut TestApp
 
     assert_eq!(
         visible_entries_as_strings(&sidebar, cx),
-        vec!["v [project]", "  Hello {wt-feature-a} *"]
+        vec![
+            "v [project]",
+            "  [+ New Thread]",
+            "  Hello {wt-feature-a} *"
+        ]
     );
 
     // Simulate Cmd-N in the worktree workspace.
@@ -2356,19 +2376,20 @@ async fn test_cmd_n_shows_new_thread_entry_in_absorbed_worktree(cx: &mut TestApp
         vec![
             "v [project]",
             "  [+ New Thread]",
+            "  [+ New Thread {wt-feature-a}]",
             "  Hello {wt-feature-a} *"
         ],
         "After Cmd-N in an absorbed worktree, the sidebar should show \
              a highlighted New Thread entry under the main repo header"
     );
 
-    sidebar.read_with(cx, |sidebar, _cx| {
+    sidebar.read_with(cx, |sidebar, cx| {
         assert!(
             sidebar.focused_thread.is_none(),
             "focused_thread should be cleared after Cmd-N"
         );
         assert!(
-            sidebar.active_thread_is_draft,
+            sidebar.active_thread_is_draft(cx),
             "the new blank thread should be a draft"
         );
     });
@@ -2472,7 +2493,11 @@ async fn test_git_worktree_added_live_updates_sidebar(cx: &mut TestAppContext) {
 
     assert_eq!(
         visible_entries_as_strings(&sidebar, cx),
-        vec!["v [project]", "  Worktree Thread {rosewood}",]
+        vec![
+            "v [project]",
+            "  [+ New Thread]",
+            "  Worktree Thread {rosewood}",
+        ]
     );
 }
 
@@ -2586,8 +2611,104 @@ async fn test_two_worktree_workspaces_absorbed_when_main_added(cx: &mut TestAppC
         visible_entries_as_strings(&sidebar, cx),
         vec![
             "v [project]",
+            "  [+ New Thread]",
             "  Thread A {wt-feature-a}",
             "  Thread B {wt-feature-b}",
+        ]
+    );
+}
+
+#[gpui::test]
+async fn test_threadless_workspace_shows_new_thread_with_worktree_chip(cx: &mut TestAppContext) {
+    // When a group has two workspaces — one with threads and one
+    // without — the threadless workspace should appear as a
+    // "New Thread" button with its worktree chip.
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+
+    // Main repo with two linked worktrees.
+    fs.insert_tree(
+        "/project",
+        serde_json::json!({
+            ".git": {
+                "worktrees": {
+                    "feature-a": {
+                        "commondir": "../../",
+                        "HEAD": "ref: refs/heads/feature-a",
+                    },
+                    "feature-b": {
+                        "commondir": "../../",
+                        "HEAD": "ref: refs/heads/feature-b",
+                    },
+                },
+            },
+            "src": {},
+        }),
+    )
+    .await;
+    fs.insert_tree(
+        "/wt-feature-a",
+        serde_json::json!({
+            ".git": "gitdir: /project/.git/worktrees/feature-a",
+            "src": {},
+        }),
+    )
+    .await;
+    fs.insert_tree(
+        "/wt-feature-b",
+        serde_json::json!({
+            ".git": "gitdir: /project/.git/worktrees/feature-b",
+            "src": {},
+        }),
+    )
+    .await;
+
+    fs.with_git_state(std::path::Path::new("/project/.git"), false, |state| {
+        state.worktrees.push(git::repository::Worktree {
+            path: std::path::PathBuf::from("/wt-feature-a"),
+            ref_name: Some("refs/heads/feature-a".into()),
+            sha: "aaa".into(),
+        });
+        state.worktrees.push(git::repository::Worktree {
+            path: std::path::PathBuf::from("/wt-feature-b"),
+            ref_name: Some("refs/heads/feature-b".into()),
+            sha: "bbb".into(),
+        });
+    })
+    .unwrap();
+
+    cx.update(|cx| <dyn fs::Fs>::set_global(fs.clone(), cx));
+
+    // Workspace A: worktree feature-a (has threads).
+    let project_a = project::Project::test(fs.clone(), ["/wt-feature-a".as_ref()], cx).await;
+    project_a.update(cx, |p, cx| p.git_scans_complete(cx)).await;
+
+    // Workspace B: worktree feature-b (no threads).
+    let project_b = project::Project::test(fs.clone(), ["/wt-feature-b".as_ref()], cx).await;
+    project_b.update(cx, |p, cx| p.git_scans_complete(cx)).await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a.clone(), window, cx));
+    multi_workspace.update_in(cx, |mw, window, cx| {
+        mw.test_add_workspace(project_b.clone(), window, cx);
+    });
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+
+    // Only save a thread for workspace A.
+    let paths_a = PathList::new(&[std::path::PathBuf::from("/wt-feature-a")]);
+    save_named_thread_metadata("thread-a", "Thread A", &paths_a, cx).await;
+
+    multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
+    cx.run_until_parked();
+
+    // Workspace A's thread appears normally. Workspace B (threadless)
+    // appears as a "New Thread" button with its worktree chip.
+    assert_eq!(
+        visible_entries_as_strings(&sidebar, cx),
+        vec![
+            "v [project]",
+            "  [+ New Thread {wt-feature-b}]",
+            "  Thread A {wt-feature-a}",
         ]
     );
 }
@@ -2889,7 +3010,8 @@ async fn test_absorbed_worktree_running_thread_shows_live_status(cx: &mut TestAp
 
     // Switch back to the main workspace before setting up the sidebar.
     multi_workspace.update_in(cx, |mw, window, cx| {
-        mw.activate_index(0, window, cx);
+        let workspace = mw.workspaces()[0].clone();
+        mw.activate(workspace, window, cx);
     });
 
     let sidebar = setup_sidebar(&multi_workspace, cx);
@@ -2922,7 +3044,11 @@ async fn test_absorbed_worktree_running_thread_shows_live_status(cx: &mut TestAp
     let entries = visible_entries_as_strings(&sidebar, cx);
     assert_eq!(
         entries,
-        vec!["v [project]", "  Hello {wt-feature-a} * (running)",]
+        vec![
+            "v [project]",
+            "  [+ New Thread]",
+            "  Hello {wt-feature-a} * (running)",
+        ]
     );
 }
 
@@ -2995,7 +3121,8 @@ async fn test_absorbed_worktree_completion_triggers_notification(cx: &mut TestAp
     let worktree_panel = add_agent_panel(&worktree_workspace, &worktree_project, cx);
 
     multi_workspace.update_in(cx, |mw, window, cx| {
-        mw.activate_index(0, window, cx);
+        let workspace = mw.workspaces()[0].clone();
+        mw.activate(workspace, window, cx);
     });
 
     let sidebar = setup_sidebar(&multi_workspace, cx);
@@ -3019,7 +3146,11 @@ async fn test_absorbed_worktree_completion_triggers_notification(cx: &mut TestAp
 
     assert_eq!(
         visible_entries_as_strings(&sidebar, cx),
-        vec!["v [project]", "  Hello {wt-feature-a} * (running)",]
+        vec![
+            "v [project]",
+            "  [+ New Thread]",
+            "  Hello {wt-feature-a} * (running)",
+        ]
     );
 
     connection.end_turn(session_id, acp::StopReason::EndTurn);
@@ -3027,7 +3158,11 @@ async fn test_absorbed_worktree_completion_triggers_notification(cx: &mut TestAp
 
     assert_eq!(
         visible_entries_as_strings(&sidebar, cx),
-        vec!["v [project]", "  Hello {wt-feature-a} * (!)",]
+        vec![
+            "v [project]",
+            "  [+ New Thread]",
+            "  Hello {wt-feature-a} * (!)",
+        ]
     );
 }
 
@@ -3092,7 +3227,11 @@ async fn test_clicking_worktree_thread_opens_workspace_when_none_exists(cx: &mut
     // Thread should appear under the main repo with a worktree chip.
     assert_eq!(
         visible_entries_as_strings(&sidebar, cx),
-        vec!["v [project]", "  WT Thread {wt-feature-a}"],
+        vec![
+            "v [project]",
+            "  [+ New Thread]",
+            "  WT Thread {wt-feature-a}"
+        ],
     );
 
     // Only 1 workspace should exist.
@@ -3104,7 +3243,7 @@ async fn test_clicking_worktree_thread_opens_workspace_when_none_exists(cx: &mut
     // Focus the sidebar and select the worktree thread.
     open_and_focus_sidebar(&sidebar, cx);
     sidebar.update_in(cx, |sidebar, _window, _cx| {
-        sidebar.selection = Some(1); // index 0 is header, 1 is the thread
+        sidebar.selection = Some(2); // index 0 is header, 1 is new thread, 2 is the thread
     });
 
     // Confirm to open the worktree thread.
@@ -3190,12 +3329,16 @@ async fn test_clicking_worktree_thread_does_not_briefly_render_as_separate_proje
 
     assert_eq!(
         visible_entries_as_strings(&sidebar, cx),
-        vec!["v [project]", "  WT Thread {wt-feature-a}"],
+        vec![
+            "v [project]",
+            "  [+ New Thread]",
+            "  WT Thread {wt-feature-a}"
+        ],
     );
 
     open_and_focus_sidebar(&sidebar, cx);
     sidebar.update_in(cx, |sidebar, _window, _cx| {
-        sidebar.selection = Some(1);
+        sidebar.selection = Some(2);
     });
 
     let assert_sidebar_state = |sidebar: &mut Sidebar, _cx: &mut Context<Sidebar>| {
@@ -3231,24 +3374,14 @@ async fn test_clicking_worktree_thread_does_not_briefly_render_as_separate_proje
                     );
                 }
                 ListEntry::Thread(thread)
-                    if thread
-                        .session_info
-                        .title
-                        .as_ref()
-                        .map(|title| title.as_ref())
-                        == Some("WT Thread")
+                    if thread.metadata.title.as_ref() == "WT Thread"
                         && thread.worktrees.first().map(|wt| wt.name.as_ref())
                             == Some("wt-feature-a") =>
                 {
                     saw_expected_thread = true;
                 }
                 ListEntry::Thread(thread) => {
-                    let title = thread
-                        .session_info
-                        .title
-                        .as_ref()
-                        .map(|title| title.as_ref())
-                        .unwrap_or("Untitled");
+                    let title = thread.metadata.title.as_ref();
                     let worktree_name = thread
                         .worktrees
                         .first()
@@ -3261,9 +3394,7 @@ async fn test_clicking_worktree_thread_does_not_briefly_render_as_separate_proje
                 ListEntry::ViewMore { .. } => {
                     panic!("unexpected `View More` entry while opening linked worktree thread");
                 }
-                ListEntry::NewThread { .. } => {
-                    panic!("unexpected `New Thread` entry while opening linked worktree thread");
-                }
+                ListEntry::NewThread { .. } => {}
             }
         }
 
@@ -3350,7 +3481,8 @@ async fn test_clicking_absorbed_worktree_thread_activates_worktree_workspace(
 
     // Activate the main workspace before setting up the sidebar.
     multi_workspace.update_in(cx, |mw, window, cx| {
-        mw.activate_index(0, window, cx);
+        let workspace = mw.workspaces()[0].clone();
+        mw.activate(workspace, window, cx);
     });
 
     let sidebar = setup_sidebar(&multi_workspace, cx);
@@ -3434,7 +3566,8 @@ async fn test_activate_archived_thread_with_saved_paths_activates_matching_works
 
     // Ensure workspace A is active.
     multi_workspace.update_in(cx, |mw, window, cx| {
-        mw.activate_index(0, window, cx);
+        let workspace = mw.workspaces()[0].clone();
+        mw.activate(workspace, window, cx);
     });
     cx.run_until_parked();
     assert_eq!(
@@ -3446,14 +3579,14 @@ async fn test_activate_archived_thread_with_saved_paths_activates_matching_works
     // switch to the workspace for project-b.
     sidebar.update_in(cx, |sidebar, window, cx| {
         sidebar.activate_archived_thread(
-            Agent::NativeAgent,
-            acp_thread::AgentSessionInfo {
+            ThreadMetadata {
                 session_id: session_id.clone(),
-                work_dirs: Some(PathList::new(&[PathBuf::from("/project-b")])),
-                title: Some("Archived Thread".into()),
-                updated_at: None,
+                agent_id: agent::ZED_AGENT_ID.clone(),
+                title: "Archived Thread".into(),
+                updated_at: Utc::now(),
                 created_at: None,
-                meta: None,
+                folder_paths: PathList::new(&[PathBuf::from("/project-b")]),
+                archived: false,
             },
             window,
             cx,
@@ -3496,7 +3629,8 @@ async fn test_activate_archived_thread_cwd_fallback_with_matching_workspace(
 
     // Start with workspace A active.
     multi_workspace.update_in(cx, |mw, window, cx| {
-        mw.activate_index(0, window, cx);
+        let workspace = mw.workspaces()[0].clone();
+        mw.activate(workspace, window, cx);
     });
     cx.run_until_parked();
     assert_eq!(
@@ -3507,14 +3641,14 @@ async fn test_activate_archived_thread_cwd_fallback_with_matching_workspace(
     // No thread saved to the store – cwd is the only path hint.
     sidebar.update_in(cx, |sidebar, window, cx| {
         sidebar.activate_archived_thread(
-            Agent::NativeAgent,
-            acp_thread::AgentSessionInfo {
+            ThreadMetadata {
                 session_id: acp::SessionId::new(Arc::from("unknown-session")),
-                work_dirs: Some(PathList::new(&[std::path::PathBuf::from("/project-b")])),
-                title: Some("CWD Thread".into()),
-                updated_at: None,
+                agent_id: agent::ZED_AGENT_ID.clone(),
+                title: "CWD Thread".into(),
+                updated_at: Utc::now(),
                 created_at: None,
-                meta: None,
+                folder_paths: PathList::new(&[std::path::PathBuf::from("/project-b")]),
+                archived: false,
             },
             window,
             cx,
@@ -3557,7 +3691,8 @@ async fn test_activate_archived_thread_no_paths_no_cwd_uses_active_workspace(
 
     // Activate workspace B (index 1) to make it the active one.
     multi_workspace.update_in(cx, |mw, window, cx| {
-        mw.activate_index(1, window, cx);
+        let workspace = mw.workspaces()[1].clone();
+        mw.activate(workspace, window, cx);
     });
     cx.run_until_parked();
     assert_eq!(
@@ -3568,14 +3703,14 @@ async fn test_activate_archived_thread_no_paths_no_cwd_uses_active_workspace(
     // No saved thread, no cwd – should fall back to the active workspace.
     sidebar.update_in(cx, |sidebar, window, cx| {
         sidebar.activate_archived_thread(
-            Agent::NativeAgent,
-            acp_thread::AgentSessionInfo {
+            ThreadMetadata {
                 session_id: acp::SessionId::new(Arc::from("no-context-session")),
-                work_dirs: None,
-                title: Some("Contextless Thread".into()),
-                updated_at: None,
+                agent_id: agent::ZED_AGENT_ID.clone(),
+                title: "Contextless Thread".into(),
+                updated_at: Utc::now(),
                 created_at: None,
-                meta: None,
+                folder_paths: PathList::default(),
+                archived: false,
             },
             window,
             cx,
@@ -3622,14 +3757,14 @@ async fn test_activate_archived_thread_saved_paths_opens_new_workspace(cx: &mut 
 
     sidebar.update_in(cx, |sidebar, window, cx| {
         sidebar.activate_archived_thread(
-            Agent::NativeAgent,
-            acp_thread::AgentSessionInfo {
+            ThreadMetadata {
                 session_id: session_id.clone(),
-                work_dirs: Some(path_list_b),
-                title: Some("New WS Thread".into()),
-                updated_at: None,
+                agent_id: agent::ZED_AGENT_ID.clone(),
+                title: "New WS Thread".into(),
+                updated_at: Utc::now(),
                 created_at: None,
-                meta: None,
+                folder_paths: path_list_b,
+                archived: false,
             },
             window,
             cx,
@@ -3671,14 +3806,14 @@ async fn test_activate_archived_thread_reuses_workspace_in_another_window(cx: &m
 
     sidebar.update_in(cx_a, |sidebar, window, cx| {
         sidebar.activate_archived_thread(
-            Agent::NativeAgent,
-            acp_thread::AgentSessionInfo {
+            ThreadMetadata {
                 session_id: session_id.clone(),
-                work_dirs: Some(PathList::new(&[PathBuf::from("/project-b")])),
-                title: Some("Cross Window Thread".into()),
-                updated_at: None,
+                agent_id: agent::ZED_AGENT_ID.clone(),
+                title: "Cross Window Thread".into(),
+                updated_at: Utc::now(),
                 created_at: None,
-                meta: None,
+                folder_paths: PathList::new(&[PathBuf::from("/project-b")]),
+                archived: false,
             },
             window,
             cx,
@@ -3747,14 +3882,14 @@ async fn test_activate_archived_thread_reuses_workspace_in_another_window_with_t
 
     sidebar_a.update_in(cx_a, |sidebar, window, cx| {
         sidebar.activate_archived_thread(
-            Agent::NativeAgent,
-            acp_thread::AgentSessionInfo {
+            ThreadMetadata {
                 session_id: session_id.clone(),
-                work_dirs: Some(PathList::new(&[PathBuf::from("/project-b")])),
-                title: Some("Cross Window Thread".into()),
-                updated_at: None,
+                agent_id: agent::ZED_AGENT_ID.clone(),
+                title: "Cross Window Thread".into(),
+                updated_at: Utc::now(),
                 created_at: None,
-                meta: None,
+                folder_paths: PathList::new(&[PathBuf::from("/project-b")]),
+                archived: false,
             },
             window,
             cx,
@@ -3822,14 +3957,14 @@ async fn test_activate_archived_thread_prefers_current_window_for_matching_paths
 
     sidebar_a.update_in(cx_a, |sidebar, window, cx| {
         sidebar.activate_archived_thread(
-            Agent::NativeAgent,
-            acp_thread::AgentSessionInfo {
+            ThreadMetadata {
                 session_id: session_id.clone(),
-                work_dirs: Some(PathList::new(&[PathBuf::from("/project-a")])),
-                title: Some("Current Window Thread".into()),
-                updated_at: None,
+                agent_id: agent::ZED_AGENT_ID.clone(),
+                title: "Current Window Thread".into(),
+                updated_at: Utc::now(),
                 created_at: None,
-                meta: None,
+                folder_paths: PathList::new(&[PathBuf::from("/project-a")]),
+                archived: false,
             },
             window,
             cx,
@@ -3940,7 +4075,8 @@ async fn test_archive_thread_uses_next_threads_own_workspace(cx: &mut TestAppCon
 
     // Activate main workspace so the sidebar tracks the main panel.
     multi_workspace.update_in(cx, |mw, window, cx| {
-        mw.activate_index(0, window, cx);
+        let workspace = mw.workspaces()[0].clone();
+        mw.activate(workspace, window, cx);
     });
 
     let sidebar = setup_sidebar(&multi_workspace, cx);
@@ -4124,6 +4260,7 @@ async fn test_linked_worktree_threads_not_duplicated_across_groups(cx: &mut Test
         visible_entries_as_strings(&sidebar, cx),
         vec![
             "v [project]",
+            "  [+ New Thread]",
             "  Worktree Thread {wt-feature-a}",
             "v [other, project]",
             "  [+ New Thread]",
@@ -4744,7 +4881,8 @@ mod property_test {
             }
             Operation::ToggleAgentPanel => {
                 let workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
-                let panel_open = sidebar.read_with(cx, |sidebar, _cx| sidebar.agent_panel_visible);
+                let panel_open =
+                    sidebar.read_with(cx, |sidebar, cx| sidebar.agent_panel_visible(cx));
                 workspace.update_in(cx, |workspace, window, cx| {
                     if panel_open {
                         workspace.close_panel::<AgentPanel>(window, cx);
@@ -4796,9 +4934,11 @@ mod property_test {
                 state.workspace_paths.push(worktree.path);
             }
             Operation::RemoveWorkspace { index } => {
-                let removed = multi_workspace
-                    .update_in(cx, |mw, window, cx| mw.remove_workspace(index, window, cx));
-                if removed.is_some() {
+                let removed = multi_workspace.update_in(cx, |mw, window, cx| {
+                    let workspace = mw.workspaces()[index].clone();
+                    mw.remove(&workspace, window, cx)
+                });
+                if removed {
                     state.workspace_paths.remove(index);
                     state.main_repo_indices.retain(|i| *i != index);
                     for i in &mut state.main_repo_indices {
@@ -4811,8 +4951,8 @@ mod property_test {
             Operation::SwitchWorkspace { index } => {
                 let workspace =
                     multi_workspace.read_with(cx, |mw, _| mw.workspaces()[index].clone());
-                multi_workspace.update_in(cx, |mw, _window, cx| {
-                    mw.activate(workspace, cx);
+                multi_workspace.update_in(cx, |mw, window, cx| {
+                    mw.activate(workspace, window, cx);
                 });
             }
             Operation::AddLinkedWorktree { workspace_index } => {
@@ -4907,41 +5047,10 @@ mod property_test {
 
         let workspaces = multi_workspace.read(cx).workspaces().to_vec();
 
-        // For each workspace, collect the set of canonical repo paths
-        // (original_repo_abs_path) from its root repositories. Two
-        // workspaces that share a canonical repo path are in the same
-        // linked-worktree group.
-        let canonical_repos = |ws: &Entity<Workspace>| -> HashSet<PathBuf> {
-            root_repository_snapshots(ws, cx)
-                .map(|snapshot| snapshot.original_repo_abs_path.to_path_buf())
-                .collect::<HashSet<_>>()
-        };
-
-        // Build a map from canonical repo path → set of workspace
-        // EntityIds that share that repo.
-        let mut repo_to_workspaces: HashMap<PathBuf, HashSet<EntityId>> = HashMap::new();
-        for ws in &workspaces {
-            for repo_path in canonical_repos(ws) {
-                repo_to_workspaces
-                    .entry(repo_path)
-                    .or_default()
-                    .insert(ws.entity_id());
-            }
-        }
-
-        // A workspace participates in a linked-worktree group when it
-        // shares a canonical repo path with at least one other workspace.
-        let in_linked_worktree_group = |ws: &Entity<Workspace>| -> bool {
-            canonical_repos(ws).iter().any(|repo_path| {
-                repo_to_workspaces
-                    .get(repo_path)
-                    .is_some_and(|members| members.len() > 1)
-            })
-        };
-
-        // TODO
-        // Carve-out 1: workspaces with no root paths are not shown
-        // because the sidebar skips empty path lists.
+        // Workspaces with no root paths are not shown because the
+        // sidebar skips empty path lists. All other workspaces should
+        // appear — either via a Thread entry or a NewThread entry for
+        // threadless workspaces.
         let expected_workspaces: HashSet<EntityId> = workspaces
             .iter()
             .filter(|ws| !workspace_path_list(ws, cx).paths().is_empty())
@@ -4955,33 +5064,17 @@ mod property_test {
             .filter_map(|entry| entry.workspace().map(|ws| ws.entity_id()))
             .collect();
 
-        // Check every mismatch between the two sets. Each one must be
-        // explainable by a known carve-out.
         let missing = &expected_workspaces - &sidebar_workspaces;
         let stray = &sidebar_workspaces - &expected_workspaces;
 
-        for entity_id in missing.iter().chain(stray.iter()) {
-            let Some(workspace) = workspaces.iter().find(|ws| ws.entity_id() == *entity_id) else {
-                anyhow::bail!("workspace {entity_id:?} not found in multi-workspace");
-            };
-
-            // TODO
-            // Carve-out 2: when multiple workspaces share a linked-
-            // worktree group, only one representative is shown. Either
-            // side of the relationship (parent or linked worktree) may
-            // be the representative, so both can appear in the diff.
-            anyhow::ensure!(
-                in_linked_worktree_group(workspace),
-                "workspace {:?} (paths {:?}) is in the mismatch but does not \
-                 participate in a linked-worktree group.\n\
-                 Only in sidebar (stray):  {:?}\n\
-                 Only in multi-workspace (missing): {:?}",
-                entity_id,
-                workspace_path_list(workspace, cx).paths(),
-                stray,
-                missing,
-            );
-        }
+        anyhow::ensure!(
+            missing.is_empty() && stray.is_empty(),
+            "sidebar workspaces don't match multi-workspace.\n\
+             Only in multi-workspace (missing): {:?}\n\
+             Only in sidebar (stray): {:?}",
+            missing,
+            stray,
+        );
 
         Ok(())
     }
@@ -5038,32 +5131,24 @@ mod property_test {
         };
 
         let workspace = multi_workspace.read(cx).workspace();
-        let panel_actually_visible = AgentPanel::is_visible(&workspace, cx);
-        let panel_active_session_id =
-            workspace
-                .read(cx)
-                .panel::<AgentPanel>(cx)
-                .and_then(|panel| {
-                    panel
-                        .read(cx)
-                        .active_conversation_view()
-                        .and_then(|cv| cv.read(cx).parent_id(cx))
-                });
 
-        // TODO: Remove this state entirely
-        anyhow::ensure!(
-            sidebar.agent_panel_visible == panel_actually_visible,
-            "sidebar.agent_panel_visible ({}) does not match AgentPanel::is_visible ({})",
-            sidebar.agent_panel_visible,
-            panel_actually_visible,
-        );
-
-        // TODO: Remove these checks, the focused_thread should _always_ be Some(item-in-the-list) after
-        // update_entries. if the activated workspace's agent panel has an active thread, this item should
-        // match the one in the list. There may be a slight delay, where a thread is loading so the agent panel
-        // returns None initially, and the focused_thread is often optimistically set to the thread the agent panel
-        // is going to be
-        if sidebar.agent_panel_visible && !sidebar.active_thread_is_draft {
+        // TODO: The focused_thread should _always_ be Some(item-in-the-list) after
+        // update_entries. If the activated workspace's agent panel has an active thread,
+        // this item should match the one in the list. There may be a slight delay where
+        // a thread is loading so the agent panel returns None initially, and the
+        // focused_thread is often optimistically set to the thread the agent panel is
+        // going to be.
+        if sidebar.agent_panel_visible(cx) && !sidebar.active_thread_is_draft(cx) {
+            let panel_active_session_id =
+                workspace
+                    .read(cx)
+                    .panel::<AgentPanel>(cx)
+                    .and_then(|panel| {
+                        panel
+                            .read(cx)
+                            .active_conversation_view()
+                            .and_then(|cv| cv.read(cx).parent_id(cx))
+                    });
             if let Some(panel_session_id) = panel_active_session_id {
                 anyhow::ensure!(
                     sidebar.focused_thread.as_ref() == Some(&panel_session_id),

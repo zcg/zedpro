@@ -61,8 +61,8 @@ pub use display_map::{
 pub use edit_prediction_types::Direction;
 pub use editor_settings::{
     CompletionDetailAlignment, CurrentLineHighlight, DiffViewStyle, DocumentColorsRenderMode,
-    EditorSettings, HideMouseMode, ScrollBeyondLastLine, ScrollbarAxes, SearchSettings,
-    ShowMinimap,
+    EditorSettings, EditorSettingsScrollbarProxy, HideMouseMode, ScrollBeyondLastLine,
+    ScrollbarAxes, SearchSettings, ShowMinimap, ui_scrollbar_settings_from_raw,
 };
 pub use element::{
     CursorLayout, EditorElement, HighlightedRange, HighlightedRangeLine, PointForPosition,
@@ -12288,15 +12288,15 @@ impl Editor {
         if hunk.is_created_file() {
             return None;
         }
-        let buffer = self.buffer.read(cx);
-        let diff = buffer.diff_for(hunk.buffer_id)?;
-        let buffer = buffer.buffer(hunk.buffer_id)?;
-        let buffer = buffer.read(cx);
-        let original_text = diff
-            .read(cx)
-            .base_text(cx)
+        let multi_buffer = self.buffer.read(cx);
+        let multi_buffer_snapshot = multi_buffer.snapshot(cx);
+        let diff_snapshot = multi_buffer_snapshot.diff_for_buffer_id(hunk.buffer_id)?;
+        let original_text = diff_snapshot
+            .base_text()
             .as_rope()
             .slice(hunk.diff_base_byte_range.start.0..hunk.diff_base_byte_range.end.0);
+        let buffer = multi_buffer.buffer(hunk.buffer_id)?;
+        let buffer = buffer.read(cx);
         let buffer_snapshot = buffer.snapshot();
         let buffer_revert_changes = revert_changes.entry(buffer.remote_id()).or_default();
         if let Err(i) = buffer_revert_changes.binary_search_by(|probe| {

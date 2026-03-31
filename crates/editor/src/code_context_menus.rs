@@ -306,13 +306,8 @@ impl Drop for FuzzyMatchCancellation {
     }
 }
 
+#[derive(Default)]
 struct CompletionMenuScrollBarSetting;
-
-impl ui::scrollbars::GlobalSetting for CompletionMenuScrollBarSetting {
-    fn get_value(_cx: &App) -> &Self {
-        &Self
-    }
-}
 
 impl ui::scrollbars::ScrollbarVisibility for CompletionMenuScrollBarSetting {
     fn visibility(&self, cx: &App) -> ui::scrollbars::ShowScrollbar {

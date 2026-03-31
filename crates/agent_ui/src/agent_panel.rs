@@ -83,8 +83,9 @@ use ui::{
 };
 use util::{ResultExt as _, debug_panic};
 use workspace::{
-    CollaboratorId, DraggedSelection, DraggedTab, OpenResult, PathList, SerializedPathList,
-    ToggleWorkspaceSidebar, ToggleZoom, ToolbarItemView, Workspace, WorkspaceId,
+    CollaboratorId, DraggedSelection, DraggedTab, OpenMode, OpenResult, PathList,
+    SerializedPathList, ToggleWorkspaceSidebar, ToggleZoom, ToolbarItemView, Workspace,
+    WorkspaceId,
     dock::{DockPosition, Panel, PanelEvent},
     material_popup_surface_color, material_surface_color,
 };
@@ -1909,6 +1910,14 @@ impl AgentPanel {
         }
     }
 
+    pub fn workspace_id(&self) -> Option<WorkspaceId> {
+        self.workspace_id
+    }
+
+    pub fn background_threads(&self) -> &HashMap<acp::SessionId, Entity<ConversationView>> {
+        &self.background_threads
+    }
+
     pub fn active_conversation_view(&self) -> Option<&Entity<ConversationView>> {
         match &self.active_view {
             ActiveView::AgentThread { conversation_view } => Some(conversation_view),
@@ -2940,7 +2949,15 @@ impl AgentPanel {
             ..
         } = cx
             .update(|_window, cx| {
-                Workspace::new_local(all_paths, app_state, window_handle, None, None, false, cx)
+                Workspace::new_local(
+                    all_paths,
+                    app_state,
+                    window_handle,
+                    None,
+                    None,
+                    OpenMode::Add,
+                    cx,
+                )
             })?
             .await?;
 
@@ -3063,8 +3080,8 @@ impl AgentPanel {
             });
         })?;
 
-        new_window_handle.update(cx, |multi_workspace, _window, cx| {
-            multi_workspace.activate(new_workspace.clone(), cx);
+        new_window_handle.update(cx, |multi_workspace, window, cx| {
+            multi_workspace.activate(new_workspace.clone(), window, cx);
         })?;
 
         this.update_in(cx, |this, window, cx| {
@@ -3158,8 +3175,21 @@ impl Panel for AgentPanel {
         }
     }
 
-    fn supports_flexible_size(&self, _window: &Window, _cx: &App) -> bool {
+    fn supports_flexible_size(&self) -> bool {
         true
+    }
+
+    fn has_flexible_size(&self, _window: &Window, cx: &App) -> bool {
+        AgentSettings::get_global(cx).flexible
+    }
+
+    fn set_flexible_size(&mut self, flexible: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        settings::update_settings_file(self.fs.clone(), cx, move |settings, _| {
+            settings
+                .agent
+                .get_or_insert_default()
+                .set_flexible_size(flexible);
+        });
     }
 
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
