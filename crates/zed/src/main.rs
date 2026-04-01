@@ -735,8 +735,7 @@ To build it, run: cargo build -p cli",
         );
         agent_ui::init(
             app_state.fs.clone(),
-            app_state.client.clone(),
-            prompt_builder.clone(),
+            prompt_builder,
             app_state.languages.clone(),
             is_new_install,
             false,
@@ -866,7 +865,7 @@ To build it, run: cargo build -p cli",
 
         let menus = app_menus(cx);
         cx.set_menus(menus);
-        initialize_workspace(app_state.clone(), prompt_builder, cx);
+        initialize_workspace(app_state.clone(), cx);
 
         cx.activate(true);
 

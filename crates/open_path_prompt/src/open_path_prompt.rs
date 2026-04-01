@@ -1023,7 +1023,7 @@ impl PickerDelegate for OpenPathDelegate {
                     if selected {
                         item.end_slot(make_open_button())
                     } else {
-                        item.end_hover_slot(make_open_button())
+                        item.end_slot(make_open_button()).show_end_slot_on_hover()
                     }
                 })
             }
@@ -1098,7 +1098,7 @@ impl PickerDelegate for OpenPathDelegate {
                     if selected {
                         item.end_slot(make_open_button())
                     } else {
-                        item.end_hover_slot(make_open_button())
+                        item.end_slot(make_open_button()).show_end_slot_on_hover()
                     }
                 })
             }

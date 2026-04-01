@@ -20,7 +20,9 @@ use windows::{
         Foundation::*,
         Graphics::Dwm::*,
         Graphics::Gdi::*,
-        System::{Com::*, LibraryLoader::*, Ole::*, SystemServices::*},
+        System::{
+            Com::*, Diagnostics::Debug::MessageBeep, LibraryLoader::*, Ole::*, SystemServices::*,
+        },
         UI::{Controls::*, HiDpi::*, Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
     },
     core::*,
@@ -1229,6 +1231,11 @@ impl PlatformWindow for WindowsWindow {
 
     fn on_toggle_tab_bar(&self, callback: Box<dyn FnMut()>) {
         self.state.callbacks.toggle_tab_bar.set(Some(callback));
+    }
+
+    fn play_system_bell(&self) {
+        // MB_OK: The sound specified as the Windows Default Beep sound.
+        let _ = unsafe { MessageBeep(MB_OK) };
     }
 }
 

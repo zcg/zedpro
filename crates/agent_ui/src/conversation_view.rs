@@ -202,7 +202,8 @@ impl Conversation {
                 | AcpThreadEvent::Refusal
                 | AcpThreadEvent::AvailableCommandsUpdated(_)
                 | AcpThreadEvent::ModeUpdated(_)
-                | AcpThreadEvent::ConfigOptionsUpdated(_) => {}
+                | AcpThreadEvent::ConfigOptionsUpdated(_)
+                | AcpThreadEvent::WorkingDirectoriesUpdated => {}
             }
         });
         self.subscriptions.push(subscription);
@@ -292,6 +293,14 @@ impl Conversation {
             thread.authorize_tool_call(tool_call_id, outcome, cx);
         });
         cx.notify();
+    }
+
+    fn set_work_dirs(&mut self, work_dirs: PathList, cx: &mut Context<Self>) {
+        for thread in self.threads.values() {
+            thread.update(cx, |thread, cx| {
+                thread.set_work_dirs(work_dirs.clone(), cx);
+            });
+        }
     }
 }
 
@@ -400,6 +409,14 @@ impl ConversationView {
         }
         cx.emit(AcpServerViewEvent::ActiveThreadChanged);
         cx.notify();
+    }
+
+    pub fn set_work_dirs(&mut self, work_dirs: PathList, cx: &mut Context<Self>) {
+        if let Some(connected) = self.as_connected() {
+            connected.conversation.update(cx, |conversation, cx| {
+                conversation.set_work_dirs(work_dirs.clone(), cx);
+            });
+        }
     }
 }
 
@@ -823,6 +840,8 @@ impl ConversationView {
 
         if let Some(scroll_position) = thread.read(cx).ui_scroll_position() {
             list_state.scroll_to(scroll_position);
+        } else {
+            list_state.set_follow_tail(true);
         }
 
         AgentDiff::set_active_thread(&self.workspace, thread.clone(), window, cx);
@@ -1455,6 +1474,9 @@ impl ConversationView {
             }
             AcpThreadEvent::ConfigOptionsUpdated(_) => {
                 // The watch task in ConfigOptionsView handles rebuilding selectors
+                cx.notify();
+            }
+            AcpThreadEvent::WorkingDirectoriesUpdated => {
                 cx.notify();
             }
         }
@@ -2504,22 +2526,6 @@ impl ConversationView {
         }
     }
 
-    /// Inserts terminal text as a crease into the message editor.
-    pub(crate) fn insert_terminal_text(
-        &self,
-        text: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(active_thread) = self.active_thread() {
-            active_thread.update(cx, |thread, cx| {
-                thread.message_editor.update(cx, |editor, cx| {
-                    editor.insert_terminal_crease(text, window, cx);
-                })
-            });
-        }
-    }
-
     fn current_model_name(&self, cx: &App) -> SharedString {
         // For native agent (Zed Agent), use the specific model name (e.g., "Claude 3.5 Sonnet")
         // For ACP agents, use the agent name (e.g., "Claude Agent", "Gemini CLI")
@@ -2730,7 +2736,6 @@ pub(crate) mod tests {
     use action_log::ActionLog;
     use agent::{AgentTool, EditFileTool, FetchTool, TerminalTool, ToolPermissionContext};
     use agent_client_protocol::SessionId;
-    use assistant_text_thread::TextThreadStore;
     use editor::MultiBufferOffset;
     use fs::FakeFs;
     use gpui::{EventEmitter, TestAppContext, VisualTestContext};
@@ -3288,10 +3293,7 @@ pub(crate) mod tests {
         let cx = &mut VisualTestContext::from_window(multi_workspace_handle.into(), cx);
 
         workspace1.update_in(cx, |workspace, window, cx| {
-            let text_thread_store =
-                cx.new(|cx| TextThreadStore::fake(workspace.project().clone(), cx));
-            let panel =
-                cx.new(|cx| crate::AgentPanel::new(workspace, text_thread_store, None, window, cx));
+            let panel = cx.new(|cx| crate::AgentPanel::new(workspace, None, window, cx));
             workspace.add_panel(panel, window, cx);
 
             // Open the dock and activate the agent panel so it's visible

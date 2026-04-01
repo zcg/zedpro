@@ -1256,13 +1256,8 @@ impl PickerDelegate for RecentProjectsDelegate {
                                     this.tooltip(Tooltip::text(path.to_string_lossy().to_string()))
                                 }),
                         )
-                        .map(|el| {
-                            if self.selected_index == ix {
-                                el.end_slot(secondary_actions)
-                            } else {
-                                el.end_hover_slot(secondary_actions)
-                            }
-                        })
+                        .end_slot(secondary_actions)
+                        .show_end_slot_on_hover()
                         .into_any_element(),
                 )
             }
@@ -1355,13 +1350,8 @@ impl PickerDelegate for RecentProjectsDelegate {
                                 })
                                 .tooltip(Tooltip::text(tooltip_path)),
                         )
-                        .map(|el| {
-                            if self.selected_index == ix {
-                                el.end_slot(secondary_actions)
-                            } else {
-                                el.end_hover_slot(secondary_actions)
-                            }
-                        })
+                        .end_slot(secondary_actions)
+                        .show_end_slot_on_hover()
                         .into_any_element(),
                 )
             }
@@ -1495,13 +1485,8 @@ impl PickerDelegate for RecentProjectsDelegate {
                                 })
                                 .tooltip(Tooltip::text(tooltip_path)),
                         )
-                        .map(|el| {
-                            if self.selected_index == ix {
-                                el.end_slot(secondary_actions)
-                            } else {
-                                el.end_hover_slot(secondary_actions)
-                            }
-                        })
+                        .end_slot(secondary_actions)
+                        .show_end_slot_on_hover()
                         .into_any_element(),
                 )
             }
