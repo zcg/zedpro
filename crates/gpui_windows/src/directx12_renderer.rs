@@ -34,13 +34,14 @@ use windows::{
         },
         System::Threading::{CreateEventW, WaitForSingleObject},
     },
+    core::BOOL,
     core::Interface,
 };
 
 use crate::{
     DirectXDevices, create_d3d12_device,
     directx_renderer::{
-        DirectXRenderer, FontInfo,
+        DirectXRenderer, FontInfo, InteractiveResizeMode,
         shader_resources::{RawShaderBytes, ShaderModule, ShaderTarget},
     },
 };
@@ -340,8 +341,19 @@ impl DirectX12Renderer {
         self.disable_direct_composition
     }
 
-    pub(crate) fn uses_direct_composition(&self) -> bool {
-        self.direct_composition.is_some()
+    pub(crate) fn interactive_resize_mode(&self) -> InteractiveResizeMode {
+        if self.direct_composition.is_some() {
+            InteractiveResizeMode::StageDirectCompositionSwapChain
+        } else {
+            InteractiveResizeMode::DeferHwndSwapChain
+        }
+    }
+
+    pub(crate) fn check_composition_device_state(&self) -> Result<bool> {
+        match &self.direct_composition {
+            Some(direct_composition) => direct_composition.check_device_state(),
+            None => Ok(true),
+        }
     }
 
     pub(crate) fn handle_device_lost(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
@@ -1527,9 +1539,14 @@ impl DirectCompositionLayer {
                 .SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR)?;
             self.comp_target.SetRoot(&self.comp_visual)?;
             self.comp_device.Commit()?;
-            self.comp_device.WaitForCommitCompletion()?;
         }
         Ok(())
+    }
+
+    fn check_device_state(&self) -> Result<bool> {
+        let is_valid: BOOL = unsafe { self.comp_device.CheckDeviceState() }
+            .context("Checking DirectComposition device state")?;
+        Ok(is_valid.as_bool())
     }
 
     fn stretch_to_cover(

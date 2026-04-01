@@ -16,6 +16,7 @@ use windows::{
             Dxgi::{Common::*, *},
         },
     },
+    core::BOOL,
     core::Interface,
 };
 
@@ -28,6 +29,25 @@ pub(crate) const DISABLE_DIRECT_COMPOSITION: &str = "GPUI_DISABLE_DIRECT_COMPOSI
 const RENDER_TARGET_FORMAT: DXGI_FORMAT = DXGI_FORMAT_B8G8R8A8_UNORM;
 // This configuration is used for MSAA rendering on paths only, and it's guaranteed to be supported by DirectX 11.
 const PATH_MULTISAMPLE_COUNT: u32 = 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InteractiveResizeMode {
+    Live,
+    DeferHwndSwapChain,
+    StageDirectCompositionSwapChain,
+}
+
+impl InteractiveResizeMode {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Live => "Direct3D 11 live resize",
+            Self::DeferHwndSwapChain => "Direct3D 12 + HWND deferred resize",
+            Self::StageDirectCompositionSwapChain => {
+                "Direct3D 12 + DirectComposition staged resize"
+            }
+        }
+    }
+}
 
 pub(crate) enum WindowRenderer {
     Direct3d11(DirectXRenderer),
@@ -124,8 +144,18 @@ impl WindowRenderer {
         }
     }
 
-    pub(crate) fn uses_direct3d12(&self) -> bool {
-        matches!(self, Self::Direct3d12(_))
+    pub(crate) fn interactive_resize_mode(&self) -> InteractiveResizeMode {
+        match self {
+            Self::Direct3d11(renderer) => renderer.interactive_resize_mode(),
+            Self::Direct3d12(renderer) => renderer.interactive_resize_mode(),
+        }
+    }
+
+    pub(crate) fn check_composition_device_state(&self) -> Result<bool> {
+        match self {
+            Self::Direct3d11(renderer) => renderer.check_composition_device_state(),
+            Self::Direct3d12(renderer) => renderer.check_composition_device_state(),
+        }
     }
 
     fn active_backend(&self) -> DirectXBackend {
@@ -146,13 +176,6 @@ impl WindowRenderer {
         match self {
             Self::Direct3d11(renderer) => renderer.disable_direct_composition(),
             Self::Direct3d12(renderer) => renderer.disable_direct_composition(),
-        }
-    }
-
-    pub(crate) fn uses_direct_composition(&self) -> bool {
-        match self {
-            Self::Direct3d11(renderer) => renderer.uses_direct_composition(),
-            Self::Direct3d12(renderer) => renderer.uses_direct_composition(),
         }
     }
 
@@ -339,8 +362,15 @@ impl DirectXRenderer {
         self.direct_composition.is_none()
     }
 
-    pub(crate) fn uses_direct_composition(&self) -> bool {
-        self.direct_composition.is_some()
+    pub(crate) fn interactive_resize_mode(&self) -> InteractiveResizeMode {
+        InteractiveResizeMode::Live
+    }
+
+    pub(crate) fn check_composition_device_state(&self) -> Result<bool> {
+        match &self.direct_composition {
+            Some(direct_composition) => direct_composition.check_device_state(),
+            None => Ok(true),
+        }
     }
 
     fn pre_draw(&self, clear_color: &[f32; 4]) -> Result<()> {
@@ -1078,6 +1108,12 @@ impl DirectComposition {
             self.comp_device.Commit()?;
         }
         Ok(())
+    }
+
+    pub fn check_device_state(&self) -> Result<bool> {
+        let is_valid: BOOL = unsafe { self.comp_device.CheckDeviceState() }
+            .context("Checking DirectComposition device state")?;
+        Ok(is_valid.as_bool())
     }
 }
 
