@@ -71,9 +71,33 @@ use zed::{
 
 use crate::zed::{OpenRequestKind, eager_load_active_theme_and_icon_theme};
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(
+    feature = "mimalloc",
+    not(zed_tracy_with_memory_allocator),
+))]
 #[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static GLOBAL: better_mimalloc_rs::MiMalloc = better_mimalloc_rs::MiMalloc;
+
+#[cfg(all(
+    feature = "mimalloc",
+    not(zed_tracy_with_memory_allocator),
+))]
+fn init_global_allocator() {
+    // 更积极地回收空闲页，优先改善空闲后的 RSS 回落表现。
+    let config = better_mimalloc_rs::MiMallocConfig {
+        eager_commit: Some(false),
+        purge_decommits: Some(true),
+        purge_delay: Some(0),
+        ..Default::default()
+    };
+    better_mimalloc_rs::MiMalloc::init_with(&config);
+}
+
+#[cfg(not(all(
+    feature = "mimalloc",
+    not(zed_tracy_with_memory_allocator),
+)))]
+fn init_global_allocator() {}
 
 fn files_not_created_on_launch(errors: HashMap<io::ErrorKind, Vec<&Path>>) {
     let message = "Zed failed to launch";
@@ -181,6 +205,7 @@ fn fail_to_open_window(e: anyhow::Error, _cx: &mut App) {
 static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
 
 fn main() {
+    init_global_allocator();
     STARTUP_TIME.get_or_init(|| Instant::now());
 
     #[cfg(unix)]

@@ -2,6 +2,15 @@
 use std::process::Command;
 
 fn main() {
+    println!("cargo::rustc-check-cfg=cfg(zed_tracy_with_memory_allocator)");
+    println!("cargo::rerun-if-env-changed=ZTRACING_WITH_MEMORY");
+
+    if std::env::var_os("CARGO_FEATURE_TRACY").is_some()
+        && std::env::var_os("ZTRACING_WITH_MEMORY").is_some()
+    {
+        println!("cargo::rustc-cfg=zed_tracy_with_memory_allocator");
+    }
+
     #[cfg(target_os = "linux")]
     {
         // Add rpaths for libraries that webrtc-sys dlopens at runtime.

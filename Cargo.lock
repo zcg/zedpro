@@ -1987,6 +1987,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "better_mimalloc_rs"
+version = "0.1.0"
+source = "git+https://github.com/acking-you/better_mimalloc_rs.git?rev=94f375e863c8281a62e5187a806badf951bea0ce#94f375e863c8281a62e5187a806badf951bea0ce"
+dependencies = [
+ "better_mimalloc_sys",
+]
+
+[[package]]
+name = "better_mimalloc_sys"
+version = "0.1.0"
+source = "git+https://github.com/acking-you/better_mimalloc_rs.git?rev=94f375e863c8281a62e5187a806badf951bea0ce#94f375e863c8281a62e5187a806badf951bea0ce"
+dependencies = [
+ "cc",
+ "cty",
+ "libc",
+]
+
+[[package]]
 name = "bigdecimal"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4353,6 +4371,12 @@ dependencies = [
  "nix 0.30.1",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "cty"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b365fabc795046672053e29c954733ec3b05e4be654ab130fe8f1f94d7051f35"
 
 [[package]]
 name = "cursor-icon"
@@ -9753,16 +9777,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
 
 [[package]]
-name = "libmimalloc-sys"
-version = "0.1.44"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "667f4fec20f29dfc6bc7357c582d91796c169ad7e2fce709468aefeb2c099870"
-dependencies = [
- "cc",
- "libc",
-]
-
-[[package]]
 name = "libredox"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10534,15 +10548,6 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-json",
  "unindent",
-]
-
-[[package]]
-name = "mimalloc"
-version = "0.1.48"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1ee66a4b64c74f4ef288bcbb9192ad9c3feaad75193129ac8509af543894fd8"
-dependencies = [
- "libmimalloc-sys",
 ]
 
 [[package]]
@@ -22016,6 +22021,7 @@ dependencies = [
  "audio",
  "auto_update",
  "auto_update_ui",
+ "better_mimalloc_rs",
  "breadcrumbs",
  "call",
  "channel",
@@ -22087,7 +22093,6 @@ dependencies = [
  "markdown_preview",
  "menu",
  "migrator",
- "mimalloc",
  "miniprofiler_ui",
  "nc",
  "node_runtime",

@@ -12,6 +12,8 @@ default-run = "zedpro"
 workspace = true
 
 [features]
+default = ["mimalloc"]
+mimalloc = ["dep:better_mimalloc_rs"]
 tracy = ["ztracing/tracy"]
 # LEAK_BACKTRACE=1 cargo run --features zed/track-project-leak --profile release-fast
 track-project-leak = ["gpui/leak-detection"]
@@ -153,7 +155,7 @@ markdown_preview.workspace = true
 menu.workspace = true
 migrator.workspace = true
 miniprofiler_ui.workspace = true
-mimalloc = { version = "0.1", optional = true }
+better_mimalloc_rs = { git = "https://github.com/acking-you/better_mimalloc_rs.git", rev = "94f375e863c8281a62e5187a806badf951bea0ce", optional = true, default-features = false, features = ["secure", "config"] }
 nc.workspace = true
 node_runtime.workspace = true
 notifications.workspace = true
