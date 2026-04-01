@@ -191,7 +191,10 @@ impl WindowsWindowState {
         self.direct_manipulation.borrow_mut().take();
     }
 
-    pub(crate) fn effective_recovery_devices(&self, directx_devices: &DirectXDevices) -> DirectXDevices {
+    pub(crate) fn effective_recovery_devices(
+        &self,
+        directx_devices: &DirectXDevices,
+    ) -> DirectXDevices {
         match self.renderer_backend_override.get() {
             Some(backend) if directx_devices.active_backend() != backend => {
                 directx_devices.with_active_backend(backend)

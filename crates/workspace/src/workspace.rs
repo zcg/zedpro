@@ -33,8 +33,8 @@ pub use dock::Panel;
 pub use multi_workspace::{
     CloseWorkspaceSidebar, DraggedSidebar, FocusWorkspaceSidebar, MultiWorkspace,
     MultiWorkspaceEvent, NewWorkspaceInWindow, NextWorkspace, NextWorkspaceInWindow,
-    PreviousWorkspace, PreviousWorkspaceInWindow, Sidebar, SidebarHandle, SidebarRenderState,
-    SidebarEvent, SidebarSide, ToggleWorkspaceSidebar, sidebar_side_context_menu,
+    PreviousWorkspace, PreviousWorkspaceInWindow, Sidebar, SidebarEvent, SidebarHandle,
+    SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar, sidebar_side_context_menu,
 };
 pub use path_list::{PathList, SerializedPathList};
 pub use toast_layer::{ToastAction, ToastLayer, ToastView};

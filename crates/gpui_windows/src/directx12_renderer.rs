@@ -26,7 +26,8 @@ use windows::{
             Direct3D11on12::{D3D11On12CreateDevice, ID3D11On12Device},
             Direct3D12::*,
             DirectComposition::{
-                DCompositionCreateDevice2, IDCompositionDevice, IDCompositionTarget,
+                DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR, DCompositionCreateDevice2,
+                IDCompositionDevice, IDCompositionScaleTransform, IDCompositionTarget,
                 IDCompositionVisual,
             },
             Dxgi::{Common::*, *},
@@ -58,6 +59,8 @@ pub(crate) struct DirectX12Renderer {
     atlas: Arc<DirectX12Atlas>,
     devices: DirectX12RendererDevices,
     resources: DirectX12RendererResources,
+    staged_resources: Option<DirectX12RendererResources>,
+    pending_direct_composition_resize: Option<(u32, u32)>,
     globals: DirectX12GlobalElements,
     pipelines: DirectX12RenderPipelines,
     disable_direct_composition: bool,
@@ -70,6 +73,7 @@ pub(crate) struct DirectX12Renderer {
     scene_upload_buffers: Vec<FrameUploadBuffer>,
     path_vertex_scratch: Vec<PathRasterizationSprite>,
     path_sprite_scratch: Vec<PathSprite>,
+    attach_staged_swap_chain_after_present: bool,
 }
 
 struct DirectX12RendererDevices {
@@ -125,6 +129,7 @@ struct DirectCompositionLayer {
     comp_device: IDCompositionDevice,
     comp_target: IDCompositionTarget,
     comp_visual: IDCompositionVisual,
+    scale_transform: IDCompositionScaleTransform,
 }
 
 struct DirectX12GlobalElements {
@@ -306,6 +311,8 @@ impl DirectX12Renderer {
                 .context("Creating Direct3D 12 scene upload buffers")?,
             devices,
             resources,
+            staged_resources: None,
+            pending_direct_composition_resize: None,
             globals,
             pipelines,
             disable_direct_composition,
@@ -317,6 +324,7 @@ impl DirectX12Renderer {
             current_frame_index: 0,
             path_vertex_scratch: Vec::new(),
             path_sprite_scratch: Vec::new(),
+            attach_staged_swap_chain_after_present: false,
         })
     }
 
@@ -330,6 +338,10 @@ impl DirectX12Renderer {
 
     pub(crate) fn disable_direct_composition(&self) -> bool {
         self.disable_direct_composition
+    }
+
+    pub(crate) fn uses_direct_composition(&self) -> bool {
+        self.direct_composition.is_some()
     }
 
     pub(crate) fn handle_device_lost(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
@@ -384,6 +396,8 @@ impl DirectX12Renderer {
             .context("Recreating Direct3D 12 scene upload buffers")?;
         self.devices = devices;
         self.resources = resources;
+        self.staged_resources = None;
+        self.pending_direct_composition_resize = None;
         self.globals = globals;
         self.pipelines = pipelines;
         self.direct_composition = direct_composition;
@@ -391,6 +405,7 @@ impl DirectX12Renderer {
         self.current_frame_index = 0;
         self.path_vertex_scratch.clear();
         self.path_sprite_scratch.clear();
+        self.attach_staged_swap_chain_after_present = false;
         Ok(())
     }
 
@@ -401,6 +416,25 @@ impl DirectX12Renderer {
     ) -> Result<()> {
         if self.skip_draws {
             return Ok(());
+        }
+
+        if let Some((width, height)) = self.pending_direct_composition_resize.take() {
+            log::trace!(
+                "Creating staged Direct3D 12 DirectComposition resources for {}x{} immediately before draw.",
+                width,
+                height
+            );
+            self.staged_resources = Some(
+                DirectX12RendererResources::new(&self.devices, width, height, self.hwnd, false)
+                    .context(
+                        "Creating staged Direct3D 12 resources for DirectComposition resize",
+                    )?,
+            );
+        }
+
+        if let Some(staged_resources) = self.staged_resources.take() {
+            self.resources = staged_resources;
+            self.attach_staged_swap_chain_after_present = self.direct_composition.is_some();
         }
 
         log::trace!(
@@ -462,7 +496,18 @@ impl DirectX12Renderer {
             ))?;
         }
 
-        self.present()
+        self.present()?;
+
+        if self.attach_staged_swap_chain_after_present {
+            if let Some(direct_composition) = &self.direct_composition {
+                direct_composition
+                    .set_swap_chain(&self.resources.swap_chain)
+                    .context("Attaching staged Direct3D 12 swap chain to DirectComposition")?;
+            }
+            self.attach_staged_swap_chain_after_present = false;
+        }
+
+        Ok(())
     }
 
     pub(crate) fn resize(&mut self, new_size: Size<DevicePixels>) -> Result<()> {
@@ -472,20 +517,39 @@ impl DirectX12Renderer {
             return Ok(());
         }
 
-        self.devices.wait_for_gpu_idle()?;
-        self.devices
-            .release_recorded_references()
-            .context("Releasing Direct3D 12 command-list references before resize")?;
-
-        if let Some(direct_composition) = &self.direct_composition {
-            let new_resources =
-                DirectX12RendererResources::new(&self.devices, width, height, self.hwnd, false)
-                    .context("Recreating Direct3D 12 resources for DirectComposition resize")?;
-            direct_composition
-                .set_swap_chain(&new_resources.swap_chain)
-                .context("Switching DirectComposition to resized Direct3D 12 swap chain")?;
-            self.resources = new_resources;
+        if self.direct_composition.is_some() {
+            log::trace!(
+                "Queueing Direct3D 12 DirectComposition resize to {}x{}.",
+                width,
+                height
+            );
+            if let Some(direct_composition) = &self.direct_composition {
+                if let Err(error) = direct_composition.stretch_to_cover(
+                    self.resources.viewport.Width.max(1.0) as u32,
+                    self.resources.viewport.Height.max(1.0) as u32,
+                    width,
+                    height,
+                ) {
+                    log::warn!(
+                        "Applying temporary DirectComposition stretch from {}x{} to {}x{} failed: {error:#}",
+                        self.resources.viewport.Width.max(1.0) as u32,
+                        self.resources.viewport.Height.max(1.0) as u32,
+                        width,
+                        height
+                    );
+                }
+            }
+            self.pending_direct_composition_resize = Some((width, height));
         } else {
+            self.devices.wait_for_gpu_idle()?;
+            self.devices
+                .release_recorded_references()
+                .context("Releasing Direct3D 12 command-list references before resize")?;
+            log::trace!(
+                "Resizing Direct3D 12 HWND swap chain to {}x{}.",
+                width,
+                height
+            );
             if let Err(resize_error) = self.resources.resize(&mut self.devices, width, height) {
                 log::error!(
                     "Direct3D 12 resize failed while resizing swap chain to {}x{}: {resize_error:#}",
@@ -1262,6 +1326,11 @@ impl DirectX12RendererResources {
         let frame_latency_waitable_object = configure_swap_chain(
             &swap_chain,
             None,
+            if disable_direct_composition {
+                None
+            } else {
+                Some((width, height))
+            },
         )
         .context("Configuring Direct3D 12 swap chain")?;
 
@@ -1330,13 +1399,8 @@ impl DirectX12RendererResources {
         drop(old_back_buffers);
         let swap_chain = self.swap_chain.clone();
         unsafe {
-            let mut result = swap_chain.ResizeBuffers(
-                0,
-                width,
-                height,
-                DXGI_FORMAT_UNKNOWN,
-                SWAP_CHAIN_FLAGS,
-            );
+            let mut result =
+                swap_chain.ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, SWAP_CHAIN_FLAGS);
 
             // 某些驱动在 swap chain 的 back buffer 仍被 DXGI/DWM 引用时，会返回 INVALID_CALL。
             // 在这种情况下先等待 swap chain 空闲与 GPU idle，再重试一次。
@@ -1364,6 +1428,7 @@ impl DirectX12RendererResources {
         self.frame_latency_waitable_object = configure_swap_chain(
             &self.swap_chain,
             Some(self.frame_latency_waitable_object),
+            Some((width, height)),
         )
         .context("Reconfiguring Direct3D 12 swap chain after resize")?;
 
@@ -1419,7 +1484,8 @@ impl DirectX12RendererResources {
         if self.frame_latency_waitable_object.is_invalid() {
             return Ok(());
         }
-        let wait_result = unsafe { WaitForSingleObject(self.frame_latency_waitable_object, timeout_ms) };
+        let wait_result =
+            unsafe { WaitForSingleObject(self.frame_latency_waitable_object, timeout_ms) };
         match wait_result {
             windows::Win32::Foundation::WAIT_OBJECT_0 => {
                 self.frame_latency_waitable_armed = false;
@@ -1440,19 +1506,53 @@ impl DirectCompositionLayer {
             unsafe { DCompositionCreateDevice2::<&IDXGIDevice, IDCompositionDevice>(dxgi_device)? };
         let comp_target = unsafe { comp_device.CreateTargetForHwnd(hwnd, true) }?;
         let comp_visual = unsafe { comp_device.CreateVisual() }?;
+        let scale_transform = unsafe { comp_device.CreateScaleTransform() }?;
         Ok(Self {
             comp_device,
             comp_target,
             comp_visual,
+            scale_transform,
         })
     }
 
     fn set_swap_chain(&self, swap_chain: &IDXGISwapChain3) -> Result<()> {
         unsafe {
+            self.scale_transform.SetCenterX2(0.0)?;
+            self.scale_transform.SetCenterY2(0.0)?;
+            self.scale_transform.SetScaleX2(1.0)?;
+            self.scale_transform.SetScaleY2(1.0)?;
             self.comp_visual.SetContent(swap_chain)?;
+            self.comp_visual.SetTransform(&self.scale_transform)?;
+            self.comp_visual
+                .SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR)?;
             self.comp_target.SetRoot(&self.comp_visual)?;
             self.comp_device.Commit()?;
             self.comp_device.WaitForCommitCompletion()?;
+        }
+        Ok(())
+    }
+
+    fn stretch_to_cover(
+        &self,
+        old_width: u32,
+        old_height: u32,
+        new_width: u32,
+        new_height: u32,
+    ) -> Result<()> {
+        let old_width = old_width.max(1);
+        let old_height = old_height.max(1);
+        let scale_x = new_width.max(1) as f32 / old_width as f32;
+        let scale_y = new_height.max(1) as f32 / old_height as f32;
+        unsafe {
+            self.scale_transform.SetCenterX2(0.0)?;
+            self.scale_transform.SetCenterY2(0.0)?;
+            self.scale_transform.SetScaleX2(scale_x)?;
+            self.scale_transform.SetScaleY2(scale_y)?;
+            self.comp_visual.SetTransform(&self.scale_transform)?;
+            self.comp_visual
+                .SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR)?;
+            self.comp_target.SetRoot(&self.comp_visual)?;
+            self.comp_device.Commit()?;
         }
         Ok(())
     }
@@ -2427,6 +2527,7 @@ fn create_swap_chain(
 fn configure_swap_chain(
     swap_chain: &IDXGISwapChain3,
     frame_latency_waitable_object: Option<HANDLE>,
+    source_size: Option<(u32, u32)>,
 ) -> Result<HANDLE> {
     let swap_chain2: IDXGISwapChain2 = swap_chain
         .cast()
@@ -2434,8 +2535,16 @@ fn configure_swap_chain(
     unsafe {
         // 允许失败：某些系统/驱动在特定 swapchain 配置下会拒绝该调用。
         if let Err(error) = swap_chain2.SetMaximumFrameLatency(1) {
+            log::warn!("Setting Direct3D 12 swap chain maximum frame latency failed: {error:#}");
+        }
+
+        if let Some((width, height)) = source_size
+            && let Err(error) = swap_chain2.SetSourceSize(width, height)
+        {
             log::warn!(
-                "Setting Direct3D 12 swap chain maximum frame latency failed: {error:#}"
+                "Setting Direct3D 12 composition swap chain source size to {}x{} failed: {error:#}",
+                width,
+                height
             );
         }
     }

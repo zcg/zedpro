@@ -149,6 +149,13 @@ impl WindowRenderer {
         }
     }
 
+    pub(crate) fn uses_direct_composition(&self) -> bool {
+        match self {
+            Self::Direct3d11(renderer) => renderer.uses_direct_composition(),
+            Self::Direct3d12(renderer) => renderer.uses_direct_composition(),
+        }
+    }
+
     pub(crate) fn gpu_specs(&self) -> Result<GpuSpecs> {
         match self {
             Self::Direct3d11(renderer) => renderer.gpu_specs(),
@@ -330,6 +337,10 @@ impl DirectXRenderer {
 
     pub(crate) fn disable_direct_composition(&self) -> bool {
         self.direct_composition.is_none()
+    }
+
+    pub(crate) fn uses_direct_composition(&self) -> bool {
+        self.direct_composition.is_some()
     }
 
     fn pre_draw(&self, clear_color: &[f32; 4]) -> Result<()> {

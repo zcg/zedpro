@@ -57,6 +57,7 @@ impl WindowsWindowInner {
             WM_NCCALCSIZE => self.handle_calc_client_size(handle, wparam, lparam),
             WM_DPICHANGED => self.handle_dpi_changed_msg(handle, wparam, lparam),
             WM_DISPLAYCHANGE => self.handle_display_change_msg(handle),
+            WM_ERASEBKGND => Some(1),
             WM_NCHITTEST => self.handle_hit_test_msg(handle, lparam),
             WM_PAINT => self.handle_paint_msg(handle),
             WM_CLOSE => self.handle_close_msg(),
@@ -184,13 +185,20 @@ impl WindowsWindowInner {
         let width = lparam.loword().max(1) as i32;
         let height = lparam.hiword().max(1) as i32;
         let new_size = size(DevicePixels(width), DevicePixels(height));
-        let uses_direct3d12 = {
+        let (uses_direct3d12, uses_direct_composition) = {
             let renderer = self.state.renderer.borrow();
-            renderer.uses_direct3d12()
+            (
+                renderer.uses_direct3d12(),
+                renderer.uses_direct_composition(),
+            )
         };
         let is_maximized_restore_during_drag = self.state.in_size_move_loop.get()
             && self.state.size_move_started_maximized.get()
             && wparam.0 == SIZE_RESTORED as usize;
+        let should_defer_direct3d12_hwnd_resize =
+            self.state.in_size_move_loop.get() && uses_direct3d12 && !uses_direct_composition;
+        let should_live_resize_direct3d12_direct_composition =
+            self.state.in_size_move_loop.get() && uses_direct3d12 && uses_direct_composition;
 
         let scale_factor = self.state.scale_factor.get();
         let mut should_resize_renderer = false;
@@ -199,9 +207,19 @@ impl WindowsWindowInner {
                 .callbacks
                 .request_frame
                 .set(Some(restore_from_minimized));
-        } else if is_maximized_restore_during_drag && uses_direct3d12 {
+        } else if should_live_resize_direct3d12_direct_composition {
+            if is_maximized_restore_during_drag {
+                self.state.size_move_started_maximized.set(false);
+            }
+            self.state
+                .pending_device_size_during_resize
+                .set(Some(new_size));
+            self.handle_size_change(new_size, scale_factor, false);
+            self.draw_window(handle, false, true);
+            return Some(0);
+        } else if is_maximized_restore_during_drag && should_defer_direct3d12_hwnd_resize {
             log::trace!(
-                "Deferring Direct3D 12 resize during maximized restore drag to {}x{}.",
+                "Deferring Direct3D 12 HWND swap-chain resize during maximized restore drag to {}x{}.",
                 width,
                 height
             );
@@ -210,17 +228,13 @@ impl WindowsWindowInner {
                 .pending_device_size_during_resize
                 .set(Some(new_size));
             self.handle_size_change(new_size, scale_factor, false);
-            self.draw_window(handle, true, self.should_present_during_size_move_loop());
             return Some(0);
-        } else if self.state.in_size_move_loop.get() && uses_direct3d12 {
+        } else if should_defer_direct3d12_hwnd_resize {
             self.state
                 .pending_device_size_during_resize
                 .set(Some(new_size));
+            self.handle_size_change(new_size, scale_factor, false);
             return Some(0);
-        } else if self.state.in_size_move_loop.get() {
-            self.state
-                .pending_device_size_during_resize
-                .set(Some(new_size));
         } else {
             should_resize_renderer = true;
         }
@@ -258,6 +272,18 @@ impl WindowsWindowInner {
         self.state
             .size_move_started_maximized
             .set(self.state.is_maximized());
+        if let Ok(renderer) = self.state.renderer.try_borrow() {
+            let mode = if renderer.uses_direct3d12() {
+                if renderer.uses_direct_composition() {
+                    "Direct3D 12 + DirectComposition staged resize"
+                } else {
+                    "Direct3D 12 + HWND deferred resize"
+                }
+            } else {
+                "Direct3D 11 live resize"
+            };
+            log::info!("Entering interactive size/move loop with {mode}.");
+        }
         unsafe {
             let ret = SetTimer(
                 Some(handle),
@@ -283,14 +309,31 @@ impl WindowsWindowInner {
         }
         if let Some(device_size) = self.state.pending_device_size_during_resize.take() {
             let scale_factor = self.state.scale_factor.get();
-            log::info!(
-                "Applying deferred renderer resize after interactive size/move loop to {}x{}.",
-                device_size.width.0,
-                device_size.height.0
-            );
-            self.handle_size_change(device_size, scale_factor, true);
-            unsafe {
-                let _ = RedrawWindow(Some(handle), None, None, RDW_INVALIDATE | RDW_UPDATENOW);
+            let should_apply_deferred_renderer_resize = self
+                .state
+                .renderer
+                .try_borrow()
+                .map(|renderer| !renderer.uses_direct_composition())
+                .unwrap_or(false);
+            if should_apply_deferred_renderer_resize {
+                log::info!(
+                    "Applying deferred renderer resize after interactive size/move loop to {}x{}.",
+                    device_size.width.0,
+                    device_size.height.0
+                );
+                self.handle_size_change(device_size, scale_factor, true);
+                unsafe {
+                    let _ = RedrawWindow(
+                        Some(handle),
+                        None,
+                        None,
+                        RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE,
+                    );
+                }
+            } else {
+                unsafe {
+                    let _ = RedrawWindow(Some(handle), None, None, RDW_INVALIDATE | RDW_NOERASE);
+                }
             }
         }
         None
@@ -302,21 +345,21 @@ impl WindowsWindowInner {
             while let Some(Ok(runnable)) = runnables.next() {
                 WindowsDispatcher::execute_runnable(runnable);
             }
-
-            if self.should_present_during_size_move_loop() {
-                // 仅在 DirectComposition 路径维持交互绘制；HWND swap chain 交给系统做
-                // 临时缩放，等 size/move 结束后再统一调整 swap chain，避免反复 ResizeBuffers。
-                self.handle_paint_msg(handle)
-            } else {
-                None
+            if self.should_schedule_resize_redraw_during_size_move_loop() {
+                self.draw_window(handle, false, true);
             }
+            None
         } else {
             None
         }
     }
 
     fn handle_paint_msg(&self, handle: HWND) -> Option<isize> {
-        self.draw_window(handle, false, self.should_present_during_size_move_loop())
+        self.draw_window(
+            handle,
+            false,
+            self.should_require_presentation_during_size_move_loop(),
+        )
     }
 
     fn handle_close_msg(&self) -> Option<isize> {
@@ -1303,6 +1346,40 @@ impl WindowsWindowInner {
             }
         }
 
+        if self.should_freeze_drawable_during_size_move_loop() && !force_render {
+            self.state.callbacks.request_frame.set(Some(request_frame));
+            self.update_ime_enabled(handle);
+            unsafe { ValidateRect(Some(handle), None).ok().log_err() };
+            return Some(0);
+        }
+
+        if self.should_schedule_resize_redraw_during_size_move_loop() {
+            let device_size = self
+                .state
+                .pending_device_size_during_resize
+                .get()
+                .expect("pending size missing for staged DirectComposition resize");
+            let mut renderer = self.state.renderer.borrow_mut();
+            log::trace!(
+                "Applying staged DirectComposition resize before requesting a frame to {}x{}.",
+                device_size.width.0,
+                device_size.height.0
+            );
+            self.state.pending_device_size_during_resize.set(None);
+            if let Err(error) = renderer.resize(device_size) {
+                log::error!(
+                    "Failed to resize DirectComposition renderer before requesting a frame, invalidating devices: {error}"
+                );
+                self.state
+                    .invalidate_devices
+                    .store(true, std::sync::atomic::Ordering::Release);
+                self.state.callbacks.request_frame.set(Some(request_frame));
+                self.update_ime_enabled(handle);
+                unsafe { ValidateRect(Some(handle), None).ok().log_err() };
+                return Some(0);
+            }
+        }
+
         if force_render {
             // Re-enable drawing after a device loss recovery. The forced render
             // will rebuild the scene with fresh atlas textures.
@@ -1321,19 +1398,37 @@ impl WindowsWindowInner {
     }
 
     #[inline]
-    fn should_present_during_size_move_loop(&self) -> bool {
+    fn should_freeze_drawable_during_size_move_loop(&self) -> bool {
+        self.state.in_size_move_loop.get()
+            && self.state.pending_device_size_during_resize.get().is_some()
+            && self
+                .state
+                .renderer
+                .try_borrow()
+                .map(|renderer| renderer.uses_direct3d12() && !renderer.uses_direct_composition())
+                .unwrap_or(false)
+    }
+
+    #[inline]
+    fn should_schedule_resize_redraw_during_size_move_loop(&self) -> bool {
+        self.state.in_size_move_loop.get()
+            && self.state.pending_device_size_during_resize.get().is_some()
+            && self
+                .state
+                .renderer
+                .try_borrow()
+                .map(|renderer| renderer.uses_direct3d12() && renderer.uses_direct_composition())
+                .unwrap_or(false)
+    }
+
+    #[inline]
+    fn should_require_presentation_during_size_move_loop(&self) -> bool {
         self.state.in_size_move_loop.get()
             && self
                 .state
                 .renderer
                 .try_borrow()
-                .map(|renderer| {
-                    renderer.uses_direct3d12()
-                        && !renderer.disable_direct_composition()
-                        && (self.hide_title_bar
-                            || self.state.background_appearance.get()
-                                != WindowBackgroundAppearance::Opaque)
-                })
+                .map(|renderer| renderer.uses_direct3d12() && renderer.uses_direct_composition())
                 .unwrap_or(false)
     }
 

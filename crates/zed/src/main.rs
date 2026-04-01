@@ -71,17 +71,11 @@ use zed::{
 
 use crate::zed::{OpenRequestKind, eager_load_active_theme_and_icon_theme};
 
-#[cfg(all(
-    feature = "mimalloc",
-    not(zed_tracy_with_memory_allocator),
-))]
+#[cfg(all(feature = "mimalloc", not(zed_tracy_with_memory_allocator),))]
 #[global_allocator]
 static GLOBAL: better_mimalloc_rs::MiMalloc = better_mimalloc_rs::MiMalloc;
 
-#[cfg(all(
-    feature = "mimalloc",
-    not(zed_tracy_with_memory_allocator),
-))]
+#[cfg(all(feature = "mimalloc", not(zed_tracy_with_memory_allocator),))]
 fn init_global_allocator() {
     // 更积极地回收空闲页，优先改善空闲后的 RSS 回落表现。
     let config = better_mimalloc_rs::MiMallocConfig {
@@ -93,10 +87,7 @@ fn init_global_allocator() {
     better_mimalloc_rs::MiMalloc::init_with(&config);
 }
 
-#[cfg(not(all(
-    feature = "mimalloc",
-    not(zed_tracy_with_memory_allocator),
-)))]
+#[cfg(not(all(feature = "mimalloc", not(zed_tracy_with_memory_allocator),)))]
 fn init_global_allocator() {}
 
 fn files_not_created_on_launch(errors: HashMap<io::ErrorKind, Vec<&Path>>) {
