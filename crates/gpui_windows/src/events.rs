@@ -110,7 +110,7 @@ impl WindowsWindowInner {
             WM_INPUTLANGCHANGE => self.handle_input_language_changed(),
             WM_SHOWWINDOW => self.handle_window_visibility_changed(handle, wparam),
             WM_GPUI_CURSOR_STYLE_CHANGED => self.handle_cursor_changed(lparam),
-            WM_GPUI_FORCE_UPDATE_WINDOW => self.draw_window(handle, true),
+            WM_GPUI_FORCE_UPDATE_WINDOW => self.draw_window(handle, true, false),
             WM_GPUI_GPU_DEVICE_LOST => self.handle_device_lost(lparam),
             DM_POINTERHITTEST => self.handle_dm_pointer_hit_test(wparam),
             _ => None,
@@ -184,7 +184,10 @@ impl WindowsWindowInner {
         let width = lparam.loword().max(1) as i32;
         let height = lparam.hiword().max(1) as i32;
         let new_size = size(DevicePixels(width), DevicePixels(height));
-        let uses_direct3d12 = self.state.renderer.borrow().uses_direct3d12();
+        let uses_direct3d12 = {
+            let renderer = self.state.renderer.borrow();
+            renderer.uses_direct3d12()
+        };
         let is_maximized_restore_during_drag = self.state.in_size_move_loop.get()
             && self.state.size_move_started_maximized.get()
             && wparam.0 == SIZE_RESTORED as usize;
@@ -198,7 +201,7 @@ impl WindowsWindowInner {
                 .set(Some(restore_from_minimized));
         } else if is_maximized_restore_during_drag && uses_direct3d12 {
             log::trace!(
-                "Applying one immediate Direct3D 12 redraw for maximized restore drag to {}x{}.",
+                "Deferring Direct3D 12 resize during maximized restore drag to {}x{}.",
                 width,
                 height
             );
@@ -206,15 +209,10 @@ impl WindowsWindowInner {
             self.state
                 .pending_device_size_during_resize
                 .set(Some(new_size));
-            self.handle_size_change(new_size, scale_factor, true);
-            self.draw_window(handle, true);
+            self.handle_size_change(new_size, scale_factor, false);
+            self.draw_window(handle, true, self.should_present_during_size_move_loop());
             return Some(0);
         } else if self.state.in_size_move_loop.get() && uses_direct3d12 {
-            log::trace!(
-                "Deferring Direct3D 12 size handling during interactive size/move loop to {}x{}.",
-                width,
-                height
-            );
             self.state
                 .pending_device_size_during_resize
                 .set(Some(new_size));
@@ -305,27 +303,12 @@ impl WindowsWindowInner {
                 WindowsDispatcher::execute_runnable(runnable);
             }
 
-            let force_live_redraw = self.state.renderer.borrow().uses_direct3d12()
-                && (self.hide_title_bar
-                    || self.state.background_appearance.get()
-                        != WindowBackgroundAppearance::Opaque);
-
-            if force_live_redraw {
-                if let Some(device_size) = self.state.pending_device_size_during_resize.take() {
-                    let scale_factor = self.state.scale_factor.get();
-                    self.handle_size_change(device_size, scale_factor, true);
-                }
-
-                // Windows enters a modal move/size loop during drag-resize. Our VSync
-                // invalidation thread intentionally pauses while that loop is active, so
-                // windows that rely on custom chrome or translucent materials must keep
-                // rendering from the timer. Otherwise DWM falls back to a blurred
-                // system snapshot and can temporarily show the native drag frame.
-                self.draw_window(handle, true)
-            } else if self.state.pending_device_size_during_resize.get().is_none() {
-                Some(0)
-            } else {
+            if self.should_present_during_size_move_loop() {
+                // 仅在 DirectComposition 路径维持交互绘制；HWND swap chain 交给系统做
+                // 临时缩放，等 size/move 结束后再统一调整 swap chain，避免反复 ResizeBuffers。
                 self.handle_paint_msg(handle)
+            } else {
+                None
             }
         } else {
             None
@@ -333,7 +316,7 @@ impl WindowsWindowInner {
     }
 
     fn handle_paint_msg(&self, handle: HWND) -> Option<isize> {
-        self.draw_window(handle, false)
+        self.draw_window(handle, false, self.should_present_during_size_move_loop())
     }
 
     fn handle_close_msg(&self) -> Option<isize> {
@@ -1240,7 +1223,7 @@ impl WindowsWindowInner {
 
     fn handle_window_visibility_changed(&self, handle: HWND, wparam: WPARAM) -> Option<isize> {
         if wparam.0 == 1 {
-            self.draw_window(handle, false);
+            self.draw_window(handle, false, false);
         }
         None
     }
@@ -1249,13 +1232,40 @@ impl WindowsWindowInner {
         let devices = lparam.0 as *const DirectXDevices;
         let devices = unsafe { &*devices };
         let devices = self.state.effective_recovery_devices(devices);
-        if let Err(err) = self
-            .state
-            .renderer
-            .borrow_mut()
-            .handle_device_lost(&devices)
-        {
-            panic!("Device lost: {err}");
+        let mut renderer = self.state.renderer.borrow_mut();
+        if let Err(err) = renderer.handle_device_lost(&devices) {
+            log::error!("Window renderer device recovery failed: {err:#}");
+
+            if devices.active_backend() == DirectXBackend::Direct3d12 {
+                let fallback_devices = devices.with_active_backend(DirectXBackend::Direct3d11);
+                match renderer.handle_device_lost(&fallback_devices) {
+                    Ok(()) => {
+                        self.state
+                            .renderer_backend_override
+                            .set(Some(DirectXBackend::Direct3d11));
+                        log::warn!(
+                            "Window renderer fell back to {} after {} recovery failed.",
+                            DirectXBackend::Direct3d11.display_name(),
+                            DirectXBackend::Direct3d12.display_name(),
+                        );
+                    }
+                    Err(fallback_err) => {
+                        log::error!(
+                            "Window renderer fallback to {} also failed: {fallback_err:#}",
+                            DirectXBackend::Direct3d11.display_name(),
+                        );
+                        self.state
+                            .invalidate_devices
+                            .store(true, std::sync::atomic::Ordering::Release);
+                        return Some(0);
+                    }
+                }
+            } else {
+                self.state
+                    .invalidate_devices
+                    .store(true, std::sync::atomic::Ordering::Release);
+                return Some(0);
+            }
         }
         self.state.clear_direct_manipulation();
         Some(0)
@@ -1269,7 +1279,12 @@ impl WindowsWindowInner {
     }
 
     #[inline]
-    fn draw_window(&self, handle: HWND, force_render: bool) -> Option<isize> {
+    fn draw_window(
+        &self,
+        handle: HWND,
+        force_render: bool,
+        require_presentation: bool,
+    ) -> Option<isize> {
         let mut request_frame = self.state.callbacks.request_frame.take()?;
 
         let events =
@@ -1294,7 +1309,7 @@ impl WindowsWindowInner {
             self.state.renderer.borrow_mut().mark_drawable();
         }
         request_frame(RequestFrameOptions {
-            require_presentation: false,
+            require_presentation,
             force_render,
         });
 
@@ -1303,6 +1318,23 @@ impl WindowsWindowInner {
         unsafe { ValidateRect(Some(handle), None).ok().log_err() };
 
         Some(0)
+    }
+
+    #[inline]
+    fn should_present_during_size_move_loop(&self) -> bool {
+        self.state.in_size_move_loop.get()
+            && self
+                .state
+                .renderer
+                .try_borrow()
+                .map(|renderer| {
+                    renderer.uses_direct3d12()
+                        && !renderer.disable_direct_composition()
+                        && (self.hide_title_bar
+                            || self.state.background_appearance.get()
+                                != WindowBackgroundAppearance::Opaque)
+                })
+                .unwrap_or(false)
     }
 
     #[inline]

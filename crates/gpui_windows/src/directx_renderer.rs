@@ -96,6 +96,7 @@ impl WindowRenderer {
             }
             *self = Self::new(hwnd, directx_devices, disable_direct_composition)
                 .context("Recreating window renderer after GPU backend switch")?;
+            self.skip_next_draw_after_recovery();
             return Ok(());
         }
 
@@ -141,7 +142,7 @@ impl WindowRenderer {
         }
     }
 
-    fn disable_direct_composition(&self) -> bool {
+    pub(crate) fn disable_direct_composition(&self) -> bool {
         match self {
             Self::Direct3d11(renderer) => renderer.disable_direct_composition(),
             Self::Direct3d12(renderer) => renderer.disable_direct_composition(),
@@ -159,6 +160,13 @@ impl WindowRenderer {
         match self {
             Self::Direct3d11(renderer) => renderer.mark_drawable(),
             Self::Direct3d12(renderer) => renderer.mark_drawable(),
+        }
+    }
+
+    fn skip_next_draw_after_recovery(&mut self) {
+        match self {
+            Self::Direct3d11(renderer) => renderer.skip_next_draw_after_recovery(),
+            Self::Direct3d12(renderer) => renderer.skip_next_draw_after_recovery(),
         }
     }
 }
@@ -891,6 +899,10 @@ impl DirectXRenderer {
 
     pub(crate) fn mark_drawable(&mut self) {
         self.skip_draws = false;
+    }
+
+    pub(crate) fn skip_next_draw_after_recovery(&mut self) {
+        self.skip_draws = true;
     }
 }
 

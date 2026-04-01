@@ -51,6 +51,7 @@ const PATH_MULTISAMPLE_COUNT: u32 = 4;
 const RTV_DESCRIPTOR_COUNT: usize = BUFFER_COUNT + 1;
 const SRV_DESCRIPTOR_COUNT: usize = 4096;
 const DIRECT_COMPOSITION_CLEAR_ALPHA_FLOOR: f32 = 1.0 / 255.0;
+const SWAP_CHAIN_FLAGS: DXGI_SWAP_CHAIN_FLAG = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
 pub(crate) struct DirectX12Renderer {
     hwnd: HWND,
@@ -59,6 +60,7 @@ pub(crate) struct DirectX12Renderer {
     resources: DirectX12RendererResources,
     globals: DirectX12GlobalElements,
     pipelines: DirectX12RenderPipelines,
+    disable_direct_composition: bool,
     direct_composition: Option<DirectCompositionLayer>,
     font_info: &'static FontInfo,
     width: u32,
@@ -89,6 +91,9 @@ struct DirectX12RendererDevices {
 
 struct DirectX12RendererResources {
     swap_chain: IDXGISwapChain3,
+    frame_latency_waitable_object: HANDLE,
+    frame_latency_waitable_armed: bool,
+    srv_descriptors: DirectX12SrvDescriptors,
     back_buffers: Vec<DirectX12BackBuffer>,
     path_intermediate_texture: ShaderTextureBinding,
     path_intermediate_resource: ID3D12Resource,
@@ -303,6 +308,7 @@ impl DirectX12Renderer {
             resources,
             globals,
             pipelines,
+            disable_direct_composition,
             direct_composition,
             font_info: DirectXRenderer::get_font_info(),
             width: 1,
@@ -323,11 +329,13 @@ impl DirectX12Renderer {
     }
 
     pub(crate) fn disable_direct_composition(&self) -> bool {
-        self.direct_composition.is_none()
+        self.disable_direct_composition
     }
 
     pub(crate) fn handle_device_lost(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
-        let disable_direct_composition = self.direct_composition.take().is_none();
+        let disable_direct_composition = self.disable_direct_composition;
+        let previous_direct_composition = self.direct_composition.take();
+        drop(previous_direct_composition);
 
         let devices = DirectX12RendererDevices::new(directx_devices, disable_direct_composition)
             .context("Recreating Direct3D 12 devices")?;
@@ -468,6 +476,7 @@ impl DirectX12Renderer {
         self.devices
             .release_recorded_references()
             .context("Releasing Direct3D 12 command-list references before resize")?;
+
         if let Some(direct_composition) = &self.direct_composition {
             let new_resources =
                 DirectX12RendererResources::new(&self.devices, width, height, self.hwnd, false)
@@ -477,9 +486,35 @@ impl DirectX12Renderer {
                 .context("Switching DirectComposition to resized Direct3D 12 swap chain")?;
             self.resources = new_resources;
         } else {
-            self.resources
-                .resize(&self.devices, width, height)
-                .context("Resizing Direct3D 12 resources")?;
+            if let Err(resize_error) = self.resources.resize(&mut self.devices, width, height) {
+                log::error!(
+                    "Direct3D 12 resize failed while resizing swap chain to {}x{}: {resize_error:#}",
+                    width,
+                    height
+                );
+
+                // Some drivers intermittently reject ResizeBuffers when the GPU is still
+                // referencing the back buffers. Waiting for idle and retrying once keeps the
+                // interactive resize path stable without forcing a full device recovery.
+                self.devices.wait_for_gpu_idle()?;
+                if let Err(retry_error) = self.resources.resize(&mut self.devices, width, height) {
+                    log::error!(
+                        "Direct3D 12 resize retry failed while resizing swap chain to {}x{}: {retry_error:#}",
+                        width,
+                        height
+                    );
+
+                    let new_resources = DirectX12RendererResources::new(
+                        &self.devices,
+                        width,
+                        height,
+                        self.hwnd,
+                        true,
+                    )
+                    .context("Recreating Direct3D 12 resources after ResizeBuffers failed")?;
+                    self.resources = new_resources;
+                }
+            }
         }
 
         self.width = width;
@@ -516,7 +551,13 @@ impl DirectX12Renderer {
         self.skip_draws = false;
     }
 
+    pub(crate) fn skip_next_draw_after_recovery(&mut self) {
+        self.skip_draws = true;
+    }
+
     fn pre_draw(&mut self, clear_color: [f32; 4]) -> Result<()> {
+        // 给 DXGI/DWM 一点时间释放 back buffer 引用，减少交互缩放期间 ResizeBuffers 的 INVALID_CALL 概率。
+        self.resources.wait_for_frame_latency(16)?;
         self.globals.global_params_buffer.update(&GlobalParams {
             gamma_ratios: self.font_info.gamma_ratios,
             viewport_size: [
@@ -592,6 +633,9 @@ impl DirectX12Renderer {
                 .Present(0, DXGI_PRESENT(0))
                 .ok()
                 .context("Presenting Direct3D 12 swap chain failed")?;
+        }
+        if !self.resources.frame_latency_waitable_object.is_invalid() {
+            self.resources.frame_latency_waitable_armed = true;
         }
         Ok(())
     }
@@ -1174,6 +1218,13 @@ impl DirectX12RendererDevices {
         executor.execute(&command_queue, &mut self.fence)
     }
 
+    fn release_recorded_references(&mut self) -> Result<()> {
+        for executor in &mut self.executors {
+            executor.release_recorded_references(&self.fence)?;
+        }
+        Ok(())
+    }
+
     fn wait_for_gpu_idle(&mut self) -> Result<()> {
         for executor in &mut self.executors {
             executor.wait_until_available(&self.fence)?;
@@ -1181,13 +1232,6 @@ impl DirectX12RendererDevices {
 
         let fence_value = self.fence.signal(&self.command_queue)?;
         self.fence.wait_for_value(fence_value)
-    }
-
-    fn release_recorded_references(&mut self) -> Result<()> {
-        for executor in &mut self.executors {
-            executor.release_recorded_references(&self.fence)?;
-        }
-        Ok(())
     }
 
     fn rtv_handle(&self, slot: usize) -> D3D12_CPU_DESCRIPTOR_HANDLE {
@@ -1215,6 +1259,11 @@ impl DirectX12RendererResources {
             disable_direct_composition,
         )
         .context("Creating Direct3D 12 swap chain")?;
+        let frame_latency_waitable_object = configure_swap_chain(
+            &swap_chain,
+            None,
+        )
+        .context("Configuring Direct3D 12 swap chain")?;
 
         let back_buffers = create_back_buffers(devices, &swap_chain)
             .context("Creating Direct3D 12 back buffers")?;
@@ -1258,6 +1307,9 @@ impl DirectX12RendererResources {
 
         Ok(Self {
             swap_chain,
+            frame_latency_waitable_object,
+            frame_latency_waitable_armed: false,
+            srv_descriptors: devices.srv_descriptors.clone(),
             back_buffers,
             path_intermediate_texture,
             path_intermediate_resource,
@@ -1270,38 +1322,50 @@ impl DirectX12RendererResources {
 
     fn resize(
         &mut self,
-        devices: &DirectX12RendererDevices,
+        devices: &mut DirectX12RendererDevices,
         width: u32,
         height: u32,
     ) -> Result<()> {
         let old_back_buffers = std::mem::take(&mut self.back_buffers);
         drop(old_back_buffers);
+        let swap_chain = self.swap_chain.clone();
         unsafe {
-            if let Err(error) = self.swap_chain.ResizeBuffers(
-                BUFFER_COUNT as u32,
+            let mut result = swap_chain.ResizeBuffers(
+                0,
                 width,
                 height,
-                RENDER_TARGET_FORMAT,
-                DXGI_SWAP_CHAIN_FLAG(0),
-            ) {
-                log::error!(
-                    "Direct3D 12 ResizeBuffers failed while resizing swap chain to {}x{}: {error:#}",
+                DXGI_FORMAT_UNKNOWN,
+                SWAP_CHAIN_FLAGS,
+            );
+
+            // 某些驱动在 swap chain 的 back buffer 仍被 DXGI/DWM 引用时，会返回 INVALID_CALL。
+            // 在这种情况下先等待 swap chain 空闲与 GPU idle，再重试一次。
+            if let Err(error) = &result
+                && error.code() == DXGI_ERROR_INVALID_CALL
+            {
+                self.wait_for_frame_latency(100)?;
+                devices.wait_for_gpu_idle()?;
+                result = swap_chain.ResizeBuffers(
+                    0,
                     width,
-                    height
+                    height,
+                    DXGI_FORMAT_UNKNOWN,
+                    SWAP_CHAIN_FLAGS,
                 );
-                match create_back_buffers(devices, &self.swap_chain) {
-                    Ok(back_buffers) => {
-                        self.back_buffers = back_buffers;
-                    }
-                    Err(restore_error) => {
-                        log::error!(
-                            "Direct3D 12 failed to restore swap-chain back buffers after ResizeBuffers failed: {restore_error:#}"
-                        );
-                    }
-                }
+            }
+
+            if let Err(error) = result {
+                // 失败时恢复当前 swap chain 的 back buffer 引用，避免后续 draw 崩溃。
+                self.back_buffers = create_back_buffers(devices, &self.swap_chain)
+                    .context("Restoring Direct3D 12 back buffers after ResizeBuffers failed")?;
                 return Err(error).context("Resizing Direct3D 12 swap chain");
             }
         }
+        self.frame_latency_waitable_object = configure_swap_chain(
+            &self.swap_chain,
+            Some(self.frame_latency_waitable_object),
+        )
+        .context("Reconfiguring Direct3D 12 swap chain after resize")?;
 
         let new_back_buffers = create_back_buffers(devices, &self.swap_chain)
             .context("Recreating Direct3D 12 back buffers")?;
@@ -1347,6 +1411,27 @@ impl DirectX12RendererResources {
         self.scissor_rect = create_scissor_rect(width, height);
         Ok(())
     }
+
+    fn wait_for_frame_latency(&mut self, timeout_ms: u32) -> Result<()> {
+        if !self.frame_latency_waitable_armed {
+            return Ok(());
+        }
+        if self.frame_latency_waitable_object.is_invalid() {
+            return Ok(());
+        }
+        let wait_result = unsafe { WaitForSingleObject(self.frame_latency_waitable_object, timeout_ms) };
+        match wait_result {
+            windows::Win32::Foundation::WAIT_OBJECT_0 => {
+                self.frame_latency_waitable_armed = false;
+                Ok(())
+            }
+            windows::Win32::Foundation::WAIT_TIMEOUT => Ok(()),
+            _ => Err(anyhow::anyhow!(
+                "Waiting for Direct3D 12 frame latency failed with status {:?}",
+                wait_result
+            )),
+        }
+    }
 }
 
 impl DirectCompositionLayer {
@@ -1367,8 +1452,19 @@ impl DirectCompositionLayer {
             self.comp_visual.SetContent(swap_chain)?;
             self.comp_target.SetRoot(&self.comp_visual)?;
             self.comp_device.Commit()?;
+            self.comp_device.WaitForCommitCompletion()?;
         }
         Ok(())
+    }
+}
+
+impl Drop for DirectX12RendererResources {
+    fn drop(&mut self) {
+        self.srv_descriptors
+            .free_persistent_slot(self.path_intermediate_texture.descriptor_slot);
+        if !self.frame_latency_waitable_object.is_invalid() {
+            let _ = unsafe { CloseHandle(self.frame_latency_waitable_object) };
+        }
     }
 }
 
@@ -2290,7 +2386,9 @@ fn create_swap_chain(
         } else {
             DXGI_ALPHA_MODE_PREMULTIPLIED
         },
-        Flags: 0,
+        // 需要启用 FRAME_LATENCY_WAITABLE_OBJECT 才能可靠地等待 DWM 释放 back buffer 引用，
+        // 否则 ResizeBuffers 在交互缩放时更容易返回 INVALID_CALL（0x887A0001）。
+        Flags: SWAP_CHAIN_FLAGS.0 as u32,
     };
 
     let swap_chain = if disable_direct_composition {
@@ -2324,6 +2422,27 @@ fn create_swap_chain(
     swap_chain
         .cast()
         .context("Casting Direct3D 12 swap chain to IDXGISwapChain3")
+}
+
+fn configure_swap_chain(
+    swap_chain: &IDXGISwapChain3,
+    frame_latency_waitable_object: Option<HANDLE>,
+) -> Result<HANDLE> {
+    let swap_chain2: IDXGISwapChain2 = swap_chain
+        .cast()
+        .context("Casting Direct3D 12 swap chain to IDXGISwapChain2")?;
+    unsafe {
+        // 允许失败：某些系统/驱动在特定 swapchain 配置下会拒绝该调用。
+        if let Err(error) = swap_chain2.SetMaximumFrameLatency(1) {
+            log::warn!(
+                "Setting Direct3D 12 swap chain maximum frame latency failed: {error:#}"
+            );
+        }
+    }
+
+    let frame_latency_waitable_object = frame_latency_waitable_object
+        .unwrap_or_else(|| unsafe { swap_chain2.GetFrameLatencyWaitableObject() });
+    Ok(frame_latency_waitable_object)
 }
 
 fn create_back_buffers(
