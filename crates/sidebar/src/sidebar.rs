@@ -709,19 +709,25 @@ impl Sidebar {
         // Derive active_entry from the active workspace's agent panel.
         // Draft is checked first because a conversation can have a session_id
         // before any messages are sent. However, a thread that's still loading
-        // also appears as a "draft" (no messages yet), so when we already have
-        // an eager Thread write for this workspace we preserve it. A session_id
-        // on a non-draft is a positive Thread signal. The remaining case
-        // (conversation exists, not draft, no session_id) is a genuine
-        // mid-load — keep the previous value.
+        // also appears as a "draft" (no messages yet).
         if let Some(active_ws) = &active_workspace {
             if let Some(panel) = active_ws.read(cx).panel::<AgentPanel>(cx) {
                 if panel.read(cx).active_thread_is_draft(cx)
                     || panel.read(cx).active_conversation_view().is_none()
                 {
+                    let conversation_parent_id = panel
+                        .read(cx)
+                        .active_conversation_view()
+                        .and_then(|cv| cv.read(cx).parent_id(cx));
                     let preserving_thread =
-                        matches!(&self.active_entry, Some(ActiveEntry::Thread { .. }))
-                            && self.active_entry_workspace() == Some(active_ws);
+                        if let Some(ActiveEntry::Thread { session_id, .. }) = &self.active_entry {
+                            self.active_entry_workspace() == Some(active_ws)
+                                && conversation_parent_id
+                                    .as_ref()
+                                    .is_some_and(|id| id == session_id)
+                        } else {
+                            false
+                        };
                     if !preserving_thread {
                         self.active_entry = Some(ActiveEntry::Draft(active_ws.clone()));
                     }
@@ -890,6 +896,51 @@ impl Sidebar {
                             icon_from_external_svg,
                             status: AgentThreadStatus::default(),
                             workspace: ThreadEntryWorkspace::Closed(worktree_path_list.clone()),
+                            is_live: false,
+                            is_background: false,
+                            is_title_generating: false,
+                            highlight_positions: Vec::new(),
+                            worktrees,
+                            diff_stats: DiffStats::default(),
+                        });
+                    }
+                }
+
+                // Load threads from main worktrees when a workspace in this
+                // group is itself a linked worktree checkout.
+                let main_repo_queries: Vec<PathList> = group
+                    .workspaces
+                    .iter()
+                    .flat_map(|ws| root_repository_snapshots(ws, cx))
+                    .filter(|snapshot| snapshot.is_linked_worktree())
+                    .map(|snapshot| {
+                        PathList::new(std::slice::from_ref(&snapshot.original_repo_abs_path))
+                    })
+                    .collect();
+
+                for main_repo_path_list in main_repo_queries {
+                    let folder_path_matches = thread_store
+                        .read(cx)
+                        .entries_for_path(&main_repo_path_list)
+                        .cloned();
+                    let main_worktree_path_matches = thread_store
+                        .read(cx)
+                        .entries_for_main_worktree_path(&main_repo_path_list)
+                        .cloned();
+
+                    for row in folder_path_matches.chain(main_worktree_path_matches) {
+                        if !seen_session_ids.insert(row.session_id.clone()) {
+                            continue;
+                        }
+                        let (icon, icon_from_external_svg) = resolve_agent_icon(&row.agent_id);
+                        let worktrees =
+                            worktree_info_from_thread_paths(&row.folder_paths, &project_groups);
+                        threads.push(ThreadEntry {
+                            metadata: row,
+                            icon,
+                            icon_from_external_svg,
+                            status: AgentThreadStatus::default(),
+                            workspace: ThreadEntryWorkspace::Closed(main_repo_path_list.clone()),
                             is_live: false,
                             is_background: false,
                             is_title_generating: false,

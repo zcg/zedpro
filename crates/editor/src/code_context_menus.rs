@@ -10,7 +10,7 @@ use language::CodeLabel;
 use language::{Buffer, LanguageName, LanguageRegistry};
 use lsp::CompletionItemTag;
 use markdown::{CopyButtonVisibility, Markdown, MarkdownElement};
-use multi_buffer::{Anchor, ExcerptId};
+use multi_buffer::Anchor;
 use ordered_float::OrderedFloat;
 use project::lsp_store::CompletionDocumentation;
 use project::{CodeAction, Completion, TaskSourceKind};
@@ -376,7 +376,8 @@ impl CompletionsMenu {
         id: CompletionId,
         sort_completions: bool,
         choices: &Vec<String>,
-        selection: Range<Anchor>,
+        initial_position: Anchor,
+        selection: Range<text::Anchor>,
         buffer: Entity<Buffer>,
         scroll_handle: Option<UniformListScrollHandle>,
         snippet_sort_order: SnippetSortOrder,
@@ -384,7 +385,7 @@ impl CompletionsMenu {
         let completions = choices
             .iter()
             .map(|choice| Completion {
-                replace_range: selection.start.text_anchor..selection.end.text_anchor,
+                replace_range: selection.clone(),
                 new_text: choice.to_string(),
                 label: CodeLabel::plain(choice.to_string(), None),
                 match_start: None,
@@ -419,7 +420,7 @@ impl CompletionsMenu {
             id,
             source: CompletionsMenuSource::SnippetChoices,
             sort_completions,
-            initial_position: selection.start,
+            initial_position,
             initial_query: None,
             is_incomplete: false,
             buffer,
@@ -1433,7 +1434,6 @@ impl CompletionsMenu {
 
 #[derive(Clone)]
 pub struct AvailableCodeAction {
-    pub excerpt_id: ExcerptId,
     pub action: CodeAction,
     pub provider: Rc<dyn CodeActionProvider>,
 }
@@ -1486,7 +1486,6 @@ impl CodeActionContents {
             })
             .chain(self.actions.iter().flat_map(|actions| {
                 actions.iter().map(|available| CodeActionsItem::CodeAction {
-                    excerpt_id: available.excerpt_id,
                     action: available.action.clone(),
                     provider: available.provider.clone(),
                 })
@@ -1510,7 +1509,6 @@ impl CodeActionContents {
         if let Some(actions) = &self.actions {
             if let Some(available) = actions.get(index) {
                 return Some(CodeActionsItem::CodeAction {
-                    excerpt_id: available.excerpt_id,
                     action: available.action.clone(),
                     provider: available.provider.clone(),
                 });
@@ -1530,7 +1528,6 @@ impl CodeActionContents {
 pub enum CodeActionsItem {
     Task(TaskSourceKind, ResolvedTask),
     CodeAction {
-        excerpt_id: ExcerptId,
         action: CodeAction,
         provider: Rc<dyn CodeActionProvider>,
     },

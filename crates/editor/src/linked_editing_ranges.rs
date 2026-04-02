@@ -2,7 +2,6 @@ use collections::HashMap;
 use gpui::{AppContext, Context, Entity, Window};
 use itertools::Itertools;
 use language::Buffer;
-use multi_buffer::MultiBufferOffset;
 use std::{ops::Range, sync::Arc, time::Duration};
 use text::{Anchor, AnchorRangeExt, Bias, BufferId, ToOffset, ToPoint};
 use util::ResultExt;
@@ -44,6 +43,7 @@ impl LinkedEditingRanges {
 
 const UPDATE_DEBOUNCE: Duration = Duration::from_millis(50);
 
+// TODO do not refresh anything at all, if the settings/capabilities do not have it enabled.
 pub(super) fn refresh_linked_ranges(
     editor: &mut Editor,
     window: &mut Window,
@@ -58,55 +58,22 @@ pub(super) fn refresh_linked_ranges(
         cx.background_executor().timer(UPDATE_DEBOUNCE).await;
 
         let mut applicable_selections = Vec::new();
-        let mut has_linked_edits_enabled = false;
         editor
             .update(cx, |editor, cx| {
                 let display_snapshot = editor.display_snapshot(cx);
-                let selections = editor
-                    .selections
-                    .all::<MultiBufferOffset>(&display_snapshot);
+                let selections = editor.selections.all_anchors(&display_snapshot);
                 let snapshot = display_snapshot.buffer_snapshot();
                 let buffer = editor.buffer.read(cx);
-                for selection in selections {
-                    let cursor_position = selection.head();
-                    let start_position = snapshot.anchor_before(cursor_position);
-                    let end_position = snapshot.anchor_after(selection.tail());
-                    if start_position.text_anchor.buffer_id != end_position.text_anchor.buffer_id
-                        || end_position.text_anchor.buffer_id.is_none()
+                for selection in selections.iter() {
+                    if let Some((_, range)) =
+                        snapshot.anchor_range_to_buffer_anchor_range(selection.range())
+                        && let Some(buffer) = buffer.buffer(range.start.buffer_id)
                     {
-                        // Throw away selections spanning multiple buffers.
-                        continue;
-                    }
-                    if let Some(buffer) = buffer.buffer_for_anchor(end_position, cx) {
-                        let buffer_snapshot = buffer.read(cx).snapshot();
-                        if !buffer_snapshot
-                            .settings_at(start_position.text_anchor, cx)
-                            .linked_edits
-                        {
-                            continue;
-                        }
-                        has_linked_edits_enabled = true;
-                        applicable_selections.push((
-                            buffer,
-                            start_position.text_anchor,
-                            end_position.text_anchor,
-                        ));
+                        applicable_selections.push((buffer, range.start, range.end));
                     }
                 }
             })
             .ok()?;
-
-        if !has_linked_edits_enabled {
-            editor
-                .update(cx, |editor, cx| {
-                    if !editor.linked_edit_ranges.is_empty() {
-                        editor.linked_edit_ranges.clear();
-                        cx.notify();
-                    }
-                })
-                .ok();
-            return None;
-        }
 
         if applicable_selections.is_empty() {
             return None;

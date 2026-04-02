@@ -4,7 +4,6 @@ use std::{
     sync::Arc,
 };
 
-use collections::HashMap;
 use gpui::Pixels;
 use itertools::Itertools as _;
 use language::{Bias, Point, PointUtf16, Selection, SelectionGoal};
@@ -12,7 +11,7 @@ use multi_buffer::{MultiBufferDimension, MultiBufferOffset};
 use util::post_inc;
 
 use crate::{
-    Anchor, DisplayPoint, DisplayRow, ExcerptId, MultiBufferSnapshot, SelectMode, ToOffset,
+    Anchor, DisplayPoint, DisplayRow, MultiBufferSnapshot, SelectMode, ToOffset,
     display_map::{DisplaySnapshot, ToDisplayPoint},
     movement::TextLayoutDetails,
 };
@@ -45,8 +44,8 @@ impl SelectionsCollection {
             pending: Some(PendingSelection {
                 selection: Selection {
                     id: 0,
-                    start: Anchor::min(),
-                    end: Anchor::min(),
+                    start: Anchor::Min,
+                    end: Anchor::Min,
                     reversed: false,
                     goal: SelectionGoal::None,
                 },
@@ -539,27 +538,20 @@ impl SelectionsCollection {
             "There must be at least one selection"
         );
         if cfg!(debug_assertions) {
-            let can_resolve_anchors = !snapshot.buffer_snapshot().is_empty();
-            let can_skip_resolve_check = |anchor: &Anchor| anchor.is_min() || anchor.is_max();
             mutable_collection.disjoint.iter().for_each(|selection| {
                 assert!(
                      selection.start.cmp(&selection.end, &snapshot).is_le(),
                     "disjoint selection has start > end: {:?}",
                     mutable_collection.disjoint
                 );
-                if can_resolve_anchors {
-                    assert!(
-                        can_skip_resolve_check(&selection.start)
-                            || snapshot.can_resolve(&selection.start),
-                        "disjoint selection start is not resolvable for the given snapshot:\n{selection:?}, {excerpt:?}",
-                        excerpt = snapshot.buffer_for_excerpt(selection.start.excerpt_id).map(|snapshot| snapshot.remote_id()),
-                    );
-                    assert!(
-                        can_skip_resolve_check(&selection.end) || snapshot.can_resolve(&selection.end),
-                        "disjoint selection end is not resolvable for the given snapshot: {selection:?}, {excerpt:?}",
-                        excerpt = snapshot.buffer_for_excerpt(selection.end.excerpt_id).map(|snapshot| snapshot.remote_id()),
-                    );
-                }
+                assert!(
+                    snapshot.can_resolve(&selection.start),
+                    "disjoint selection start is not resolvable for the given snapshot:\n{selection:?}",
+                );
+                assert!(
+                    snapshot.can_resolve(&selection.end),
+                    "disjoint selection start is not resolvable for the given snapshot:\n{selection:?}",
+                );
             });
             assert!(
                 mutable_collection
@@ -575,24 +567,14 @@ impl SelectionsCollection {
                     "pending selection has start > end: {:?}",
                     selection
                 );
-                if can_resolve_anchors {
-                    assert!(
-                        can_skip_resolve_check(&selection.start)
-                            || snapshot.can_resolve(&selection.start),
-                        "pending selection start is not resolvable for the given snapshot: {pending:?}, {excerpt:?}",
-                        excerpt = snapshot
-                            .buffer_for_excerpt(selection.start.excerpt_id)
-                            .map(|snapshot| snapshot.remote_id()),
-                    );
-                    assert!(
-                        can_skip_resolve_check(&selection.end)
-                            || snapshot.can_resolve(&selection.end),
-                        "pending selection end is not resolvable for the given snapshot: {pending:?}, {excerpt:?}",
-                        excerpt = snapshot
-                            .buffer_for_excerpt(selection.end.excerpt_id)
-                            .map(|snapshot| snapshot.remote_id()),
-                    );
-                }
+                assert!(
+                    snapshot.can_resolve(&selection.start),
+                    "pending selection start is not resolvable for the given snapshot: {pending:?}",
+                );
+                assert!(
+                    snapshot.can_resolve(&selection.end),
+                    "pending selection end is not resolvable for the given snapshot: {pending:?}",
+                );
             }
         }
         (mutable_collection.selections_changed, result)
@@ -674,10 +656,10 @@ impl<'snap, 'a> MutableSelectionsCollection<'snap, 'a> {
             self.disjoint
                 .iter()
                 .filter(|selection| {
-                    if let Some(selection_buffer_id) =
-                        self.snapshot.buffer_id_for_anchor(selection.start)
+                    if let Some((selection_buffer_anchor, _)) =
+                        self.snapshot.anchor_to_buffer_anchor(selection.start)
                     {
-                        let should_remove = selection_buffer_id == buffer_id;
+                        let should_remove = selection_buffer_anchor.buffer_id == buffer_id;
                         changed |= should_remove;
                         !should_remove
                     } else {
@@ -692,10 +674,8 @@ impl<'snap, 'a> MutableSelectionsCollection<'snap, 'a> {
             let buffer_snapshot = self.snapshot.buffer_snapshot();
             let anchor = buffer_snapshot
                 .excerpts()
-                .find(|(_, buffer, _)| buffer.remote_id() == buffer_id)
-                .and_then(|(excerpt_id, _, range)| {
-                    buffer_snapshot.anchor_in_excerpt(excerpt_id, range.context.start)
-                })
+                .find(|excerpt| excerpt.context.start.buffer_id == buffer_id)
+                .and_then(|excerpt| buffer_snapshot.anchor_in_excerpt(excerpt.context.start))
                 .unwrap_or_else(|| self.snapshot.anchor_before(MultiBufferOffset(0)));
             self.collection.disjoint = Arc::from([Selection {
                 id: post_inc(&mut self.collection.next_selection_id),
@@ -1086,80 +1066,6 @@ impl<'snap, 'a> MutableSelectionsCollection<'snap, 'a> {
         self.selections_changed = true;
         self.pending.as_mut().map(|pending| &mut pending.selection)
     }
-
-    /// Compute new ranges for any selections that were located in excerpts that have
-    /// since been removed.
-    ///
-    /// Returns a `HashMap` indicating which selections whose former head position
-    /// was no longer present. The keys of the map are selection ids. The values are
-    /// the id of the new excerpt where the head of the selection has been moved.
-    pub fn refresh(&mut self) -> HashMap<usize, ExcerptId> {
-        let mut pending = self.collection.pending.take();
-        let mut selections_with_lost_position = HashMap::default();
-
-        let anchors_with_status = {
-            let disjoint_anchors = self
-                .disjoint
-                .iter()
-                .flat_map(|selection| [&selection.start, &selection.end]);
-            self.snapshot.refresh_anchors(disjoint_anchors)
-        };
-        let adjusted_disjoint: Vec<_> = anchors_with_status
-            .chunks(2)
-            .map(|selection_anchors| {
-                let (anchor_ix, start, kept_start) = selection_anchors[0];
-                let (_, end, kept_end) = selection_anchors[1];
-                let selection = &self.disjoint[anchor_ix / 2];
-                let kept_head = if selection.reversed {
-                    kept_start
-                } else {
-                    kept_end
-                };
-                if !kept_head {
-                    selections_with_lost_position.insert(selection.id, selection.head().excerpt_id);
-                }
-
-                Selection {
-                    id: selection.id,
-                    start,
-                    end,
-                    reversed: selection.reversed,
-                    goal: selection.goal,
-                }
-            })
-            .collect();
-
-        if !adjusted_disjoint.is_empty() {
-            let map = self.display_snapshot();
-            let resolved_selections =
-                resolve_selections_wrapping_blocks(adjusted_disjoint.iter(), &map).collect();
-            self.select::<MultiBufferOffset>(resolved_selections);
-        }
-
-        if let Some(pending) = pending.as_mut() {
-            let anchors = self
-                .snapshot
-                .refresh_anchors([&pending.selection.start, &pending.selection.end]);
-            let (_, start, kept_start) = anchors[0];
-            let (_, end, kept_end) = anchors[1];
-            let kept_head = if pending.selection.reversed {
-                kept_start
-            } else {
-                kept_end
-            };
-            if !kept_head {
-                selections_with_lost_position
-                    .insert(pending.selection.id, pending.selection.head().excerpt_id);
-            }
-
-            pending.selection.start = start;
-            pending.selection.end = end;
-        }
-        self.collection.pending = pending;
-        self.selections_changed = true;
-
-        selections_with_lost_position
-    }
 }
 
 impl Deref for MutableSelectionsCollection<'_, '_> {
@@ -1270,35 +1176,17 @@ where
     D: MultiBufferDimension + Sub + AddAssign<<D as Sub>::Output> + Ord,
     I: 'a + IntoIterator<Item = &'a Selection<Anchor>>,
 {
-    // Transforms `Anchor -> Point -> DisplayPoint -> Point -> D`.
-    let wrapped_points = resolve_selections_point(selections, map).map(move |selection| {
-        let start = map.display_point_to_point(
-            map.point_to_display_point(selection.start, Bias::Left),
-            Bias::Left,
-        );
-        let end_bias = if selection.start == selection.end {
-            Bias::Right
-        } else {
-            Bias::Left
-        };
-        let end = map.display_point_to_point(
-            map.point_to_display_point(selection.end, end_bias),
-            end_bias,
-        );
-
-        assert!(start <= end, "start: {:?}, end: {:?}", start, end);
-        Selection {
-            id: selection.id,
-            start,
-            end,
-            reversed: selection.reversed,
-            goal: selection.goal,
-        }
-    });
-    let (to_convert, selections) = coalesce_selections(wrapped_points).tee();
-    let mut converted_endpoints = map
-        .buffer_snapshot()
-        .dimensions_from_points::<D>(to_convert.flat_map(|s| [s.start, s.end]));
+    // Transforms `Anchor -> DisplayPoint -> Point -> DisplayPoint -> D`
+    // todo(lw): We should be able to short circuit the `Anchor -> DisplayPoint -> Point` to `Anchor -> Point`
+    let (to_convert, selections) = resolve_selections_display(selections, map).tee();
+    let mut converted_endpoints =
+        map.buffer_snapshot()
+            .dimensions_from_points::<D>(to_convert.flat_map(|s| {
+                let start = map.display_point_to_point(s.start, Bias::Left);
+                let end = map.display_point_to_point(s.end, Bias::Right);
+                assert!(start <= end, "start: {:?}, end: {:?}", start, end);
+                [start, end]
+            }));
     selections.map(move |s| {
         let start = converted_endpoints.next().unwrap();
         let end = converted_endpoints.next().unwrap();

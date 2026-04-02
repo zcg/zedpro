@@ -67,7 +67,8 @@ macro_rules! settings_overrides {
         }
     }
 }
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::hash::Hash;
 use std::sync::Arc;
 pub use util::serde::default_true;
 
@@ -269,6 +270,35 @@ settings_overrides! {
     pub struct PlatformOverrides { macos, linux, windows }
 }
 
+/// Determines what settings a profile starts from before applying its overrides.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, MergeFrom,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileBase {
+    /// Apply profile settings on top of the user's current settings.
+    #[default]
+    User,
+    /// Apply profile settings on top of Zed's default settings, ignoring user customizations.
+    Default,
+}
+
+/// A named settings profile that can temporarily override settings.
+#[with_fallible_options]
+#[derive(Debug, Default, PartialEq, Clone, Serialize, Deserialize, JsonSchema, MergeFrom)]
+pub struct SettingsProfile {
+    /// What base settings to start from before applying this profile's overrides.
+    ///
+    /// - `user`: Apply on top of user's settings (default)
+    /// - `default`: Apply on top of Zed's default settings, ignoring user customizations
+    #[serde(default)]
+    pub base: ProfileBase,
+
+    /// The settings overrides for this profile.
+    #[serde(default)]
+    pub settings: Box<SettingsContent>,
+}
+
 #[with_fallible_options]
 #[derive(Debug, Default, PartialEq, Clone, Serialize, Deserialize, JsonSchema, MergeFrom)]
 pub struct UserSettingsContent {
@@ -282,7 +312,7 @@ pub struct UserSettingsContent {
     pub platform_overrides: PlatformOverrides,
 
     #[serde(default)]
-    pub profiles: IndexMap<String, SettingsContent>,
+    pub profiles: IndexMap<String, SettingsProfile>,
 }
 
 pub struct ExtensionsSettingsContent {
@@ -560,11 +590,6 @@ pub struct GitPanelSettingsContent {
     ///
     /// Default: false
     pub tree_view: Option<bool>,
-    /// Amount of indentation (in pixels) for nested items in tree view.
-    ///
-    /// Default: 20
-    #[serde(serialize_with = "crate::serialize_optional_f32_with_two_decimal_places")]
-    pub indent_size: Option<f32>,
 
     /// Whether to show the addition/deletion change count next to each file in the Git panel.
     ///
@@ -1030,39 +1055,11 @@ pub struct RemoteSettingsContent {
 )]
 pub struct DevContainerConnection {
     pub name: String,
-    #[serde(default = "default_devcontainer_remote_user")]
     pub remote_user: String,
     pub container_id: String,
     pub use_podman: bool,
-    /// Absolute path to the devcontainer.json on the host where `devcontainer up` was run.
-    /// This is used to show a stable binding between a stored dev container and its config.
-    pub config_path: Option<String>,
-    #[serde(default)]
-    pub projects: BTreeSet<RemoteProject>,
-    #[serde(default)]
-    pub host_projects: BTreeSet<RemoteProject>,
-    pub host: Option<DevContainerHost>,
-}
-
-fn default_devcontainer_remote_user() -> String {
-    "root".to_string()
-}
-
-#[with_fallible_options]
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema, MergeFrom, Hash)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DevContainerHost {
-    Ssh {
-        host: String,
-        username: Option<String>,
-        port: Option<u16>,
-        #[serde(default)]
-        args: Vec<String>,
-    },
-    Wsl {
-        distro_name: String,
-        user: Option<String>,
-    },
+    pub extension_ids: Vec<String>,
+    pub remote_env: BTreeMap<String, String>,
 }
 
 #[with_fallible_options]
@@ -1099,7 +1096,7 @@ pub struct WslConnection {
 
 #[with_fallible_options]
 #[derive(
-    Clone, Debug, Default, Serialize, PartialEq, Eq, PartialOrd, Ord, Deserialize, JsonSchema, Hash,
+    Clone, Debug, Default, Serialize, PartialEq, Eq, PartialOrd, Ord, Deserialize, JsonSchema,
 )]
 pub struct RemoteProject {
     pub paths: Vec<String>,

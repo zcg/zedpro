@@ -27,8 +27,7 @@ use project::{
 
 use language::{LanguageName, Toolchain, ToolchainScope};
 use remote::{
-    DockerConnectionOptions, DockerHost, RemoteConnectionOptions, SshConnectionOptions,
-    WslConnectionOptions,
+    DockerConnectionOptions, RemoteConnectionOptions, SshConnectionOptions, WslConnectionOptions,
 };
 use serde::{Deserialize, Serialize};
 use sqlez::{
@@ -973,12 +972,7 @@ impl Domain for WorkspaceDb {
             ALTER TABLE remote_connections ADD COLUMN use_podman BOOLEAN;
         ),
         sql!(
-            ALTER TABLE remote_connections ADD COLUMN docker_host_user TEXT;
-        ),
-        sql!(
-            UPDATE remote_connections
-            SET docker_host_user = user
-            WHERE kind = "docker" AND docker_host_user IS NULL;
+            ALTER TABLE remote_connections ADD COLUMN remote_env TEXT;
         ),
     ];
 
@@ -1509,7 +1503,7 @@ impl WorkspaceDb {
         let mut name = None;
         let mut container_id = None;
         let mut use_podman = None;
-        let mut docker_host_user = None;
+        let mut remote_env = None;
         match options {
             RemoteConnectionOptions::Ssh(options) => {
                 kind = RemoteConnectionKind::Ssh;
@@ -1527,19 +1521,8 @@ impl WorkspaceDb {
                 container_id = Some(options.container_id);
                 name = Some(options.name);
                 use_podman = Some(options.use_podman);
-                match options.host {
-                    DockerHost::Ssh(options) => {
-                        host = Some(options.host.to_string());
-                        port = options.port;
-                        docker_host_user = options.username;
-                    }
-                    DockerHost::Wsl(options) => {
-                        distro = Some(options.distro_name);
-                        docker_host_user = options.user;
-                    }
-                    DockerHost::Local => {}
-                }
                 user = Some(options.remote_user);
+                remote_env = serde_json::to_string(&options.remote_env).ok();
             }
             #[cfg(any(test, feature = "test-support"))]
             RemoteConnectionOptions::Mock(options) => {
@@ -1558,7 +1541,7 @@ impl WorkspaceDb {
             name,
             container_id,
             use_podman,
-            docker_host_user,
+            remote_env,
         )
     }
 
@@ -1572,7 +1555,7 @@ impl WorkspaceDb {
         name: Option<String>,
         container_id: Option<String>,
         use_podman: Option<bool>,
-        docker_host_user: Option<String>,
+        remote_env: Option<String>,
     ) -> Result<RemoteConnectionId> {
         if let Some(id) = this.select_row_bound(sql!(
             SELECT id
@@ -1584,8 +1567,7 @@ impl WorkspaceDb {
                 user IS ? AND
                 distro IS ? AND
                 name IS ? AND
-                container_id IS ? AND
-                docker_host_user IS ?
+                container_id IS ?
             LIMIT 1
         ))?((
             kind.serialize(),
@@ -1595,7 +1577,6 @@ impl WorkspaceDb {
             distro.clone(),
             name.clone(),
             container_id.clone(),
-            docker_host_user.clone(),
         ))? {
             Ok(RemoteConnectionId(id))
         } else {
@@ -1609,8 +1590,8 @@ impl WorkspaceDb {
                     name,
                     container_id,
                     use_podman,
-                    docker_host_user
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    remote_env
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 RETURNING id
             ))?((
                 kind.serialize(),
@@ -1621,7 +1602,7 @@ impl WorkspaceDb {
                 name,
                 container_id,
                 use_podman,
-                docker_host_user,
+                remote_env,
             ))?
             .context("failed to insert remote project")?;
             Ok(RemoteConnectionId(id))
@@ -1723,24 +1704,13 @@ impl WorkspaceDb {
     fn remote_connections(&self) -> Result<HashMap<RemoteConnectionId, RemoteConnectionOptions>> {
         Ok(self.select(sql!(
             SELECT
-                id, kind, host, port, user, distro, container_id, name, use_podman, docker_host_user
+                id, kind, host, port, user, distro, container_id, name, use_podman, remote_env
             FROM
                 remote_connections
         ))?()?
         .into_iter()
         .filter_map(
-            |(
-                id,
-                kind,
-                host,
-                port,
-                user,
-                distro,
-                container_id,
-                name,
-                use_podman,
-                docker_host_user,
-            )| {
+            |(id, kind, host, port, user, distro, container_id, name, use_podman, remote_env)| {
                 Some((
                     RemoteConnectionId(id),
                     Self::remote_connection_from_row(
@@ -1752,7 +1722,7 @@ impl WorkspaceDb {
                         container_id,
                         name,
                         use_podman,
-                        docker_host_user,
+                        remote_env,
                     )?,
                 ))
             },
@@ -1764,9 +1734,9 @@ impl WorkspaceDb {
         &self,
         id: RemoteConnectionId,
     ) -> Result<RemoteConnectionOptions> {
-        let (kind, host, port, user, distro, container_id, name, use_podman, docker_host_user) =
+        let (kind, host, port, user, distro, container_id, name, use_podman, remote_env) =
             self.select_row_bound(sql!(
-                SELECT kind, host, port, user, distro, container_id, name, use_podman, docker_host_user
+                SELECT kind, host, port, user, distro, container_id, name, use_podman, remote_env
                 FROM remote_connections
                 WHERE id = ?
             ))?(id.0)?
@@ -1780,7 +1750,7 @@ impl WorkspaceDb {
             container_id,
             name,
             use_podman,
-            docker_host_user,
+            remote_env,
         )
         .context("invalid remote_connection row")
     }
@@ -1794,7 +1764,7 @@ impl WorkspaceDb {
         container_id: Option<String>,
         name: Option<String>,
         use_podman: Option<bool>,
-        docker_host_user: Option<String>,
+        remote_env: Option<String>,
     ) -> Option<RemoteConnectionOptions> {
         match RemoteConnectionKind::deserialize(&kind)? {
             RemoteConnectionKind::Wsl => Some(RemoteConnectionOptions::Wsl(WslConnectionOptions {
@@ -1808,29 +1778,15 @@ impl WorkspaceDb {
                 ..Default::default()
             })),
             RemoteConnectionKind::Docker => {
-                let host = if let Some(distro) = distro {
-                    DockerHost::Wsl(WslConnectionOptions {
-                        distro_name: distro,
-                        user: docker_host_user,
-                    })
-                } else if let Some(host) = host {
-                    DockerHost::Ssh(SshConnectionOptions {
-                        host: host.into(),
-                        port,
-                        username: docker_host_user,
-                        ..Default::default()
-                    })
-                } else {
-                    DockerHost::Local
-                };
-
+                let remote_env: BTreeMap<String, String> =
+                    serde_json::from_str(&remote_env?).ok()?;
                 Some(RemoteConnectionOptions::Docker(DockerConnectionOptions {
                     container_id: container_id?,
                     name: name?,
                     remote_user: user?,
                     upload_binary_over_docker_exec: false,
                     use_podman: use_podman?,
-                    host,
+                    remote_env,
                 }))
             }
         }
