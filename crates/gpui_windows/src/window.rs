@@ -52,6 +52,9 @@ pub struct WindowsWindowState {
     pub border_offset: WindowBorderOffset,
     pub appearance: Cell<WindowAppearance>,
     pub background_appearance: Cell<WindowBackgroundAppearance>,
+    pub applied_background_appearance: Cell<WindowBackgroundAppearance>,
+    pub deferred_background_appearance: Cell<Option<WindowBackgroundAppearance>>,
+    pub completed_first_frame: Cell<bool>,
     pub scale_factor: Cell<f32>,
     pub in_size_move_loop: Cell<bool>,
     pub restore_from_minimized: Cell<Option<Box<dyn FnMut(RequestFrameOptions)>>>,
@@ -160,6 +163,9 @@ impl WindowsWindowState {
             border_offset,
             appearance: Cell::new(appearance),
             background_appearance: Cell::new(WindowBackgroundAppearance::Opaque),
+            applied_background_appearance: Cell::new(WindowBackgroundAppearance::Opaque),
+            deferred_background_appearance: Cell::new(None),
+            completed_first_frame: Cell::new(false),
             scale_factor: Cell::new(scale_factor),
             in_size_move_loop: Cell::new(in_size_move_loop),
             restore_from_minimized: Cell::new(restore_from_minimized),
@@ -607,6 +613,43 @@ impl WindowsWindow {
 
         Ok(Self(this))
     }
+
+    fn apply_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
+        let hwnd = self.0.hwnd;
+
+        // 先清空旧的 HWND 背景材质，确保同一窗口在 Acrylic/Mica 间切换时立即生效。
+        set_window_composition_attribute(hwnd, None, 0);
+        dwm_set_window_composition_attribute(hwnd, DWMSBT_NONE);
+
+        match background_appearance {
+            WindowBackgroundAppearance::Opaque => {}
+            WindowBackgroundAppearance::Transparent => {
+                set_window_composition_attribute(hwnd, None, 2);
+            }
+            WindowBackgroundAppearance::Blurred => {
+                let opacity = gpui::windows_window_background_material_opacity();
+                let acrylic_tint = match self.state.appearance.get() {
+                    WindowAppearance::Dark | WindowAppearance::VibrantDark => {
+                        (54, 58, 64, acrylic_alpha(opacity, 4, 48, 132))
+                    }
+                    WindowAppearance::Light | WindowAppearance::VibrantLight => {
+                        (250, 250, 250, acrylic_alpha(opacity, 4, 44, 120))
+                    }
+                };
+                set_window_composition_attribute(hwnd, Some(acrylic_tint), 4);
+            }
+            WindowBackgroundAppearance::MicaBackdrop => {
+                dwm_set_window_composition_attribute(hwnd, DWMSBT_MAINWINDOW);
+            }
+            WindowBackgroundAppearance::MicaAltBackdrop => {
+                dwm_set_window_composition_attribute(hwnd, DWMSBT_TABBEDWINDOW);
+            }
+        }
+
+        self.state
+            .applied_background_appearance
+            .set(background_appearance);
+    }
 }
 
 impl rwh::HasWindowHandle for WindowsWindow {
@@ -926,40 +969,31 @@ impl PlatformWindow for WindowsWindow {
 
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         self.state.background_appearance.set(background_appearance);
-        let hwnd = self.0.hwnd;
+        if !self.state.completed_first_frame.get()
+            && matches!(
+                background_appearance,
+                WindowBackgroundAppearance::Blurred
+                    | WindowBackgroundAppearance::MicaBackdrop
+                    | WindowBackgroundAppearance::MicaAltBackdrop
+            )
+        {
+            self.state
+                .deferred_background_appearance
+                .set(Some(background_appearance));
+            return;
+        }
 
-        // Clear the previous Windows backdrop state first so switching between
-        // Acrylic and Mica variants takes effect immediately on the same HWND.
-        set_window_composition_attribute(hwnd, None, 0);
-        dwm_set_window_composition_attribute(hwnd, DWMSBT_NONE);
+        self.state.deferred_background_appearance.set(None);
+        self.apply_background_appearance(background_appearance);
+    }
 
-        match background_appearance {
-            WindowBackgroundAppearance::Opaque => {}
-            WindowBackgroundAppearance::Transparent => {
-                set_window_composition_attribute(hwnd, None, 2);
-            }
-            WindowBackgroundAppearance::Blurred => {
-                let opacity = gpui::windows_window_background_material_opacity();
-                let acrylic_tint = match self.state.appearance.get() {
-                    // Use a lighter neutral tint so Acrylic keeps the frosted look
-                    // without collapsing into a nearly-black overlay.
-                    WindowAppearance::Dark | WindowAppearance::VibrantDark => {
-                        (54, 58, 64, acrylic_alpha(opacity, 4, 48, 132))
-                    }
-                    WindowAppearance::Light | WindowAppearance::VibrantLight => {
-                        (250, 250, 250, acrylic_alpha(opacity, 4, 44, 120))
-                    }
-                };
-                set_window_composition_attribute(hwnd, Some(acrylic_tint), 4);
-            }
-            WindowBackgroundAppearance::MicaBackdrop => {
-                // DWMSBT_MAINWINDOW => MicaBase
-                dwm_set_window_composition_attribute(hwnd, DWMSBT_MAINWINDOW);
-            }
-            WindowBackgroundAppearance::MicaAltBackdrop => {
-                // DWMSBT_TABBEDWINDOW => MicaAlt
-                dwm_set_window_composition_attribute(hwnd, DWMSBT_TABBEDWINDOW);
-            }
+    fn completed_frame(&self) {
+        if self.state.completed_first_frame.replace(true) {
+            return;
+        }
+
+        if let Some(background_appearance) = self.state.deferred_background_appearance.take() {
+            self.apply_background_appearance(background_appearance);
         }
     }
 
