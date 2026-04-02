@@ -61,7 +61,6 @@ pub(crate) struct DirectX12Renderer {
     devices: DirectX12RendererDevices,
     resources: DirectX12RendererResources,
     staged_resources: Option<DirectX12RendererResources>,
-    pending_direct_composition_resize: Option<(u32, u32)>,
     globals: DirectX12GlobalElements,
     pipelines: DirectX12RenderPipelines,
     disable_direct_composition: bool,
@@ -313,7 +312,6 @@ impl DirectX12Renderer {
             devices,
             resources,
             staged_resources: None,
-            pending_direct_composition_resize: None,
             globals,
             pipelines,
             disable_direct_composition,
@@ -409,7 +407,6 @@ impl DirectX12Renderer {
         self.devices = devices;
         self.resources = resources;
         self.staged_resources = None;
-        self.pending_direct_composition_resize = None;
         self.globals = globals;
         self.pipelines = pipelines;
         self.direct_composition = direct_composition;
@@ -428,20 +425,6 @@ impl DirectX12Renderer {
     ) -> Result<()> {
         if self.skip_draws {
             return Ok(());
-        }
-
-        if let Some((width, height)) = self.pending_direct_composition_resize.take() {
-            log::trace!(
-                "Creating staged Direct3D 12 DirectComposition resources for {}x{} immediately before draw.",
-                width,
-                height
-            );
-            self.staged_resources = Some(
-                DirectX12RendererResources::new(&self.devices, width, height, self.hwnd, false)
-                    .context(
-                        "Creating staged Direct3D 12 resources for DirectComposition resize",
-                    )?,
-            );
         }
 
         if let Some(staged_resources) = self.staged_resources.take() {
@@ -531,27 +514,16 @@ impl DirectX12Renderer {
 
         if self.direct_composition.is_some() {
             log::trace!(
-                "Queueing Direct3D 12 DirectComposition resize to {}x{}.",
+                "Creating staged Direct3D 12 DirectComposition resources for {}x{} during interactive resize.",
                 width,
                 height
             );
-            if let Some(direct_composition) = &self.direct_composition {
-                if let Err(error) = direct_composition.stretch_to_cover(
-                    self.resources.viewport.Width.max(1.0) as u32,
-                    self.resources.viewport.Height.max(1.0) as u32,
-                    width,
-                    height,
-                ) {
-                    log::warn!(
-                        "Applying temporary DirectComposition stretch from {}x{} to {}x{} failed: {error:#}",
-                        self.resources.viewport.Width.max(1.0) as u32,
-                        self.resources.viewport.Height.max(1.0) as u32,
-                        width,
-                        height
-                    );
-                }
-            }
-            self.pending_direct_composition_resize = Some((width, height));
+            self.staged_resources = Some(
+                DirectX12RendererResources::new(&self.devices, width, height, self.hwnd, false)
+                    .context(
+                        "Creating staged Direct3D 12 resources for DirectComposition resize",
+                    )?,
+            );
         } else {
             self.devices.wait_for_gpu_idle()?;
             self.devices
@@ -1547,31 +1519,6 @@ impl DirectCompositionLayer {
         let is_valid: BOOL = unsafe { self.comp_device.CheckDeviceState() }
             .context("Checking DirectComposition device state")?;
         Ok(is_valid.as_bool())
-    }
-
-    fn stretch_to_cover(
-        &self,
-        old_width: u32,
-        old_height: u32,
-        new_width: u32,
-        new_height: u32,
-    ) -> Result<()> {
-        let old_width = old_width.max(1);
-        let old_height = old_height.max(1);
-        let scale_x = new_width.max(1) as f32 / old_width as f32;
-        let scale_y = new_height.max(1) as f32 / old_height as f32;
-        unsafe {
-            self.scale_transform.SetCenterX2(0.0)?;
-            self.scale_transform.SetCenterY2(0.0)?;
-            self.scale_transform.SetScaleX2(scale_x)?;
-            self.scale_transform.SetScaleY2(scale_y)?;
-            self.comp_visual.SetTransform(&self.scale_transform)?;
-            self.comp_visual
-                .SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR)?;
-            self.comp_target.SetRoot(&self.comp_visual)?;
-            self.comp_device.Commit()?;
-        }
-        Ok(())
     }
 }
 
