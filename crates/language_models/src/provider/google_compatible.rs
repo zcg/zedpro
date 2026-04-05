@@ -1,5 +1,6 @@
 use anyhow::{Context as _, Result, anyhow};
 use convert_case::{Case, Casing};
+use credentials_provider::CredentialsProvider;
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use google_ai::{GoogleAuthMode, GoogleTransportOptions};
 use gpui::{AnyView, App, AsyncApp, Context, Entity, SharedString, Task, Window};
@@ -87,6 +88,7 @@ pub struct GoogleCompatibleLanguageModelProvider {
 pub struct State {
     id: Arc<str>,
     api_key_state: ApiKeyState,
+    credentials_provider: Arc<dyn CredentialsProvider>,
     settings: GoogleCompatibleSettings,
 }
 
@@ -96,20 +98,36 @@ impl State {
     }
 
     fn set_api_key(&mut self, api_key: Option<String>, cx: &mut Context<Self>) -> Task<Result<()>> {
+        let credentials_provider = self.credentials_provider.clone();
         let api_url = SharedString::new(self.settings.api_url.as_str());
-        self.api_key_state
-            .store(api_url, api_key, |this| &mut this.api_key_state, cx)
+        self.api_key_state.store(
+            api_url,
+            api_key,
+            |this| &mut this.api_key_state,
+            credentials_provider,
+            cx,
+        )
     }
 
     fn authenticate(&mut self, cx: &mut Context<Self>) -> Task<Result<(), AuthenticateError>> {
+        let credentials_provider = self.credentials_provider.clone();
         let api_url = SharedString::new(self.settings.api_url.clone());
-        self.api_key_state
-            .load_if_needed(api_url, |this| &mut this.api_key_state, cx)
+        self.api_key_state.load_if_needed(
+            api_url,
+            |this| &mut this.api_key_state,
+            credentials_provider,
+            cx,
+        )
     }
 }
 
 impl GoogleCompatibleLanguageModelProvider {
-    pub fn new(id: Arc<str>, http_client: Arc<dyn HttpClient>, cx: &mut App) -> Self {
+    pub fn new(
+        id: Arc<str>,
+        http_client: Arc<dyn HttpClient>,
+        credentials_provider: Arc<dyn CredentialsProvider>,
+        cx: &mut App,
+    ) -> Self {
         fn resolve_settings<'a>(id: &'a str, cx: &'a App) -> Option<&'a GoogleCompatibleSettings> {
             crate::AllLanguageModelSettings::get_global(cx)
                 .google_compatible
@@ -123,10 +141,12 @@ impl GoogleCompatibleLanguageModelProvider {
                     return;
                 };
                 if this.settings != settings {
+                    let credentials_provider = this.credentials_provider.clone();
                     let api_url = SharedString::new(settings.api_url.as_str());
                     this.api_key_state.handle_url_change(
                         api_url,
                         |this| &mut this.api_key_state,
+                        credentials_provider,
                         cx,
                     );
                     this.settings = settings;
@@ -142,6 +162,7 @@ impl GoogleCompatibleLanguageModelProvider {
                     SharedString::new(settings.api_url.as_str()),
                     EnvVar::new(api_key_env_var_name),
                 ),
+                credentials_provider,
                 settings,
             }
         });

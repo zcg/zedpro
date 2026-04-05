@@ -4130,6 +4130,7 @@ mod tests {
             window_10,
             MultiWorkspaceState {
                 active_workspace_id: Some(WorkspaceId(2)),
+                project_group_keys: vec![],
                 sidebar_open: true,
                 sidebar_state: None,
             },
@@ -4141,6 +4142,7 @@ mod tests {
             window_20,
             MultiWorkspaceState {
                 active_workspace_id: Some(WorkspaceId(3)),
+                project_group_keys: vec![],
                 sidebar_open: false,
                 sidebar_state: None,
             },

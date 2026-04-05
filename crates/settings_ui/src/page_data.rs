@@ -4387,7 +4387,7 @@ fn window_and_layout_page() -> SettingsPage {
         ]
     }
 
-    fn layout_section() -> [SettingsPageItem; 4] {
+    fn layout_section() -> [SettingsPageItem; 6] {
         [
             SettingsPageItem::SectionHeader("Layout"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -4450,6 +4450,52 @@ fn window_and_layout_page() -> SettingsPage {
                     },
                 }),
                 metadata: None,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Focus Follows Mouse",
+                description: "Whether to change focus to a pane when the mouse hovers over it.",
+                field: Box::new(SettingField {
+                    json_path: Some("focus_follows_mouse.enabled"),
+                    pick: |settings_content| {
+                        settings_content
+                            .workspace
+                            .focus_follows_mouse
+                            .as_ref()
+                            .and_then(|s| s.enabled.as_ref())
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .workspace
+                            .focus_follows_mouse
+                            .get_or_insert_default()
+                            .enabled = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Focus Follows Mouse Debounce ms",
+                description: "Amount of time to wait before changing focus.",
+                field: Box::new(SettingField {
+                    json_path: Some("focus_follows_mouse.debounce_ms"),
+                    pick: |settings_content| {
+                        settings_content
+                            .workspace
+                            .focus_follows_mouse
+                            .as_ref()
+                            .and_then(|s| s.debounce_ms.as_ref())
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .workspace
+                            .focus_follows_mouse
+                            .get_or_insert_default()
+                            .debounce_ms = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
             }),
         ]
     }
@@ -5271,7 +5317,7 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
-    fn terminal_panel_section() -> [SettingsPageItem; 3] {
+    fn terminal_panel_section() -> [SettingsPageItem; 4] {
         [
             SettingsPageItem::SectionHeader("Terminal Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -5282,6 +5328,19 @@ fn panels_page() -> SettingsPage {
                     pick: |settings_content| settings_content.terminal.as_ref()?.dock.as_ref(),
                     write: |settings_content, value| {
                         settings_content.terminal.get_or_insert_default().dock = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Terminal Panel Flexible Sizing",
+                description: "Whether the terminal panel should use flexible (proportional) sizing when docked to the left or right.",
+                field: Box::new(SettingField {
+                    json_path: Some("terminal.flexible"),
+                    pick: |settings_content| settings_content.terminal.as_ref()?.flexible.as_ref(),
+                    write: |settings_content, value| {
+                        settings_content.terminal.get_or_insert_default().flexible = value;
                     },
                 }),
                 metadata: None,
@@ -5947,7 +6006,7 @@ fn panels_page() -> SettingsPage {
         ]
     }
 
-    fn agent_panel_section() -> [SettingsPageItem; 5] {
+    fn agent_panel_section() -> [SettingsPageItem; 6] {
         [
             SettingsPageItem::SectionHeader("Agent Panel"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -5971,6 +6030,19 @@ fn panels_page() -> SettingsPage {
                     pick: |settings_content| settings_content.agent.as_ref()?.dock.as_ref(),
                     write: |settings_content, value| {
                         settings_content.agent.get_or_insert_default().dock = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Agent Panel Flexible Sizing",
+                description: "Whether the agent panel should use flexible (proportional) sizing when docked to the left or right.",
+                field: Box::new(SettingField {
+                    json_path: Some("agent.flexible"),
+                    pick: |settings_content| settings_content.agent.as_ref()?.flexible.as_ref(),
+                    write: |settings_content, value| {
+                        settings_content.agent.get_or_insert_default().flexible = value;
                     },
                 }),
                 metadata: None,

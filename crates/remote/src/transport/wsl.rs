@@ -28,7 +28,18 @@ use util::{
     shell_builder::ShellBuilder,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 pub struct WslConnectionOptions {
     pub distro_name: String,
     pub user: Option<String>,

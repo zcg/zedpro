@@ -165,7 +165,7 @@ impl SettingsSyncState {
             .expect("settings sync state requires an initialized AppState");
         let fs = app_state_ref.fs.clone();
         let http_client = app_state_ref.client.http_client();
-        let credentials_provider = <dyn CredentialsProvider>::global(cx);
+        let credentials_provider = zed_credentials_provider::global(cx);
 
         let this = Self {
             app_state,
@@ -184,7 +184,7 @@ impl SettingsSyncState {
         };
 
         this.spawn_watchers(fs, cx);
-        let provider = <dyn CredentialsProvider>::global(cx);
+        let provider = zed_credentials_provider::global(cx);
         cx.spawn(async move |this, cx| {
             let token_available = Self::load_token(&provider, cx)
                 .await

@@ -664,8 +664,7 @@ impl rwh::HasWindowHandle for WindowsWindow {
 
 impl rwh::HasDisplayHandle for WindowsWindow {
     fn display_handle(&self) -> std::result::Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
-        let raw = rwh::WindowsDisplayHandle::new().into();
-        Ok(unsafe { rwh::DisplayHandle::borrow_raw(raw) })
+        Ok(rwh::DisplayHandle::windows())
     }
 }
 

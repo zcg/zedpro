@@ -5334,6 +5334,7 @@ mod tests {
             app_state.languages.add(markdown_lang());
 
             gpui_tokio::init(cx);
+            AppState::set_global(app_state.clone(), cx);
             theme_settings::init(theme::LoadThemes::JustBase, cx);
             audio::init(cx);
             channel::init(&app_state.client, app_state.user_store.clone(), cx);
@@ -5355,7 +5356,12 @@ mod tests {
                 cx,
             );
             image_viewer::init(cx);
-            language_model::init(app_state.user_store.clone(), app_state.client.clone(), cx);
+            language_model::init(cx);
+            client::RefreshLlmTokenListener::register(
+                app_state.client.clone(),
+                app_state.user_store.clone(),
+                cx,
+            );
             language_models::init(app_state.user_store.clone(), app_state.client.clone(), cx);
             web_search::init(cx);
             git_graph::init(cx);

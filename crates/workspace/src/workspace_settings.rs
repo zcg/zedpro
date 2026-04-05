@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use std::{num::NonZeroUsize, time::Duration};
 
 use crate::DockPosition;
 use collections::HashMap;
@@ -39,6 +39,13 @@ pub struct WorkspaceSettings {
     pub window_decorations: settings::WindowDecorations,
     pub window_background_material: settings::WindowBackgroundMaterial,
     pub window_background_material_opacity: settings::WindowBackgroundMaterialOpacity,
+    pub focus_follows_mouse: FocusFollowsMouse,
+}
+
+#[derive(Copy, Clone, Deserialize)]
+pub struct FocusFollowsMouse {
+    pub enabled: bool,
+    pub debounce: Duration,
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -124,6 +131,20 @@ impl Settings for WorkspaceSettings {
             window_background_material_opacity: workspace
                 .window_background_material_opacity
                 .unwrap(),
+            focus_follows_mouse: FocusFollowsMouse {
+                enabled: workspace
+                    .focus_follows_mouse
+                    .unwrap()
+                    .enabled
+                    .unwrap_or(false),
+                debounce: Duration::from_millis(
+                    workspace
+                        .focus_follows_mouse
+                        .unwrap()
+                        .debounce_ms
+                        .unwrap_or(250),
+                ),
+            },
         }
     }
 }

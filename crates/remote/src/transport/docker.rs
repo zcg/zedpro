@@ -30,7 +30,18 @@ use crate::{
     transport::parse_platform,
 };
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct DockerConnectionOptions {
     pub name: String,
     pub container_id: String,
@@ -41,7 +52,9 @@ pub struct DockerConnectionOptions {
     pub remote_env: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum DockerHost {
     Local,
     Ssh(crate::SshConnectionOptions),

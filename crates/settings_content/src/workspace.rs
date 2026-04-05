@@ -141,6 +141,9 @@ pub struct WorkspaceSettingsContent {
     /// Default: 0.35
     #[schemars(range(min = 0.0, max = 1.0))]
     pub window_background_material_opacity: Option<WindowBackgroundMaterialOpacity>,
+    /// Whether the focused panel follows the mouse location
+    /// Default: false
+    pub focus_follows_mouse: Option<FocusFollowsMouse>,
 }
 
 #[with_fallible_options]
@@ -998,4 +1001,11 @@ impl DocumentSymbols {
     pub fn lsp_enabled(&self) -> bool {
         self == &Self::On
     }
+}
+
+#[with_fallible_options]
+#[derive(Copy, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug)]
+pub struct FocusFollowsMouse {
+    pub enabled: Option<bool>,
+    pub debounce_ms: Option<u64>,
 }

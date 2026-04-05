@@ -299,7 +299,7 @@ impl DisconnectedOverlay {
             cx.spawn_in(window, async move |_, cx| {
                 if let Some(task) = workspace_handle
                     .update_in(cx, |workspace, window, cx| {
-                        workspace.open_workspace_for_paths(OpenMode::Replace, paths, window, cx)
+                        workspace.open_workspace_for_paths(OpenMode::Activate, paths, window, cx)
                     })
                     .log_err()
                 {
@@ -383,7 +383,7 @@ impl DisconnectedOverlay {
             cx.spawn_in(window, async move |_, cx| {
                 if let Some(task) = workspace_handle
                     .update_in(cx, |workspace, window, cx| {
-                        workspace.open_workspace_for_paths(OpenMode::Replace, paths, window, cx)
+                        workspace.open_workspace_for_paths(OpenMode::Activate, paths, window, cx)
                     })
                     .log_err()
                 {

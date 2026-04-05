@@ -1147,7 +1147,19 @@ pub struct RemoteProject {
 }
 
 #[with_fallible_options]
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize, JsonSchema, MergeFrom)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Deserialize,
+    Serialize,
+    JsonSchema,
+    MergeFrom,
+)]
 pub struct SshPortForwardOption {
     pub local_host: Option<String>,
     pub local_port: u16,
