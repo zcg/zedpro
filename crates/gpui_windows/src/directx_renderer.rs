@@ -134,6 +134,12 @@ impl WindowRenderer {
         }
     }
 
+    pub(crate) fn set_interactive_resize_presenting(&mut self, enabled: bool) {
+        if let Self::Direct3d12(renderer) = self {
+            renderer.set_interactive_resize_presenting(enabled);
+        }
+    }
+
     pub(crate) fn check_composition_device_state(&self) -> Result<bool> {
         match self {
             Self::Direct3d11(renderer) => renderer.check_composition_device_state(),

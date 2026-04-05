@@ -1615,6 +1615,7 @@ fn open_about_window(cx: &mut App) {
             is_resizable: false,
             is_minimizable: false,
             kind: WindowKind::Normal,
+            window_background: workspace::effective_window_background_appearance(cx),
             app_id: Some(ReleaseChannel::global(cx).app_id().to_owned()),
             ..Default::default()
         },

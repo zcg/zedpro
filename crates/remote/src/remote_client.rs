@@ -914,6 +914,15 @@ impl RemoteClient {
         cx.notify();
     }
 
+    fn set_state_without_disconnect_event(&mut self, state: State, cx: &mut Context<Self>) {
+        log::info!(
+            "setting state to '{}' without emitting disconnect yet",
+            &state
+        );
+        self.state.replace(state);
+        cx.notify();
+    }
+
     pub fn shell(&self) -> Option<String> {
         Some(self.remote_connection()?.shell())
     }
@@ -1057,14 +1066,20 @@ impl RemoteClient {
         } else {
             State::ReconnectExhausted
         };
-        self.set_state(state, cx);
+        self.set_state_without_disconnect_event(state, cx);
 
         if let Some(connection) = connection {
-            cx.spawn(async move |_, _| {
-                connection.kill().await?;
+            cx.spawn(async move |this, cx| {
+                let result = connection.kill().await;
+                let _ = this.update(cx, |_, cx| {
+                    cx.emit(RemoteClientEvent::Disconnected { server_not_running });
+                    cx.notify();
+                });
+                result?;
                 Ok(())
             })
         } else {
+            cx.emit(RemoteClientEvent::Disconnected { server_not_running });
             Task::ready(Ok(()))
         }
     }

@@ -179,6 +179,7 @@ impl WindowsWindowInner {
             self.state
                 .restore_from_minimized
                 .set(self.state.callbacks.request_frame.take());
+            trim_current_process_working_set();
             return Some(0);
         }
 
@@ -266,10 +267,14 @@ impl WindowsWindowInner {
         self.state
             .size_move_started_maximized
             .set(self.state.is_maximized());
-        if let Ok(renderer) = self.state.renderer.try_borrow() {
+        if let Ok(mut renderer) = self.state.renderer.try_borrow_mut() {
+            let interactive_resize_mode = renderer.interactive_resize_mode();
+            renderer.set_interactive_resize_presenting(
+                interactive_resize_mode == InteractiveResizeMode::StageDirectCompositionSwapChain,
+            );
             log::info!(
                 "Entering interactive size/move loop with {}.",
-                renderer.interactive_resize_mode().label()
+                interactive_resize_mode.label()
             );
         }
         unsafe {
@@ -292,6 +297,9 @@ impl WindowsWindowInner {
     fn handle_size_move_loop_exit(&self, handle: HWND) -> Option<isize> {
         self.state.in_size_move_loop.set(false);
         self.state.size_move_started_maximized.set(false);
+        if let Ok(mut renderer) = self.state.renderer.try_borrow_mut() {
+            renderer.set_interactive_resize_presenting(false);
+        }
         unsafe {
             KillTimer(Some(handle), SIZE_MOVE_LOOP_TIMER_ID).log_err();
         }

@@ -74,6 +74,7 @@ pub(crate) struct DirectX12Renderer {
     path_vertex_scratch: Vec<PathRasterizationSprite>,
     path_sprite_scratch: Vec<PathSprite>,
     attach_staged_swap_chain_after_present: bool,
+    interactive_resize_presenting: bool,
 }
 
 struct DirectX12RendererDevices {
@@ -324,6 +325,7 @@ impl DirectX12Renderer {
             path_vertex_scratch: Vec::new(),
             path_sprite_scratch: Vec::new(),
             attach_staged_swap_chain_after_present: false,
+            interactive_resize_presenting: false,
         })
     }
 
@@ -588,9 +590,15 @@ impl DirectX12Renderer {
         self.skip_draws = false;
     }
 
+    pub(crate) fn set_interactive_resize_presenting(&mut self, enabled: bool) {
+        self.interactive_resize_presenting = enabled;
+    }
+
     fn pre_draw(&mut self, clear_color: [f32; 4]) -> Result<()> {
         // 给 DXGI/DWM 一点时间释放 back buffer 引用，减少交互缩放期间 ResizeBuffers 的 INVALID_CALL 概率。
-        self.resources.wait_for_frame_latency(16)?;
+        if !self.interactive_resize_presenting {
+            self.resources.wait_for_frame_latency(16)?;
+        }
         self.globals.global_params_buffer.update(&GlobalParams {
             gamma_ratios: self.font_info.gamma_ratios,
             viewport_size: [

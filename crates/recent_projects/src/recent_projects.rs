@@ -100,6 +100,7 @@ pub async fn get_recent_projects(
         .recent_workspaces_on_disk(fs.as_ref())
         .await
         .unwrap_or_default();
+    let workspaces = workspace::resolve_worktree_workspaces(workspaces, fs.as_ref()).await;
 
     let entries: Vec<RecentProjectEntry> = workspaces
         .into_iter()
@@ -350,6 +351,66 @@ pub fn init(cx: &mut App) {
             .detach();
         });
     });
+
+    cx.on_action(
+        |open_remote_project_action: &workspace::welcome::OpenRecentRemoteProject, cx| {
+            let action = open_remote_project_action.clone();
+            with_active_or_new_workspace(cx, move |workspace, window, cx| {
+                let app_state = workspace.app_state().clone();
+                let fs = app_state.fs.clone();
+                let db = WorkspaceDb::global(cx);
+                let workspace_id = WorkspaceId::from_i64(action.workspace_id);
+                let open_options = OpenOptions {
+                    requesting_window: window.window_handle().downcast::<MultiWorkspace>(),
+                    ..Default::default()
+                };
+                cx.spawn_in(window, async move |_, cx| {
+                    let workspaces = db.recent_workspaces_on_disk(fs.as_ref()).await?;
+                    let workspaces =
+                        workspace::resolve_worktree_workspaces(workspaces, fs.as_ref()).await;
+
+                    let Some((_, location, paths, _)) = workspaces
+                        .into_iter()
+                        .find(|(id, _, _, _)| *id == workspace_id)
+                    else {
+                        return Err(anyhow::anyhow!(
+                            "Could not find recent workspace {}",
+                            action.workspace_id
+                        ));
+                    };
+
+                    let SerializedWorkspaceLocation::Remote(mut connection) = location else {
+                        return Err(anyhow::anyhow!(
+                            "Recent workspace {} is not remote",
+                            action.workspace_id
+                        ));
+                    };
+
+                    cx.update(|_, cx| {
+                        if let RemoteConnectionOptions::Ssh(connection) = &mut connection {
+                            RemoteSettings::get_global(cx)
+                                .fill_connection_options_from_settings(connection);
+                        }
+                    })?;
+
+                    open_remote_project(
+                        connection,
+                        paths.paths().to_vec(),
+                        app_state,
+                        open_options,
+                        cx,
+                    )
+                    .await
+                })
+                .detach_and_prompt_err(
+                    "Failed to open project",
+                    window,
+                    cx,
+                    |_, _, _| None,
+                );
+            });
+        },
+    );
 
     cx.on_action(|open_recent: &OpenRecent, cx| {
         let create_new_window = open_recent.create_new_window;

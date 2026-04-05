@@ -30,18 +30,10 @@ enum Host {
 struct PendingDevcontainerHostReturns {
     requested: HashSet<DockerConnectionOptions>,
     in_progress: HashSet<DockerConnectionOptions>,
+    suppressed_overlay: HashSet<DockerConnectionOptions>,
 }
 
 impl Global for PendingDevcontainerHostReturns {}
-
-pub(crate) fn mark_pending_devcontainer_host_return(
-    options: DockerConnectionOptions,
-    cx: &mut App,
-) {
-    cx.update_default_global::<PendingDevcontainerHostReturns, _>(|pending, _| {
-        pending.requested.insert(options);
-    });
-}
 
 pub(crate) fn clear_pending_devcontainer_host_return(
     options: &DockerConnectionOptions,
@@ -50,6 +42,7 @@ pub(crate) fn clear_pending_devcontainer_host_return(
     cx.update_default_global::<PendingDevcontainerHostReturns, _>(|pending, _| {
         pending.requested.remove(options);
         pending.in_progress.remove(options);
+        pending.suppressed_overlay.remove(options);
     });
 }
 
@@ -58,7 +51,9 @@ pub(crate) fn is_pending_devcontainer_host_return(
     cx: &mut App,
 ) -> bool {
     cx.update_default_global::<PendingDevcontainerHostReturns, _>(|pending, _| {
-        pending.requested.contains(options) || pending.in_progress.contains(options)
+        pending.requested.contains(options)
+            || pending.in_progress.contains(options)
+            || pending.suppressed_overlay.contains(options)
     })
 }
 
@@ -70,6 +65,24 @@ fn begin_pending_devcontainer_host_return(options: &DockerConnectionOptions, cx:
         } else {
             false
         }
+    })
+}
+
+pub(crate) fn suppress_devcontainer_disconnect_overlay(
+    options: DockerConnectionOptions,
+    cx: &mut App,
+) {
+    cx.update_default_global::<PendingDevcontainerHostReturns, _>(|pending, _| {
+        pending.suppressed_overlay.insert(options);
+    });
+}
+
+fn take_suppressed_devcontainer_disconnect_overlay(
+    options: &DockerConnectionOptions,
+    cx: &mut App,
+) -> bool {
+    cx.update_default_global::<PendingDevcontainerHostReturns, _>(|pending, _| {
+        pending.suppressed_overlay.remove(options)
     })
 }
 
@@ -124,14 +137,19 @@ impl DisconnectedOverlay {
                 let remote_connection_options = project.read(cx).remote_connection_options(cx);
                 if let Some(RemoteConnectionOptions::Docker(options)) =
                     remote_connection_options.clone()
-                    && begin_pending_devcontainer_host_return(&options, cx)
                 {
-                    if Self::return_devcontainer_to_host_on_disconnect(
-                        &options, workspace, window, cx,
-                    ) {
+                    if take_suppressed_devcontainer_disconnect_overlay(&options, cx) {
                         return;
                     }
-                    clear_pending_devcontainer_host_return(&options, cx);
+
+                    if begin_pending_devcontainer_host_return(&options, cx) {
+                        if return_devcontainer_to_host_after_disconnect(
+                            &options, workspace, window, cx,
+                        ) {
+                            return;
+                        }
+                        clear_pending_devcontainer_host_return(&options, cx);
+                    }
                 }
                 let host = if let Some(remote_connection_options) = remote_connection_options {
                     Host::RemoteServerProject(
@@ -313,92 +331,6 @@ impl DisconnectedOverlay {
         }
     }
 
-    fn return_devcontainer_to_host_on_disconnect(
-        options: &DockerConnectionOptions,
-        workspace: &mut Workspace,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    ) -> bool {
-        let old_workspace = cx.entity();
-        let old_window = window.window_handle();
-        let host = devcontainer_host_from_docker_host(&options.host);
-        let Some(paths) = host_project_paths_from_settings(options, host.as_ref(), cx) else {
-            drop(window.prompt(
-                PromptLevel::Warning,
-                "No host folder recorded",
-                Some("No host folder is recorded for this dev container."),
-                &["Ok"],
-                cx,
-            ));
-            return false;
-        };
-
-        if let Some(connection_options) = host_connection_options(host.as_ref()) {
-            let app_state = workspace.app_state().clone();
-            let pending_options = options.clone();
-            cx.spawn_in(window, async move |_, cx| {
-                let result = open_remote_project(
-                    connection_options,
-                    paths,
-                    app_state,
-                    OpenOptions {
-                        // See return_devcontainer_to_host above. Reusing the same window while the
-                        // disconnected container workspace is still tearing down can cause host
-                        // paths to be opened against the stale container connection.
-                        requesting_window: None,
-                        open_new_workspace: Some(true),
-                        ..Default::default()
-                    },
-                    cx,
-                )
-                .await;
-                cx.update(|_, cx| clear_pending_devcontainer_host_return(&pending_options, cx))
-                    .ok();
-                result?;
-                if let Some(task) = old_workspace
-                    .update_in(cx, |workspace, window, cx| {
-                        workspace.detach_from_session(window, cx)
-                    })
-                    .log_err()
-                {
-                    task.await;
-                }
-                cx.update(|_, cx| {
-                    cx.defer(move |cx| {
-                        let _ = old_window.update(cx, |_, window, _| window.remove_window());
-                    });
-                })
-                .ok();
-                Ok(())
-            })
-            .detach_and_prompt_err(
-                "Failed to return to host folder",
-                window,
-                cx,
-                |_, _, _| None,
-            );
-        } else {
-            let workspace_handle = cx.entity();
-            let pending_options = options.clone();
-            cx.spawn_in(window, async move |_, cx| {
-                if let Some(task) = workspace_handle
-                    .update_in(cx, |workspace, window, cx| {
-                        workspace.open_workspace_for_paths(OpenMode::Activate, paths, window, cx)
-                    })
-                    .log_err()
-                {
-                    task.await.log_err();
-                }
-                cx.update(|_, cx| clear_pending_devcontainer_host_return(&pending_options, cx))
-                    .ok();
-                anyhow::Ok(())
-            })
-            .detach();
-        }
-
-        true
-    }
-
     fn cancel(&mut self, _: &menu::Cancel, _: &mut Window, cx: &mut Context<Self>) {
         self.finished = true;
         cx.emit(DismissEvent)
@@ -549,4 +481,90 @@ fn host_connection_options(host: Option<&DevContainerHost>) -> Option<RemoteConn
             }))
         }
     }
+}
+
+pub(crate) fn return_devcontainer_to_host_after_disconnect(
+    options: &DockerConnectionOptions,
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> bool {
+    let old_workspace = cx.entity();
+    let old_window = window.window_handle();
+    let host = devcontainer_host_from_docker_host(&options.host);
+    let Some(paths) = host_project_paths_from_settings(options, host.as_ref(), cx) else {
+        drop(window.prompt(
+            PromptLevel::Warning,
+            "No host folder recorded",
+            Some("No host folder is recorded for this dev container."),
+            &["Ok"],
+            cx,
+        ));
+        return false;
+    };
+
+    if let Some(connection_options) = host_connection_options(host.as_ref()) {
+        let app_state = workspace.app_state().clone();
+        let pending_options = options.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            let result = open_remote_project(
+                connection_options,
+                paths,
+                app_state,
+                OpenOptions {
+                    // Reusing the same window while the disconnected container workspace is still
+                    // tearing down can cause host paths to be reopened against the stale
+                    // container connection.
+                    requesting_window: None,
+                    open_new_workspace: Some(true),
+                    ..Default::default()
+                },
+                cx,
+            )
+            .await;
+            cx.update(|_, cx| clear_pending_devcontainer_host_return(&pending_options, cx))
+                .ok();
+            result?;
+            if let Some(task) = old_workspace
+                .update_in(cx, |workspace, window, cx| {
+                    workspace.detach_from_session(window, cx)
+                })
+                .log_err()
+            {
+                task.await;
+            }
+            cx.update(|_, cx| {
+                cx.defer(move |cx| {
+                    let _ = old_window.update(cx, |_, window, _| window.remove_window());
+                });
+            })
+            .ok();
+            Ok(())
+        })
+        .detach_and_prompt_err(
+            "Failed to return to host folder",
+            window,
+            cx,
+            |_, _, _| None,
+        );
+    } else {
+        let workspace_handle = cx.entity();
+        let pending_options = options.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            if let Some(task) = workspace_handle
+                .update_in(cx, |workspace, window, cx| {
+                    workspace.open_workspace_for_paths(OpenMode::Activate, paths, window, cx)
+                })
+                .log_err()
+            {
+                task.await.log_err();
+            }
+            cx.update(|_, cx| clear_pending_devcontainer_host_return(&pending_options, cx))
+                .ok();
+            anyhow::Ok(())
+        })
+        .detach();
+    }
+
+    true
 }

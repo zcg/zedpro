@@ -1,6 +1,7 @@
 use crate::{
     disconnected_overlay::{
-        clear_pending_devcontainer_host_return, mark_pending_devcontainer_host_return,
+        clear_pending_devcontainer_host_return, return_devcontainer_to_host_after_disconnect,
+        suppress_devcontainer_disconnect_overlay,
     },
     remote_connections::{
         Connection, RemoteConnectionModal, RemoteConnectionPrompt, RemoteSettings, SshConnection,
@@ -23,9 +24,9 @@ use futures::{
     select,
 };
 use gpui::{
-    Action, AnyElement, App, AppContext, AsyncApp, ClickEvent, ClipboardItem, Context,
-    DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, FutureExt as _, PromptLevel,
-    ScrollHandle, Subscription, Task, WeakEntity, Window, canvas,
+    Action, AnyElement, AnyWindowHandle, App, AppContext, AsyncApp, ClickEvent, ClipboardItem,
+    Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, FutureExt as _,
+    PromptLevel, ScrollHandle, Subscription, Task, WeakEntity, Window, canvas,
 };
 use language::{Point, language_settings::SoftWrap};
 use log::info;
@@ -3985,6 +3986,7 @@ impl RemoteServerProjects {
                                             this.stop_dev_container_now(
                                                 dev.clone(),
                                                 name.clone(),
+                                                window,
                                                 cx,
                                             );
                                             cx.focus_self(window);
@@ -4494,39 +4496,74 @@ impl RemoteServerProjects {
         connection: &DevContainerConnection,
         server_not_running: bool,
         cx: &mut Context<Self>,
-    ) -> bool {
+    ) -> Option<Task<anyhow::Result<()>>> {
         let Some(client) = self.active_dev_container_client(connection, cx) else {
+            return None;
+        };
+        Some(client.update(cx, |client, cx| client.disconnect(server_not_running, cx)))
+    }
+
+    fn return_to_host_after_dev_container_disconnect(
+        &self,
+        options: &DockerConnectionOptions,
+        window_handle: AnyWindowHandle,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(workspace) = self.workspace.upgrade() else {
             return false;
         };
-        client.update(cx, |client, cx| {
-            client
-                .disconnect(server_not_running, cx)
-                .detach_and_log_err(cx);
-        });
-        true
+
+        window_handle
+            .update(cx, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    return_devcontainer_to_host_after_disconnect(options, workspace, window, cx)
+                })
+            })
+            .ok()
+            .unwrap_or(false)
     }
 
     fn disconnect_dev_container_now(
         &mut self,
         connection: &DevContainerConnection,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<RemoteServerProjects>,
     ) {
-        let pending_options = Self::dev_container_connection_options(connection);
-        if let Some(options) = pending_options.clone() {
-            mark_pending_devcontainer_host_return(options, cx);
-        }
+        let Some(options) = Self::dev_container_connection_options(connection) else {
+            return;
+        };
+        let window_handle = window.window_handle();
 
-        let disconnected = self.disconnect_active_dev_container(connection, false, cx);
-        if !disconnected && let Some(options) = pending_options.as_ref() {
-            clear_pending_devcontainer_host_return(options, cx);
-        }
+        suppress_devcontainer_disconnect_overlay(options.clone(), cx);
+
+        let Some(disconnect_task) = self.disconnect_active_dev_container(connection, false, cx)
+        else {
+            if !self.return_to_host_after_dev_container_disconnect(&options, window_handle, cx) {
+                clear_pending_devcontainer_host_return(&options, cx);
+            }
+            return;
+        };
+
+        let remote_servers = cx.entity();
+        cx.spawn(async move |_, cx| {
+            let disconnect_result = disconnect_task.await;
+            remote_servers.update(cx, |this, cx| {
+                if !this.return_to_host_after_dev_container_disconnect(&options, window_handle, cx)
+                {
+                    clear_pending_devcontainer_host_return(&options, cx);
+                }
+            });
+            disconnect_result?;
+            anyhow::Ok(())
+        })
+        .detach_and_log_err(cx);
     }
 
     fn stop_dev_container_now(
         &mut self,
         connection: DevContainerConnection,
         name: SharedString,
+        window: &mut Window,
         cx: &mut Context<RemoteServerProjects>,
     ) {
         let key = DevContainerKey::from_connection(&connection);
@@ -4534,20 +4571,25 @@ impl RemoteServerProjects {
             return;
         }
 
-        let pending_options = Self::dev_container_connection_options(&connection);
-        if let Some(options) = pending_options.clone() {
-            mark_pending_devcontainer_host_return(options, cx);
+        let options = Self::dev_container_connection_options(&connection);
+        let window_handle = window.window_handle();
+        if let Some(options) = options.clone() {
+            suppress_devcontainer_disconnect_overlay(options, cx);
         }
 
         // Disconnect first so we don't race with remote-client auto-reconnect, which can
         // otherwise restart a just-stopped container while trying to exec for platform probing.
-        let disconnected = self.disconnect_active_dev_container(&connection, true, cx);
-        if !disconnected && let Some(options) = pending_options.as_ref() {
-            clear_pending_devcontainer_host_return(options, cx);
-        }
-
         let remote_servers = cx.entity();
         cx.spawn(async move |_, cx| {
+            let disconnect_result = if let Some(disconnect_task) = remote_servers
+                .update(cx, |this, cx| {
+                    this.disconnect_active_dev_container(&connection, true, cx)
+                }) {
+                disconnect_task.await.err()
+            } else {
+                None
+            };
+
             let result = stop_dev_container_container(&connection).await;
             remote_servers.update(cx, |this, cx| {
                 end_devcontainer_in_flight(&mut this.dev_container_stop_in_flight, &key);
@@ -4557,16 +4599,30 @@ impl RemoteServerProjects {
                             DevContainerKey::from_connection(&connection),
                             DevContainerProbe::Stopped,
                         );
-                        let disconnected =
-                            this.disconnect_active_dev_container(&connection, true, cx);
-                        let message = if disconnected {
-                            format!("Stopped container and disconnected `{}`.", name)
+                        let returned_to_host = options.as_ref().is_some_and(|options| {
+                            this.return_to_host_after_dev_container_disconnect(
+                                options,
+                                window_handle,
+                                cx,
+                            )
+                        });
+                        if !returned_to_host && let Some(options) = options.as_ref() {
+                            clear_pending_devcontainer_host_return(options, cx);
+                        }
+                        let message = if returned_to_host {
+                            format!(
+                                "Stopped container, disconnected, and returned to host `{}`.",
+                                name
+                            )
                         } else {
-                            format!("Stopped container `{}`.", name)
+                            format!("Stopped container and disconnected `{}`.", name)
                         };
                         this.show_devcontainer_toast(message, cx);
                     }
                     Err(message) => {
+                        if let Some(options) = options.as_ref() {
+                            clear_pending_devcontainer_host_return(options, cx);
+                        }
                         this.show_devcontainer_toast(
                             format!("Failed to stop `{}`: {}", name, message),
                             cx,
@@ -4575,7 +4631,11 @@ impl RemoteServerProjects {
                 }
                 cx.notify();
             });
-            anyhow::Ok(())
+            if let Some(err) = disconnect_result {
+                Err(err)
+            } else {
+                anyhow::Ok(())
+            }
         })
         .detach_and_log_err(cx);
     }
@@ -4663,8 +4723,12 @@ impl RemoteServerProjects {
                     Ok(()) => {
                         let disconnected =
                             this.disconnect_active_dev_container(&connection, true, cx);
+                        let was_disconnected = disconnected.is_some();
+                        if let Some(task) = disconnected {
+                            task.detach_and_log_err(cx);
+                        }
                         this.delete_dev_container_server(index, cx);
-                        let message = if disconnected {
+                        let message = if was_disconnected {
                             format!("Removed dev container `{}` and disconnected.", name)
                         } else {
                             format!("Removed dev container `{}`.", name)
@@ -7742,24 +7806,25 @@ impl RemoteServerProjects {
                         let connection_name = connection_name.clone();
                         let connection = connection_for_stop.clone();
                         let recent_project_paths = recent_project_paths.clone();
-                        move |this, _: &menu::Confirm, _window, cx| {
+                        move |this, _: &menu::Confirm, window, cx| {
                             if is_running {
                                 this.stop_dev_container_now(
                                     connection.clone(),
                                     connection_name.clone(),
+                                    window,
                                     cx,
                                 );
-                                cx.focus_self(_window);
+                                cx.focus_self(window);
                             } else {
                                 this.start_dev_container_now(
                                     index,
                                     connection.clone(),
                                     connection_name.clone(),
                                     recent_project_paths.clone(),
-                                    _window,
+                                    window,
                                     cx,
                                 );
-                                cx.focus_self(_window);
+                                cx.focus_self(window);
                             }
                         }
                     }))

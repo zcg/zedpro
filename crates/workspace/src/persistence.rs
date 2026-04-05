@@ -27,7 +27,8 @@ use project::{
 
 use language::{LanguageName, Toolchain, ToolchainScope};
 use remote::{
-    DockerConnectionOptions, RemoteConnectionOptions, SshConnectionOptions, WslConnectionOptions,
+    DockerConnectionOptions, DockerHost, RemoteConnectionOptions, SshConnectionOptions,
+    WslConnectionOptions,
 };
 use serde::{Deserialize, Serialize};
 use sqlez::{
@@ -2526,8 +2527,8 @@ type WorkspaceEntry = (
 ///   entry are resolved to their main repository paths, producing a new
 ///   `PathList`.
 /// - The resolved entry is then deduplicated against existing entries: if a
-///   workspace with the same paths already exists, the entry with the most
-///   recent timestamp is kept.
+///   workspace with the same location and paths already exists, the entry with
+///   the most recent timestamp is kept.
 pub async fn resolve_worktree_workspaces(
     workspaces: impl IntoIterator<Item = WorkspaceEntry>,
     fs: &dyn Fs,
@@ -2569,14 +2570,17 @@ pub async fn resolve_worktree_workspaces(
     }))
     .await;
 
-    // Second pass: deduplicate by PathList.
-    // When two entries resolve to the same paths, keep the one with the
-    // more recent timestamp.
-    let mut seen: collections::HashMap<Vec<PathBuf>, usize> = collections::HashMap::default();
+    // Second pass: deduplicate by location + PathList.
+    // This keeps genuinely different targets, such as WSL and dev containers,
+    // while collapsing repeated history entries for the same remote target.
+    let mut seen: collections::HashMap<(String, String), usize> = collections::HashMap::default();
     let mut result: Vec<WorkspaceEntry> = Vec::new();
 
     for entry in resolved {
-        let key: Vec<PathBuf> = entry.2.paths().to_vec();
+        let key = (
+            workspace_location_dedupe_key(&entry.1),
+            entry.2.serialize().paths,
+        );
         if let Some(&existing_idx) = seen.get(&key) {
             // Keep the entry with the more recent timestamp
             if entry.3 > result[existing_idx].3 {
@@ -2589,6 +2593,51 @@ pub async fn resolve_worktree_workspaces(
     }
 
     result
+}
+
+fn workspace_location_dedupe_key(location: &SerializedWorkspaceLocation) -> String {
+    match location {
+        SerializedWorkspaceLocation::Local => "local".to_string(),
+        SerializedWorkspaceLocation::Remote(options) => match options {
+            RemoteConnectionOptions::Ssh(options) => format!(
+                "ssh:{}:{}:{}",
+                options.username.as_deref().unwrap_or_default(),
+                options.host.to_string(),
+                options.port.unwrap_or_default()
+            ),
+            RemoteConnectionOptions::Wsl(options) => format!(
+                "wsl:{}:{}",
+                options.distro_name,
+                options.user.as_deref().unwrap_or_default()
+            ),
+            RemoteConnectionOptions::Docker(options) => format!(
+                "docker:{}:{}:{}:{}",
+                docker_host_dedupe_key(&options.host),
+                options.name,
+                options.remote_user,
+                options.use_podman
+            ),
+            #[cfg(any(test, feature = "test-support"))]
+            RemoteConnectionOptions::Mock(options) => format!("mock:{}", options.id),
+        },
+    }
+}
+
+fn docker_host_dedupe_key(host: &DockerHost) -> String {
+    match host {
+        DockerHost::Local => "local".to_string(),
+        DockerHost::Wsl(options) => format!(
+            "wsl:{}:{}",
+            options.distro_name,
+            options.user.as_deref().unwrap_or_default()
+        ),
+        DockerHost::Ssh(options) => format!(
+            "ssh:{}:{}:{}",
+            options.username.as_deref().unwrap_or_default(),
+            options.host.to_string(),
+            options.port.unwrap_or_default()
+        ),
+    }
 }
 
 pub fn delete_unloaded_items(
@@ -4840,6 +4889,120 @@ mod tests {
         // Third entry: non-git project, unchanged.
         assert_eq!(result[2].2.paths(), &[PathBuf::from("/plain-project")]);
         assert_eq!(result[2].0, WorkspaceId(4));
+    }
+
+    #[gpui::test]
+    async fn test_resolve_worktree_workspaces_preserves_distinct_locations(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let fs = fs::FakeFs::new(cx.executor());
+
+        fs.insert_tree(
+            "/repo",
+            json!({
+                ".git": {},
+                "src": { "main.rs": "" }
+            }),
+        )
+        .await;
+
+        let t0 = Utc::now() - chrono::Duration::hours(2);
+        let t1 = Utc::now() - chrono::Duration::hours(1);
+
+        let workspaces = vec![
+            (
+                WorkspaceId(1),
+                SerializedWorkspaceLocation::Local,
+                PathList::new(&["/repo"]),
+                t0,
+            ),
+            (
+                WorkspaceId(2),
+                SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Wsl(
+                    remote::WslConnectionOptions {
+                        distro_name: "Arch".into(),
+                        user: None,
+                    },
+                )),
+                PathList::new(&["/repo"]),
+                t1,
+            ),
+        ];
+
+        let result = resolve_worktree_workspaces(workspaces, fs.as_ref()).await;
+
+        assert_eq!(result.len(), 2);
+        assert!(matches!(result[0].1, SerializedWorkspaceLocation::Local));
+        assert!(matches!(
+            result[1].1,
+            SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Wsl(_))
+        ));
+    }
+
+    #[gpui::test]
+    async fn test_resolve_worktree_workspaces_dedupes_equivalent_docker_locations(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let fs = fs::FakeFs::new(cx.executor());
+
+        fs.insert_tree(
+            "/repo",
+            json!({
+                ".git": {},
+                "src": { "main.rs": "" }
+            }),
+        )
+        .await;
+
+        let t0 = Utc::now() - chrono::Duration::hours(2);
+        let t1 = Utc::now() - chrono::Duration::hours(1);
+
+        let workspaces = vec![
+            (
+                WorkspaceId(1),
+                SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Docker(
+                    DockerConnectionOptions {
+                        name: "Rust Development Container".into(),
+                        container_id: "container-old".into(),
+                        remote_user: "root".into(),
+                        upload_binary_over_docker_exec: false,
+                        use_podman: false,
+                        host: DockerHost::Wsl(remote::WslConnectionOptions {
+                            distro_name: "Arch".into(),
+                            user: None,
+                        }),
+                        remote_env: Default::default(),
+                    },
+                )),
+                PathList::new(&["/repo"]),
+                t0,
+            ),
+            (
+                WorkspaceId(2),
+                SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Docker(
+                    DockerConnectionOptions {
+                        name: "Rust Development Container".into(),
+                        container_id: "container-new".into(),
+                        remote_user: "root".into(),
+                        upload_binary_over_docker_exec: true,
+                        use_podman: false,
+                        host: DockerHost::Wsl(remote::WslConnectionOptions {
+                            distro_name: "Arch".into(),
+                            user: None,
+                        }),
+                        remote_env: Default::default(),
+                    },
+                )),
+                PathList::new(&["/repo"]),
+                t1,
+            ),
+        ];
+
+        let result = resolve_worktree_workspaces(workspaces, fs.as_ref()).await;
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, WorkspaceId(2));
+        assert_eq!(result[0].3, t1);
     }
 
     #[test]

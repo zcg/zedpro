@@ -82,6 +82,9 @@ fn init_global_allocator() {
         eager_commit: Some(false),
         purge_decommits: Some(true),
         purge_delay: Some(0),
+        // 默认 10000 次通用分配才触发一次 collect，桌面长会话下回收偏慢。
+        // 这里收紧到 1000，优先改善常态运行时的 RSS 回落。
+        generic_collect: Some(1000),
         ..Default::default()
     };
     better_mimalloc_rs::MiMalloc::init_with(&config);
@@ -1576,7 +1579,7 @@ fn filter_conflicting_session_workspaces(
 
             session_workspaces.iter().find_map(|candidate| {
                 (candidate.workspace_id != workspace.workspace_id
-                    && candidate.paths == workspace.paths
+                    && session_workspace_paths_likely_match(&candidate.paths, &workspace.paths)
                     && docker_host_matches_workspace(&options.host, &candidate.location))
                 .then_some(candidate)
             })
@@ -1586,7 +1589,7 @@ fn filter_conflicting_session_workspaces(
 
     skipped_workspace_ids.iter().for_each(|workspace_id| {
             log::info!(
-                "skipping dev container session restore because matching host workspace is also present: {:?}",
+                "skipping host session restore because matching dev container workspace is also present: {:?}",
                 workspace_id
             );
         });
@@ -1595,6 +1598,28 @@ fn filter_conflicting_session_workspaces(
         .into_iter()
         .filter(|workspace| !skipped_workspace_ids.contains(&workspace.workspace_id))
         .collect()
+}
+
+fn session_workspace_paths_likely_match(
+    left: &workspace::PathList,
+    right: &workspace::PathList,
+) -> bool {
+    if left.paths().len() != right.paths().len() {
+        return false;
+    }
+
+    left.paths()
+        .iter()
+        .zip(right.paths().iter())
+        .all(|(left, right)| {
+            session_workspace_root_name(left) == session_workspace_root_name(right)
+        })
+}
+
+fn session_workspace_root_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
 fn docker_host_matches_workspace(
@@ -1612,6 +1637,78 @@ fn docker_host_matches_workspace(
             SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Ssh(actual)),
         ) => expected == actual,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use remote::{DockerConnectionOptions, WslConnectionOptions};
+    use workspace::PathList;
+
+    fn wsl_location(distro_name: &str) -> SerializedWorkspaceLocation {
+        SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Wsl(WslConnectionOptions {
+            distro_name: distro_name.to_string(),
+            user: None,
+        }))
+    }
+
+    fn docker_location(distro_name: &str, container_id: &str) -> SerializedWorkspaceLocation {
+        SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Docker(
+            DockerConnectionOptions {
+                name: "Rust Development Container".into(),
+                container_id: container_id.into(),
+                remote_user: "root".into(),
+                upload_binary_over_docker_exec: false,
+                use_podman: false,
+                host: DockerHost::Wsl(WslConnectionOptions {
+                    distro_name: distro_name.to_string(),
+                    user: None,
+                }),
+                remote_env: Default::default(),
+            },
+        ))
+    }
+
+    #[test]
+    fn filter_conflicting_session_workspaces_prefers_devcontainer_over_matching_wsl_host() {
+        let host = SessionWorkspace {
+            workspace_id: workspace::WorkspaceId::from_i64(1),
+            location: wsl_location("Arch"),
+            paths: PathList::new(&["/home/arch/codes/rust/my-rust-devcontainer"]),
+            window_id: None,
+        };
+        let devcontainer = SessionWorkspace {
+            workspace_id: workspace::WorkspaceId::from_i64(2),
+            location: docker_location("Arch", "container-1"),
+            paths: PathList::new(&["/workspaces/my-rust-devcontainer"]),
+            window_id: None,
+        };
+
+        let result = filter_conflicting_session_workspaces(vec![host, devcontainer.clone()]);
+
+        assert_eq!(result, vec![devcontainer]);
+    }
+
+    #[test]
+    fn filter_conflicting_session_workspaces_keeps_unrelated_wsl_host() {
+        let host = SessionWorkspace {
+            workspace_id: workspace::WorkspaceId::from_i64(1),
+            location: wsl_location("Arch"),
+            paths: PathList::new(&["/home/arch/codes/rust/another-project"]),
+            window_id: None,
+        };
+        let devcontainer = SessionWorkspace {
+            workspace_id: workspace::WorkspaceId::from_i64(2),
+            location: docker_location("Arch", "container-1"),
+            paths: PathList::new(&["/workspaces/my-rust-devcontainer"]),
+            window_id: None,
+        };
+
+        let result =
+            filter_conflicting_session_workspaces(vec![host.clone(), devcontainer.clone()]);
+
+        assert_eq!(result, vec![host, devcontainer]);
     }
 }
 

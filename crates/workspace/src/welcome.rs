@@ -2,6 +2,7 @@ use crate::{
     NewFile, Open, OpenMode, PathList, SerializedWorkspaceLocation, Workspace, WorkspaceId,
     item::{Item, ItemEvent},
     persistence::WorkspaceDb,
+    resolve_worktree_workspaces,
 };
 use chrono::{DateTime, Utc};
 use git::Clone as GitClone;
@@ -12,11 +13,13 @@ use gpui::{
 };
 use menu::{SelectNext, SelectPrevious};
 use project::DisableAiSettings;
+use remote::{DockerHost, RemoteConnectionOptions};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use settings::Settings;
 use ui::{ButtonLike, Divider, DividerColor, KeyBinding, Vector, VectorName, prelude::*};
 use util::ResultExt;
+use util::paths::PathExt;
 use zed_actions::{Extensions, OpenOnboarding, OpenSettings, agent, command_palette};
 
 #[derive(PartialEq, Clone, Debug, Deserialize, Serialize, JsonSchema, Action)]
@@ -24,6 +27,12 @@ use zed_actions::{Extensions, OpenOnboarding, OpenSettings, agent, command_palet
 #[serde(transparent)]
 pub struct OpenRecentProject {
     pub index: usize,
+}
+
+#[derive(PartialEq, Clone, Debug, Deserialize, Serialize, JsonSchema, Action)]
+#[action(namespace = welcome)]
+pub struct OpenRecentRemoteProject {
+    pub workspace_id: i64,
 }
 
 actions!(
@@ -66,6 +75,7 @@ impl RenderOnce for SectionHeader {
 #[derive(IntoElement)]
 struct SectionButton {
     label: SharedString,
+    detail: Option<SharedString>,
     icon: IconName,
     action: Box<dyn Action>,
     tab_index: usize,
@@ -75,6 +85,7 @@ struct SectionButton {
 impl SectionButton {
     fn new(
         label: impl Into<SharedString>,
+        detail: Option<impl Into<SharedString>>,
         icon: IconName,
         action: &dyn Action,
         tab_index: usize,
@@ -82,6 +93,7 @@ impl SectionButton {
     ) -> Self {
         Self {
             label: label.into(),
+            detail: detail.map(Into::into),
             icon,
             action: action.boxed_clone(),
             tab_index,
@@ -99,19 +111,38 @@ impl RenderOnce for SectionButton {
             .tab_index(self.tab_index as isize)
             .full_width()
             .size(ButtonSize::Medium)
+            .when(self.detail.is_some(), |this| {
+                this.height(rems_from_px(72.).into())
+            })
             .child(
                 h_flex()
                     .w_full()
                     .justify_between()
+                    .items_start()
                     .child(
                         h_flex()
                             .gap_2()
+                            .flex_grow()
+                            .items_start()
                             .child(
                                 Icon::new(self.icon)
                                     .color(Color::Muted)
                                     .size(IconSize::Small),
                             )
-                            .child(Label::new(self.label)),
+                            .child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .flex_grow()
+                                    .min_w_0()
+                                    .text_left()
+                                    .child(Label::new(self.label))
+                                    .children(self.detail.map(|detail| {
+                                        Label::new(detail)
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted)
+                                            .into_any_element()
+                                    })),
+                            ),
                     )
                     .child(
                         KeyBinding::for_action_in(action_ref, &self.focus_handle, cx)
@@ -155,6 +186,7 @@ impl SectionEntry {
         self.visibility_guard.is_visible(cx).then(|| {
             SectionButton::new(
                 self.title,
+                None::<SharedString>,
                 self.icon,
                 self.action,
                 button_index,
@@ -280,6 +312,7 @@ impl WelcomePage {
                     .await
                     .log_err()
                     .unwrap_or_default();
+                let workspaces = resolve_worktree_workspaces(workspaces, fs.as_ref()).await;
 
                 this.update(cx, |this, cx| {
                     this.recent_workspaces = Some(workspaces);
@@ -315,7 +348,7 @@ impl WelcomePage {
         cx: &mut Context<Self>,
     ) {
         if let Some(recent_workspaces) = &self.recent_workspaces {
-            if let Some((_workspace_id, location, paths, _timestamp)) =
+            if let Some((workspace_id, location, paths, _timestamp)) =
                 recent_workspaces.get(action.index)
             {
                 let is_local = matches!(location, SerializedWorkspaceLocation::Local);
@@ -331,8 +364,16 @@ impl WelcomePage {
                         })
                         .log_err();
                 } else {
-                    use zed_actions::OpenRecent;
-                    window.dispatch_action(OpenRecent::default().boxed_clone(), cx);
+                    let SerializedWorkspaceLocation::Remote(_) = location else {
+                        return;
+                    };
+                    window.dispatch_action(
+                        OpenRecentRemoteProject {
+                            workspace_id: i64::from(*workspace_id),
+                        }
+                        .boxed_clone(),
+                        cx,
+                    );
                 }
             }
         }
@@ -344,6 +385,7 @@ impl WelcomePage {
     ) -> impl IntoElement {
         v_flex()
             .w_full()
+            .gap_1()
             .child(SectionHeader::new("Recent Projects"))
             .children(recent_projects)
     }
@@ -355,22 +397,11 @@ impl WelcomePage {
         location: &SerializedWorkspaceLocation,
         paths: &PathList,
     ) -> impl IntoElement {
-        let (icon, title) = match location {
-            SerializedWorkspaceLocation::Local => {
-                let path = paths.paths().first().map(|p| p.as_path());
-                let name = path
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Untitled".to_string());
-                (IconName::Folder, name)
-            }
-            SerializedWorkspaceLocation::Remote(_) => {
-                (IconName::Server, "Remote Project".to_string())
-            }
-        };
+        let (icon, title, detail) = recent_project_display(location, paths);
 
         SectionButton::new(
             title,
+            detail,
             icon,
             &OpenRecentProject {
                 index: project_index,
@@ -378,6 +409,109 @@ impl WelcomePage {
             tab_index,
             self.focus_handle.clone(),
         )
+    }
+}
+
+fn recent_project_display(
+    location: &SerializedWorkspaceLocation,
+    paths: &PathList,
+) -> (IconName, String, Option<String>) {
+    let project_name = primary_project_name(paths);
+
+    match location {
+        SerializedWorkspaceLocation::Local => (
+            IconName::Folder,
+            project_name,
+            Some(format_recent_project_detail(&["Local".to_string()], paths)),
+        ),
+        SerializedWorkspaceLocation::Remote(options) => (
+            recent_project_icon(options),
+            project_name,
+            Some(format_recent_project_detail(
+                &recent_remote_target_lines(options),
+                paths,
+            )),
+        ),
+    }
+}
+
+fn primary_project_name(paths: &PathList) -> String {
+    let primary_path = paths.paths().first().map(|path| path.as_path());
+    primary_path
+        .and_then(|path| path.file_name())
+        .filter(|name| !name.is_empty())
+        .map(|name| name.to_string_lossy().to_string())
+        .or_else(|| {
+            primary_path.and_then(|path| {
+                let compact = path.compact().to_string_lossy().trim().to_string();
+                (!compact.is_empty()).then_some(compact)
+            })
+        })
+        .unwrap_or_else(|| "Untitled".to_string())
+}
+
+fn primary_project_path(paths: &PathList) -> Option<String> {
+    let primary_path = paths.paths().first().map(|path| path.as_path())?;
+    let compact = primary_path.compact().to_string_lossy().trim().to_string();
+    if compact.is_empty() {
+        None
+    } else if paths.paths().len() > 1 {
+        Some(format!("{compact} +{}", paths.paths().len() - 1))
+    } else {
+        Some(compact)
+    }
+}
+
+fn recent_project_icon(options: &RemoteConnectionOptions) -> IconName {
+    match options {
+        RemoteConnectionOptions::Ssh(_) => IconName::Server,
+        RemoteConnectionOptions::Wsl(_) => IconName::Linux,
+        RemoteConnectionOptions::Docker(_) => IconName::Box,
+        #[cfg(any(test, feature = "test-support"))]
+        RemoteConnectionOptions::Mock(_) => IconName::Server,
+    }
+}
+
+fn recent_remote_target_lines(options: &RemoteConnectionOptions) -> Vec<String> {
+    match options {
+        RemoteConnectionOptions::Ssh(options) => vec![format!("SSH: {}", options.display_name())],
+        RemoteConnectionOptions::Wsl(options) => vec![format!("WSL: {}", options.distro_name)],
+        RemoteConnectionOptions::Docker(options) => {
+            vec![format!(
+                "Dev Container via {}",
+                docker_host_label(&options.host)
+            )]
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        RemoteConnectionOptions::Mock(options) => vec![format!("Mock: {}", options.id)],
+    }
+}
+
+fn docker_host_label(host: &DockerHost) -> String {
+    match host {
+        DockerHost::Local => "Local Docker".to_string(),
+        DockerHost::Wsl(options) => format!("WSL: {}", options.distro_name),
+        DockerHost::Ssh(options) => format!("SSH: {}", options.display_name()),
+    }
+}
+
+fn format_recent_project_detail(header_lines: &[String], paths: &PathList) -> String {
+    let mut lines = header_lines.to_vec();
+    if let Some(path) = primary_project_path(paths) {
+        lines.push(path);
+    }
+    lines.join("\n")
+}
+
+trait RemoteConnectionDisplayName {
+    fn display_name(&self) -> String;
+}
+
+impl RemoteConnectionDisplayName for remote::SshConnectionOptions {
+    fn display_name(&self) -> String {
+        self.nickname
+            .clone()
+            .unwrap_or_else(|| self.host.to_string())
     }
 }
 

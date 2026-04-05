@@ -8,7 +8,9 @@ use windows::{
         ViewManagement::{UIColorType, UISettings},
     },
     Win32::{
-        Foundation::*, Graphics::Dwm::*, System::LibraryLoader::LoadLibraryA,
+        Foundation::*,
+        Graphics::Dwm::*,
+        System::{LibraryLoader::LoadLibraryA, Threading::*},
         UI::WindowsAndMessaging::*,
     },
     core::{BOOL, PCSTR},
@@ -88,6 +90,14 @@ pub(crate) unsafe fn set_window_long(
 
 pub(crate) fn windows_credentials_target_name(url: &str) -> String {
     format!("zed:url={}", url)
+}
+
+pub(crate) fn trim_current_process_working_set() {
+    unsafe {
+        if let Err(error) = SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX) {
+            log::debug!("failed to trim current process working set: {error:?}");
+        }
+    }
 }
 
 pub(crate) fn load_cursor(style: CursorStyle) -> Option<HCURSOR> {
