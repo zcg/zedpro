@@ -1,9 +1,11 @@
 use anyhow::Result;
 use feature_flags::{AgentV2FeatureFlag, FeatureFlagAppExt};
+#[cfg(target_os = "windows")]
+use gpui::SystemWindowTabController;
 use gpui::{
     AnyView, App, Context, DragMoveEvent, Entity, EntityId, EventEmitter, FocusHandle, Focusable,
-    ManagedView, MouseButton, Pixels, Render, Subscription, SystemWindowTabController, Task,
-    Tiling, Window, WindowId, actions, deferred, px,
+    ManagedView, MouseButton, Pixels, Render, Subscription, Task, Tiling, Window, WindowId,
+    actions, deferred, px,
 };
 use project::{DisableAiSettings, Project};
 pub use settings::SidebarSide;
@@ -1221,7 +1223,7 @@ impl MultiWorkspace {
             {
                 let create_window_task =
                     Workspace::new_local(paths, app_state, None, None, None, open_mode, cx);
-                return cx.spawn(async move |_cx| {
+                return cx.spawn(async move |_, _cx| {
                     let open_result = create_window_task.await?;
                     Ok(open_result.workspace)
                 });

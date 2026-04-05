@@ -1274,37 +1274,10 @@ impl WindowsWindowInner {
         let mut renderer = self.state.renderer.borrow_mut();
         if let Err(err) = renderer.handle_device_lost(&devices) {
             log::error!("Window renderer device recovery failed: {err:#}");
-
-            if devices.active_backend() == DirectXBackend::Direct3d12 {
-                let fallback_devices = devices.with_active_backend(DirectXBackend::Direct3d11);
-                match renderer.handle_device_lost(&fallback_devices) {
-                    Ok(()) => {
-                        self.state
-                            .renderer_backend_override
-                            .set(Some(DirectXBackend::Direct3d11));
-                        log::warn!(
-                            "Window renderer fell back to {} after {} recovery failed.",
-                            DirectXBackend::Direct3d11.display_name(),
-                            DirectXBackend::Direct3d12.display_name(),
-                        );
-                    }
-                    Err(fallback_err) => {
-                        log::error!(
-                            "Window renderer fallback to {} also failed: {fallback_err:#}",
-                            DirectXBackend::Direct3d11.display_name(),
-                        );
-                        self.state
-                            .invalidate_devices
-                            .store(true, std::sync::atomic::Ordering::Release);
-                        return Some(0);
-                    }
-                }
-            } else {
-                self.state
-                    .invalidate_devices
-                    .store(true, std::sync::atomic::Ordering::Release);
-                return Some(0);
-            }
+            self.state
+                .invalidate_devices
+                .store(true, std::sync::atomic::Ordering::Release);
+            return Some(0);
         }
         self.state.clear_direct_manipulation();
         Some(0)

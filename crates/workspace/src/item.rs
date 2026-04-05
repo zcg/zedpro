@@ -1443,7 +1443,8 @@ pub mod test {
     };
     use gpui::{
         AnyElement, App, AppContext as _, Context, Entity, EntityId, EventEmitter, Focusable,
-        InteractiveElement, IntoElement, Render, SharedString, Task, WeakEntity, Window,
+        InteractiveElement, IntoElement, ParentElement, Render, SharedString, Task, WeakEntity,
+        Window,
     };
     use project::{Project, ProjectEntryId, ProjectPath, WorktreeId};
     use std::{any::Any, cell::Cell, sync::Arc};
@@ -1470,6 +1471,7 @@ pub mod test {
         pub nav_history: Option<ItemNavHistory>,
         pub tab_descriptions: Option<Vec<&'static str>>,
         pub tab_detail: Cell<Option<usize>>,
+        pub child_focus_handles: Vec<gpui::FocusHandle>,
         serialize: Option<Box<dyn Fn() -> Option<Task<anyhow::Result<()>>>>>,
         focus_handle: gpui::FocusHandle,
     }
@@ -1551,6 +1553,7 @@ pub mod test {
                 nav_history: None,
                 tab_descriptions: None,
                 tab_detail: Default::default(),
+                child_focus_handles: Vec::new(),
                 workspace_id: Default::default(),
                 focus_handle: cx.focus_handle(),
                 serialize: None,
@@ -1565,6 +1568,11 @@ pub mod test {
 
         pub fn with_label(mut self, state: &str) -> Self {
             self.label = state.to_string();
+            self
+        }
+
+        pub fn with_child_focus_handles(mut self, count: usize, cx: &mut Context<Self>) -> Self {
+            self.child_focus_handles = (0..count).map(|_| cx.focus_handle()).collect();
             self
         }
 
@@ -1615,7 +1623,10 @@ pub mod test {
 
     impl Render for TestItem {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            gpui::div().track_focus(&self.focus_handle(cx))
+            self.child_focus_handles.iter().fold(
+                gpui::div().track_focus(&self.focus_handle(cx)),
+                |parent, handle| parent.child(gpui::div().track_focus(handle)),
+            )
         }
     }
 
@@ -1727,6 +1738,7 @@ pub mod test {
                 nav_history: None,
                 tab_descriptions: None,
                 tab_detail: Default::default(),
+                child_focus_handles: Vec::new(),
                 workspace_id: self.workspace_id,
                 focus_handle: cx.focus_handle(),
                 serialize: None,

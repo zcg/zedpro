@@ -1695,6 +1695,34 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    fn test_user_settings_round_trip_specific_language_server_formatter(cx: &mut App) {
+        let mut store = SettingsStore::new(cx, &test_settings());
+        let user_settings = r#"{
+            "languages": {
+                "JavaScript": {
+                    "formatter": { "language_server": { "name": "oxlint" } }
+                },
+                "TypeScript": {
+                    "formatter": { "language_server": { "name": "oxc" } }
+                },
+                "TOML": {
+                    "formatter": { "language_server": { "name": "tombi" } }
+                },
+                "Python": {
+                    "formatter": { "language_server": { "name": "ruff" } }
+                }
+            }
+        }"#;
+
+        store.set_user_settings(user_settings, cx).unwrap();
+
+        let serialized = serde_json::to_string(store.raw_user_settings().unwrap()).unwrap();
+
+        let mut reloaded_store = SettingsStore::new(cx, &test_settings());
+        reloaded_store.set_user_settings(&serialized, cx).unwrap();
+    }
+
     #[track_caller]
     fn check_settings_update(
         store: &mut SettingsStore,

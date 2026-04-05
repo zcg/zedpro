@@ -58,3 +58,60 @@ message GetDirectoryEnvironment {
 message DirectoryEnvironment {
   map<string, string> environment = 1;
 }
+
+message RemoteDevContainerConfig {
+  string name = 1;
+  string config_path = 2;
+}
+
+enum RemoteDevContainerProgressKind {
+  REMOTE_DEV_CONTAINER_PROGRESS_KIND_STEP_STARTED = 0;
+  REMOTE_DEV_CONTAINER_PROGRESS_KIND_STEP_COMPLETED = 1;
+  REMOTE_DEV_CONTAINER_PROGRESS_KIND_STEP_FAILED = 2;
+  REMOTE_DEV_CONTAINER_PROGRESS_KIND_LOG_LINE = 3;
+}
+
+enum RemoteDevContainerBuildStep {
+  REMOTE_DEV_CONTAINER_BUILD_STEP_CHECK_DOCKER = 0;
+  REMOTE_DEV_CONTAINER_BUILD_STEP_RESOLVE_CONFIGURATION = 1;
+  REMOTE_DEV_CONTAINER_BUILD_STEP_FIND_EXISTING_CONTAINER = 2;
+  REMOTE_DEV_CONTAINER_BUILD_STEP_RUN_INITIALIZE_COMMAND = 3;
+  REMOTE_DEV_CONTAINER_BUILD_STEP_BUILD_CONTAINER = 4;
+  REMOTE_DEV_CONTAINER_BUILD_STEP_RUN_LIFECYCLE_SCRIPTS = 5;
+  REMOTE_DEV_CONTAINER_BUILD_STEP_READ_CONFIGURATION = 6;
+}
+
+enum RemoteDevContainerLogStream {
+  REMOTE_DEV_CONTAINER_LOG_STREAM_INFO = 0;
+  REMOTE_DEV_CONTAINER_LOG_STREAM_STDOUT = 1;
+  REMOTE_DEV_CONTAINER_LOG_STREAM_STDERR = 2;
+}
+
+message StartRemoteDevContainer {
+  uint64 project_id = 1;
+  string project_directory = 2;
+  bool use_podman = 3;
+  RemoteDevContainerConfig config = 4;
+  map<string, string> environment = 5;
+}
+
+message RemoteDevContainerProgress {
+  uint64 project_id = 1;
+  RemoteDevContainerProgressKind kind = 2;
+  RemoteDevContainerBuildStep step = 3;
+  RemoteDevContainerLogStream stream = 4;
+  string message = 5;
+}
+
+message RemoteDevContainerConnection {
+  string name = 1;
+  string container_id = 2;
+  string remote_user = 3;
+  repeated string extension_ids = 4;
+  map<string, string> remote_env = 5;
+}
+
+message RemoteDevContainerStarted {
+  RemoteDevContainerConnection connection = 1;
+  string starting_dir = 2;
+}

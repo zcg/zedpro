@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
     path::{Path, PathBuf},
+    process::Output,
     sync::Arc,
 };
 
@@ -17,9 +18,12 @@ use worktree::Snapshot;
 
 use crate::{
     DevContainerContext, DevContainerFeature, DevContainerTemplate,
+    command_json::run_command_with_progress,
     devcontainer_json::DevContainer,
     devcontainer_manifest::{read_devcontainer_configuration, spawn_dev_container},
-    devcontainer_templates_repository, get_latest_oci_manifest, get_oci_token, ghcr_registry,
+    devcontainer_templates_repository,
+    docker::docker_host_command,
+    get_latest_oci_manifest, get_oci_token, ghcr_registry,
     oci::download_oci_tarball,
 };
 
@@ -65,6 +69,92 @@ pub(crate) struct DevContainerApply {
     pub(crate) project_files: Vec<Arc<RelPath>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DevContainerBuildStep {
+    CheckDocker,
+    ResolveConfiguration,
+    FindExistingContainer,
+    RunInitializeCommand,
+    BuildContainer,
+    RunLifecycleScripts,
+    ReadConfiguration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DevContainerLogStream {
+    Info,
+    Stdout,
+    Stderr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DevContainerLogLine {
+    pub stream: DevContainerLogStream,
+    pub line: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DevContainerProgressEvent {
+    StepStarted(DevContainerBuildStep),
+    StepCompleted(DevContainerBuildStep),
+    StepFailed(DevContainerBuildStep, String),
+    LogLine(DevContainerLogLine),
+}
+
+pub type DevContainerProgressCallback = Arc<dyn Fn(DevContainerProgressEvent) + Send + Sync>;
+
+pub(crate) fn emit_progress(
+    progress: Option<&DevContainerProgressCallback>,
+    event: DevContainerProgressEvent,
+) {
+    if let Some(progress) = progress {
+        progress(event);
+    }
+}
+
+pub(crate) fn emit_log_line(
+    progress: Option<&DevContainerProgressCallback>,
+    stream: DevContainerLogStream,
+    line: impl Into<String>,
+) {
+    emit_progress(
+        progress,
+        DevContainerProgressEvent::LogLine(DevContainerLogLine {
+            stream,
+            line: line.into(),
+        }),
+    );
+}
+
+pub(crate) fn emit_log_text(
+    progress: Option<&DevContainerProgressCallback>,
+    stream: DevContainerLogStream,
+    text: impl AsRef<str>,
+) {
+    for line in text.as_ref().lines() {
+        let trimmed = line.trim_end();
+        if !trimmed.is_empty() {
+            emit_log_line(progress, stream, trimmed.to_string());
+        }
+    }
+}
+
+pub(crate) fn emit_command_output(
+    progress: Option<&DevContainerProgressCallback>,
+    output: &Output,
+) {
+    emit_log_text(
+        progress,
+        DevContainerLogStream::Stdout,
+        String::from_utf8_lossy(&output.stdout),
+    );
+    emit_log_text(
+        progress,
+        DevContainerLogStream::Stderr,
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DevContainerError {
     CommandFailed(String),
@@ -102,7 +192,7 @@ impl Display for DevContainerError {
                 DevContainerError::DevContainerNotFound =>
                     "No valid dev container definition found in project".to_string(),
                 DevContainerError::DevContainerParseFailed =>
-                    "Failed to parse file .devcontainer/devcontainer.json".to_string(),
+                    "Failed to process dev container configuration".to_string(),
                 DevContainerError::NotInValidProject => "Not within a valid project".to_string(),
                 DevContainerError::CommandFailed(program) =>
                     format!("Failure running external program {program}"),
@@ -242,7 +332,33 @@ pub async fn start_dev_container_with_config(
     config: Option<DevContainerConfig>,
     environment: HashMap<String, String>,
 ) -> Result<(DevContainerConnection, String), DevContainerError> {
-    check_for_docker(context.use_podman).await?;
+    start_dev_container_with_config_and_progress(context, config, environment, None).await
+}
+
+pub async fn start_dev_container_with_config_and_progress(
+    context: DevContainerContext,
+    config: Option<DevContainerConfig>,
+    environment: HashMap<String, String>,
+    progress: Option<DevContainerProgressCallback>,
+) -> Result<(DevContainerConnection, String), DevContainerError> {
+    emit_progress(
+        progress.as_ref(),
+        DevContainerProgressEvent::StepStarted(DevContainerBuildStep::CheckDocker),
+    );
+    if let Err(err) = check_for_docker(&context, progress.as_ref()).await {
+        emit_progress(
+            progress.as_ref(),
+            DevContainerProgressEvent::StepFailed(
+                DevContainerBuildStep::CheckDocker,
+                err.to_string(),
+            ),
+        );
+        return Err(err);
+    }
+    emit_progress(
+        progress.as_ref(),
+        DevContainerProgressEvent::StepCompleted(DevContainerBuildStep::CheckDocker),
+    );
 
     let Some(actual_config) = config.clone() else {
         return Err(DevContainerError::NotInValidProject);
@@ -253,6 +369,7 @@ pub async fn start_dev_container_with_config(
         environment.clone(),
         actual_config.clone(),
         context.project_directory.clone().as_ref(),
+        progress.clone(),
     )
     .await
     {
@@ -264,19 +381,35 @@ pub async fn start_dev_container_with_config(
             remote_env,
             ..
         }) => {
-            let project_name =
+            let project_name = {
+                emit_progress(
+                    progress.as_ref(),
+                    DevContainerProgressEvent::StepStarted(
+                        DevContainerBuildStep::ReadConfiguration,
+                    ),
+                );
                 match read_devcontainer_configuration(actual_config, &context, environment).await {
                     Ok(DevContainer {
                         name: Some(name), ..
                     }) => name,
                     _ => get_backup_project_name(&remote_workspace_folder, &container_id),
-                };
+                }
+            };
+            emit_progress(
+                progress.as_ref(),
+                DevContainerProgressEvent::StepCompleted(DevContainerBuildStep::ReadConfiguration),
+            );
 
             let connection = DevContainerConnection {
                 name: project_name,
                 container_id,
                 use_podman: context.use_podman,
                 remote_user,
+                config_path: None,
+                projects: Default::default(),
+                host_projects: Default::default(),
+                last_host_project: None,
+                host: None,
                 extension_ids,
                 remote_env: remote_env.into_iter().collect(),
             };
@@ -290,16 +423,28 @@ pub async fn start_dev_container_with_config(
     }
 }
 
-async fn check_for_docker(use_podman: bool) -> Result<(), DevContainerError> {
-    let mut command = if use_podman {
-        util::command::new_command("podman")
+async fn check_for_docker(
+    context: &DevContainerContext,
+    progress: Option<&DevContainerProgressCallback>,
+) -> Result<(), DevContainerError> {
+    let docker_cli = if context.use_podman {
+        "podman"
     } else {
-        util::command::new_command("docker")
+        "docker"
     };
+    let mut command = docker_host_command(docker_cli, &context.docker_host);
     command.arg("--version");
 
-    match command.output().await {
-        Ok(_) => Ok(()),
+    match run_command_with_progress(&mut command, progress).await {
+        Ok(output) => {
+            emit_command_output(None, &output);
+            if output.status.success() {
+                Ok(())
+            } else {
+                log::error!("docker --version returned non-success status");
+                Err(DevContainerError::DockerNotAvailable)
+            }
+        }
         Err(e) => {
             log::error!("Unable to find docker in $PATH: {:?}", e);
             Err(DevContainerError::DockerNotAvailable)

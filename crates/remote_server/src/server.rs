@@ -842,17 +842,61 @@ pub(crate) fn execute_proxy(
 
 fn kill_running_server(pid: u32, paths: &ServerPaths) -> Result<(), ExecuteProxyError> {
     log::info!("killing existing server with PID {}", pid);
-    let system = sysinfo::System::new_with_specifics(
-        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
-    );
 
-    if let Some(process) = system.process(sysinfo::Pid::from_u32(pid)) {
-        let killed = process.kill();
-        if !killed {
-            return Err(ExecuteProxyError::KillRunningServer { pid });
+    match server_process_state(pid) {
+        ServerProcessState::Missing => {
+            log::info!(
+                "existing server PID {} is already gone. cleaning up stale state files only",
+                pid
+            );
+            cleanup_server_files(paths);
+            return Ok(());
+        }
+        ServerProcessState::RunningOtherProcess => {
+            log::warn!(
+                "PID file points to PID {}, but that process is not a remote_server. cleaning up stale state files only",
+                pid
+            );
+            cleanup_server_files(paths);
+            return Ok(());
+        }
+        ServerProcessState::RunningRemoteServer => {}
+    }
+
+    #[cfg(not(windows))]
+    {
+        if terminate_remote_server_process(pid) {
+            cleanup_server_files(paths);
+            return Ok(());
         }
     }
 
+    #[cfg(windows)]
+    {
+        let system = sysinfo::System::new_with_specifics(
+            sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
+        );
+
+        if let Some(process) = system.process(sysinfo::Pid::from_u32(pid)) {
+            let killed = process.kill();
+            if !killed {
+                return Err(ExecuteProxyError::KillRunningServer { pid });
+            }
+        }
+    }
+
+    if !matches!(
+        server_process_state(pid),
+        ServerProcessState::RunningRemoteServer
+    ) {
+        cleanup_server_files(paths);
+        return Ok(());
+    }
+
+    Err(ExecuteProxyError::KillRunningServer { pid })
+}
+
+fn cleanup_server_files(paths: &ServerPaths) {
     for file in [
         &paths.pid_file,
         &paths.stdin_socket,
@@ -862,8 +906,107 @@ fn kill_running_server(pid: u32, paths: &ServerPaths) -> Result<(), ExecuteProxy
         log::debug!("cleaning up file {:?} before starting new server", file);
         std::fs::remove_file(file).ok();
     }
+}
 
-    Ok(())
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServerProcessState {
+    Missing,
+    RunningRemoteServer,
+    RunningOtherProcess,
+}
+
+fn server_process_state(pid: u32) -> ServerProcessState {
+    let system =
+        sysinfo::System::new_with_specifics(sysinfo::RefreshKind::nothing().with_processes(
+            sysinfo::ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::Always),
+        ));
+
+    let Some(process) = system.process(sysinfo::Pid::from_u32(pid)) else {
+        return ServerProcessState::Missing;
+    };
+
+    if process.exe().is_some_and(is_remote_server_binary_path) {
+        ServerProcessState::RunningRemoteServer
+    } else {
+        ServerProcessState::RunningOtherProcess
+    }
+}
+
+fn is_remote_server_binary_path(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(OsStr::to_str)
+        .is_some_and(|stem| stem == "remote_server" || stem.ends_with("-remote_server"))
+}
+
+#[cfg(not(windows))]
+fn terminate_remote_server_process(pid: u32) -> bool {
+    if send_signal(pid, libc::SIGTERM) {
+        if wait_for_remote_server_exit(pid, std::time::Duration::from_secs(2)) {
+            return true;
+        }
+        log::warn!(
+            "remote_server PID {} did not exit after SIGTERM. escalating to SIGKILL",
+            pid
+        );
+    } else if !matches!(
+        server_process_state(pid),
+        ServerProcessState::RunningRemoteServer
+    ) {
+        return true;
+    }
+
+    if send_signal(pid, libc::SIGKILL) {
+        return wait_for_remote_server_exit(pid, std::time::Duration::from_secs(1));
+    }
+
+    !matches!(
+        server_process_state(pid),
+        ServerProcessState::RunningRemoteServer
+    )
+}
+
+#[cfg(not(windows))]
+fn send_signal(pid: u32, signal: libc::c_int) -> bool {
+    let result = unsafe { libc::kill(pid as libc::pid_t, signal) };
+    if result == 0 {
+        return true;
+    }
+
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        log::info!(
+            "remote_server PID {} no longer exists while sending signal {}",
+            pid,
+            signal
+        );
+    } else {
+        log::warn!(
+            "failed to send signal {} to remote_server PID {}: {}",
+            signal,
+            pid,
+            error
+        );
+    }
+    false
+}
+
+#[cfg(not(windows))]
+fn wait_for_remote_server_exit(pid: u32, timeout: std::time::Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() <= timeout {
+        if !matches!(
+            server_process_state(pid),
+            ServerProcessState::RunningRemoteServer
+        ) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    !matches!(
+        server_process_state(pid),
+        ServerProcessState::RunningRemoteServer
+    )
 }
 
 #[derive(Debug, Error)]
@@ -1008,20 +1151,30 @@ fn check_pid_file(path: &Path) -> Result<Option<u32>, CheckPidError> {
 
     log::debug!("Checking if process with PID {} exists...", pid);
 
-    let system = sysinfo::System::new_with_specifics(
-        sysinfo::RefreshKind::nothing().with_processes(sysinfo::ProcessRefreshKind::nothing()),
-    );
-
-    if system.process(sysinfo::Pid::from_u32(pid)).is_some() {
-        log::debug!(
-            "Process with PID {} exists. NOT spawning new server, but attaching to existing one.",
-            pid
-        );
-        Ok(Some(pid))
-    } else {
-        log::debug!("Found PID file, but process with that PID does not exist. Removing PID file.");
-        std::fs::remove_file(path).map_err(|source| CheckPidError { source, pid })?;
-        Ok(None)
+    match server_process_state(pid) {
+        ServerProcessState::RunningRemoteServer => {
+            log::debug!(
+                "Process with PID {} belongs to remote_server. Reusing existing server.",
+                pid
+            );
+            Ok(Some(pid))
+        }
+        ServerProcessState::Missing => {
+            log::debug!(
+                "Found PID file, but process with PID {} does not exist. Removing PID file.",
+                pid
+            );
+            std::fs::remove_file(path).map_err(|source| CheckPidError { source, pid })?;
+            Ok(None)
+        }
+        ServerProcessState::RunningOtherProcess => {
+            log::warn!(
+                "Found PID file pointing to PID {}, but that process is not a remote_server. Removing stale PID file.",
+                pid
+            );
+            std::fs::remove_file(path).map_err(|source| CheckPidError { source, pid })?;
+            Ok(None)
+        }
     }
 }
 

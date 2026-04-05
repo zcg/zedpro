@@ -17,7 +17,9 @@ pub mod size;
 pub mod test;
 pub mod time;
 
-use anyhow::{Context, Result};
+#[cfg(target_os = "windows")]
+use anyhow::Context;
+use anyhow::Result;
 use itertools::Either;
 use regex::Regex;
 use std::path::{Path, PathBuf};

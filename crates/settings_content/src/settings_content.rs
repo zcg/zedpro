@@ -1055,11 +1055,44 @@ pub struct RemoteSettingsContent {
 )]
 pub struct DevContainerConnection {
     pub name: String,
+    #[serde(default = "default_devcontainer_remote_user")]
     pub remote_user: String,
     pub container_id: String,
     pub use_podman: bool,
+    /// Absolute path to the devcontainer.json on the host where `devcontainer up` was run.
+    /// This is used to show a stable binding between a stored dev container and its config.
+    pub config_path: Option<String>,
+    #[serde(default)]
+    pub projects: BTreeSet<RemoteProject>,
+    #[serde(default)]
+    pub host_projects: BTreeSet<RemoteProject>,
+    pub last_host_project: Option<RemoteProject>,
+    pub host: Option<DevContainerHost>,
+    #[serde(default)]
     pub extension_ids: Vec<String>,
+    #[serde(default)]
     pub remote_env: BTreeMap<String, String>,
+}
+
+fn default_devcontainer_remote_user() -> String {
+    "root".to_string()
+}
+
+#[with_fallible_options]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema, MergeFrom, Hash)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DevContainerHost {
+    Ssh {
+        host: String,
+        username: Option<String>,
+        port: Option<u16>,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+    Wsl {
+        distro_name: String,
+        user: Option<String>,
+    },
 }
 
 #[with_fallible_options]
@@ -1096,7 +1129,18 @@ pub struct WslConnection {
 
 #[with_fallible_options]
 #[derive(
-    Clone, Debug, Default, Serialize, PartialEq, Eq, PartialOrd, Ord, Deserialize, JsonSchema,
+    Clone,
+    Debug,
+    Default,
+    Serialize,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    Hash,
 )]
 pub struct RemoteProject {
     pub paths: Vec<String>,

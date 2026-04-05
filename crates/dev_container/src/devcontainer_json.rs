@@ -233,8 +233,14 @@ pub(crate) struct DevContainer {
 }
 
 pub(crate) fn deserialize_devcontainer_json(json: &str) -> Result<DevContainer, DevContainerError> {
-    match serde_json_lenient::from_str(json) {
-        Ok(devcontainer) => Ok(devcontainer),
+    match serde_json_lenient::from_str::<Value>(json) {
+        Ok(value) => match serde_json_lenient::from_value(value) {
+            Ok(devcontainer) => Ok(devcontainer),
+            Err(e) => {
+                log::error!("Unable to deserialize devcontainer from parsed json value: {e}");
+                Err(DevContainerError::DevContainerParseFailed)
+            }
+        },
         Err(e) => {
             log::error!("Unable to deserialize devcontainer from json: {e}");
             Err(DevContainerError::DevContainerParseFailed)
@@ -899,6 +905,80 @@ mod test {
         );
 
         assert_eq!(devcontainer.build_type(), DevContainerBuildType::Image);
+    }
+
+    #[test]
+    fn should_deserialize_legacy_vscode_top_level_fields() {
+        let given_legacy_vscode_json = r#"
+            {
+              "name": "Rust Development Container",
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "settings": {
+                "rust-analyzer.checkOnSave.command": "clippy",
+                "files.watcherExclude": {
+                  "**/target/**": true
+                },
+                "terminal.integrated.defaultProfile.linux": "bash"
+              },
+              "extensions": [
+                "rust-lang.rust-analyzer",
+                "ms-azuretools.vscode-docker",
+                "EditorConfig.EditorConfig",
+                "tamasfe.even-better-toml",
+                "vadimcn.vscode-lldb",
+                "serayuzgur.crates"
+              ],
+              "forwardPorts": [8080, 6379],
+              "remoteUser": "zed",
+              "containerEnv": { "SHELL": "/bin/bash" },
+              "remoteEnv": { "SHELL": "/bin/bash" }
+            }
+        "#;
+
+        let result = deserialize_devcontainer_json(given_legacy_vscode_json);
+
+        assert!(
+            result.is_ok(),
+            "Should ignore legacy top-level vscode fields, but got: {:?}",
+            result.err()
+        );
+        let devcontainer = result.expect("ok");
+        assert_eq!(
+            devcontainer.name,
+            Some("Rust Development Container".to_string())
+        );
+        assert_eq!(
+            devcontainer.build,
+            Some(ContainerBuild {
+                dockerfile: "Dockerfile".to_string(),
+                context: None,
+                args: None,
+                options: None,
+                target: None,
+                cache_from: None,
+            })
+        );
+        assert_eq!(
+            devcontainer.forward_ports,
+            Some(vec![ForwardPort::Number(8080), ForwardPort::Number(6379)])
+        );
+        assert_eq!(devcontainer.remote_user, Some("zed".to_string()));
+        assert_eq!(
+            devcontainer.container_env,
+            Some(HashMap::from([(
+                "SHELL".to_string(),
+                "/bin/bash".to_string()
+            )]))
+        );
+        assert_eq!(
+            devcontainer.remote_env,
+            Some(HashMap::from([(
+                "SHELL".to_string(),
+                "/bin/bash".to_string()
+            )]))
+        );
     }
 
     #[test]

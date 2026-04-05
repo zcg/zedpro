@@ -30,14 +30,203 @@ use crate::{
     transport::parse_platform,
 };
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct DockerConnectionOptions {
     pub name: String,
     pub container_id: String,
     pub remote_user: String,
     pub upload_binary_over_docker_exec: bool,
     pub use_podman: bool,
+    pub host: DockerHost,
     pub remote_env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DockerHost {
+    Local,
+    Ssh(crate::SshConnectionOptions),
+    Wsl(crate::WslConnectionOptions),
+}
+
+impl Default for DockerHost {
+    fn default() -> Self {
+        Self::Local
+    }
+}
+
+fn wsl_docker_command_prefix(
+    docker_cli: &str,
+    options: &crate::WslConnectionOptions,
+) -> (String, Vec<String>) {
+    let mut args = Vec::new();
+    if let Some(user) = &options.user {
+        args.push("--user".to_string());
+        args.push(user.clone());
+    }
+    args.extend([
+        "--distribution".to_string(),
+        options.distro_name.clone(),
+        "--cd".to_string(),
+        "~".to_string(),
+        "--exec".to_string(),
+        docker_cli.to_string(),
+    ]);
+    ("wsl.exe".to_string(), args)
+}
+
+fn new_host_docker_command(docker_cli: &str, host: &DockerHost) -> util::command::Command {
+    match host {
+        DockerHost::Local => util::command::new_command(docker_cli),
+        DockerHost::Ssh(options) => {
+            let (program, args) = ssh_docker_command_prefix(docker_cli, options);
+            let mut command = util::command::new_command(program);
+            command.current_dir(std::env::temp_dir());
+            command.args(args);
+            command
+        }
+        DockerHost::Wsl(options) => {
+            if should_bridge_wsl_commands() {
+                let (program, args) = wsl_docker_command_prefix(docker_cli, options);
+                let mut command = util::command::new_command(program);
+                command.current_dir(std::env::temp_dir());
+                command.args(args);
+                command
+            } else {
+                util::command::new_command(docker_cli)
+            }
+        }
+    }
+}
+
+fn ssh_docker_command_prefix(
+    docker_cli: &str,
+    options: &crate::SshConnectionOptions,
+) -> (String, Vec<String>) {
+    let mut args = options.additional_args();
+    args.push(options.ssh_destination());
+    args.push(docker_cli.to_string());
+    ("ssh".to_string(), args)
+}
+
+fn format_local_path_for_docker_host(path: &str, host: &DockerHost) -> String {
+    match host {
+        DockerHost::Local | DockerHost::Ssh(_) => path.to_string(),
+        DockerHost::Wsl(options) => format_local_path_for_wsl_host(path, options),
+    }
+}
+
+fn format_local_path_for_wsl_host(path: &str, options: &crate::WslConnectionOptions) -> String {
+    let rewritten = path
+        .strip_prefix(r"\\?\UNC\")
+        .map(|rest| format!(r"\\{rest}"));
+    let raw = rewritten.as_deref().unwrap_or(path);
+    let raw = raw.strip_prefix(r"\\?\").unwrap_or(raw);
+
+    if raw.starts_with('/') {
+        return raw.replace('\\', "/");
+    }
+
+    let raw = raw.replace('/', r"\");
+
+    if let Some(path) = wsl_unc_path_to_posix(&raw, &options.distro_name) {
+        return path;
+    }
+
+    windows_path_to_wsl_mount(&raw).unwrap_or_else(|| raw.replace('\\', "/"))
+}
+
+fn wsl_unc_path_to_posix(path: &str, distro_name: &str) -> Option<String> {
+    let unc = path.strip_prefix(r"\\")?;
+    let mut segments = unc.split('\\');
+    let host = segments.next()?;
+    let share = segments.next()?;
+
+    if !(host.eq_ignore_ascii_case("wsl$") || host.eq_ignore_ascii_case("wsl.localhost")) {
+        return None;
+    }
+    if !share.eq_ignore_ascii_case(distro_name) {
+        return None;
+    }
+
+    let remainder = segments
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+
+    if remainder.is_empty() {
+        Some("/".to_string())
+    } else {
+        Some(format!("/{remainder}"))
+    }
+}
+
+fn windows_path_to_wsl_mount(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    if bytes.len() < 3 || bytes[1] != b':' || bytes[2] != b'\\' {
+        return None;
+    }
+
+    let drive = (bytes[0] as char).to_ascii_lowercase();
+    let mut converted = format!("/mnt/{drive}");
+    converted.push('/');
+    converted.push_str(&path[3..].replace('\\', "/"));
+    Some(converted)
+}
+
+fn host_docker_command_template(
+    docker_cli: &str,
+    host: &DockerHost,
+    docker_args: Vec<String>,
+) -> CommandTemplate {
+    match host {
+        DockerHost::Local => CommandTemplate {
+            program: docker_cli.to_string(),
+            args: docker_args,
+            env: Default::default(),
+        },
+        DockerHost::Ssh(options) => {
+            let (program, mut args) = ssh_docker_command_prefix(docker_cli, options);
+            args.extend(docker_args);
+            CommandTemplate {
+                program,
+                args,
+                env: Default::default(),
+            }
+        }
+        DockerHost::Wsl(options) => {
+            if should_bridge_wsl_commands() {
+                let (program, mut args) = wsl_docker_command_prefix(docker_cli, options);
+                args.extend(docker_args);
+                CommandTemplate {
+                    program,
+                    args,
+                    env: Default::default(),
+                }
+            } else {
+                CommandTemplate {
+                    program: docker_cli.to_string(),
+                    args: docker_args,
+                    env: Default::default(),
+                }
+            }
+        }
+    }
+}
+
+#[inline]
+fn should_bridge_wsl_commands() -> bool {
+    cfg!(target_os = "windows")
+}
+
+fn should_fallback_to_container_default_user(err: &anyhow::Error) -> bool {
+    should_fallback_to_container_default_user_message(&err.to_string())
+}
+
+fn should_fallback_to_container_default_user_message(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("unable to find user")
+        || message.contains("no matching entries in passwd file")
+        || message.contains("invalid user")
 }
 
 pub(crate) struct DockerExecConnection {
@@ -45,6 +234,7 @@ pub(crate) struct DockerExecConnection {
     remote_dir_for_server: String,
     remote_binary_relpath: Option<Arc<RelPath>>,
     connection_options: DockerConnectionOptions,
+    exec_user: Option<String>,
     remote_platform: Option<RemotePlatform>,
     path_style: Option<PathStyle>,
     shell: String,
@@ -61,6 +251,7 @@ impl DockerExecConnection {
             remote_dir_for_server: "/".to_string(),
             remote_binary_relpath: None,
             connection_options,
+            exec_user: None,
             remote_platform: None,
             path_style: None,
             shell: "sh".to_owned(),
@@ -72,6 +263,8 @@ impl DockerExecConnection {
                 AppCommitSha::try_global(cx),
             )
         });
+        this.ensure_container_running().await?;
+        this.exec_user = this.resolve_exec_user().await?;
         let remote_platform = this.check_remote_platform().await?;
 
         this.path_style = match remote_platform.os {
@@ -107,6 +300,70 @@ impl DockerExecConnection {
             "podman"
         } else {
             "docker"
+        }
+    }
+
+    async fn resolve_exec_user(&self) -> Result<Option<String>> {
+        let requested_user = self.connection_options.remote_user.trim();
+        if requested_user.is_empty() {
+            return Ok(None);
+        }
+
+        match self
+            .run_docker_command(
+                "exec",
+                &[
+                    "-u".to_string(),
+                    requested_user.to_string(),
+                    self.connection_options.container_id.clone(),
+                    "id".to_string(),
+                    "-un".to_string(),
+                ],
+            )
+            .await
+        {
+            Ok(_) => Ok(Some(requested_user.to_string())),
+            Err(err) if should_fallback_to_container_default_user(&err) => {
+                log::warn!(
+                    "Docker exec user '{}' is unavailable in container {}; falling back to the container default user",
+                    requested_user,
+                    self.connection_options.container_id
+                );
+                Ok(None)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn ensure_container_running(&self) -> Result<()> {
+        let output = self
+            .run_docker_command(
+                "inspect",
+                &[
+                    "--format".to_string(),
+                    "{{.State.Running}}".to_string(),
+                    self.connection_options.container_id.clone(),
+                ],
+            )
+            .await?;
+
+        if output.trim().eq_ignore_ascii_case("true") {
+            return Ok(());
+        }
+
+        log::info!(
+            "Docker container {} is stopped; starting before connecting",
+            self.connection_options.container_id
+        );
+        self.run_docker_command("start", &[self.connection_options.container_id.clone()])
+            .await?;
+        Ok(())
+    }
+
+    fn append_exec_user_arg(&self, args: &mut Vec<String>) {
+        if let Some(exec_user) = self.exec_user.as_ref() {
+            args.push("-u".to_string());
+            args.push(exec_user.clone());
         }
     }
 
@@ -402,7 +659,8 @@ impl DockerExecConnection {
         src_path: String,
         dst_path: String,
     ) -> Result<()> {
-        let mut command = util::command::new_command(&docker_cli);
+        let src_path = format_local_path_for_docker_host(&src_path, &connection_options.host);
+        let mut command = new_host_docker_command(&docker_cli, &connection_options.host);
         command.arg("cp");
         command.arg("-a");
         command.arg(&src_path);
@@ -421,9 +679,9 @@ impl DockerExecConnection {
             );
         }
 
-        let mut chown_command = util::command::new_command(&docker_cli);
+        let mut chown_command = new_host_docker_command(&docker_cli, &connection_options.host);
         chown_command.arg("exec");
-        chown_command.arg(connection_options.container_id);
+        chown_command.arg(connection_options.container_id.clone());
         chown_command.arg("chown");
         chown_command.arg(format!(
             "{}:{}",
@@ -438,6 +696,14 @@ impl DockerExecConnection {
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if should_fallback_to_container_default_user_message(stderr.as_ref()) {
+            log::warn!(
+                "Skipping docker chown for {}; remote user '{}' does not exist in the container",
+                connection_options.container_id,
+                connection_options.remote_user
+            );
+            return Ok(());
+        }
         log::debug!("failed to change ownership for via chown: {stderr}",);
         anyhow::bail!(
             "failed to change ownership for zed_remote_server via chown: {}",
@@ -471,7 +737,7 @@ impl DockerExecConnection {
         subcommand: &str,
         args: &[impl AsRef<str>],
     ) -> Result<String> {
-        let mut command = util::command::new_command(self.docker_cli());
+        let mut command = new_host_docker_command(self.docker_cli(), &self.connection_options.host);
         command.arg(subcommand);
         for arg in args {
             command.arg(arg.as_ref());
@@ -498,8 +764,7 @@ impl DockerExecConnection {
             None => vec![],
         };
 
-        args.push("-u".to_string());
-        args.push(self.connection_options.remote_user.clone());
+        self.append_exec_user_arg(&mut args);
 
         for (k, v) in self.connection_options.remote_env.iter() {
             args.push("-e".to_string());
@@ -595,14 +860,38 @@ impl DockerExecConnection {
 
     fn kill_inner(&self) -> Result<()> {
         if let Some(pid) = self.proxy_process.lock().take() {
-            if let Ok(_) = util::command::new_command("kill")
-                .arg(pid.to_string())
-                .spawn()
-            {
-                Ok(())
+            let output = if cfg!(windows) {
+                std::process::Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .output()
             } else {
-                Err(anyhow::anyhow!("Failed to kill process"))
+                std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .output()
             }
+            .map_err(|error| anyhow!("Failed to kill process {pid}: {error}"))?;
+
+            if output.status.success() {
+                return Ok(());
+            }
+
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let combined = format!("{stdout}\n{stderr}");
+            let combined_lower = combined.to_ascii_lowercase();
+            if combined_lower.contains("no such process")
+                || combined_lower.contains("not found")
+                || combined_lower.contains("no running instance")
+                || combined_lower.contains("cannot find the process")
+            {
+                log::info!(
+                    "proxy process {} was already gone while disconnecting docker transport",
+                    pid
+                );
+                return Ok(());
+            }
+
+            Err(anyhow!("Failed to kill process {pid}: {}", combined.trim()))
         } else {
             Ok(())
         }
@@ -651,13 +940,12 @@ impl RemoteConnection for DockerExecConnection {
         }
 
         docker_args.extend([
-            "-u".to_string(),
-            self.connection_options.remote_user.to_string(),
             "-w".to_string(),
             self.remote_dir_for_server.clone(),
             "-i".to_string(),
-            self.connection_options.container_id.to_string(),
         ]);
+        self.append_exec_user_arg(&mut docker_args);
+        docker_args.push(self.connection_options.container_id.to_string());
 
         let val = remote_binary_relpath
             .display(self.path_style())
@@ -669,7 +957,7 @@ impl RemoteConnection for DockerExecConnection {
         if reconnect {
             docker_args.push("--reconnect".to_string());
         }
-        let mut command = util::command::new_command(self.docker_cli());
+        let mut command = new_host_docker_command(self.docker_cli(), &self.connection_options.host);
         command
             .kill_on_drop(true)
             .stdin(Stdio::piped())
@@ -768,11 +1056,8 @@ impl RemoteConnection for DockerExecConnection {
             inner_program.push("-l".to_string());
         };
 
-        let mut docker_args = vec![
-            "exec".to_string(),
-            "-u".to_string(),
-            self.connection_options.remote_user.clone(),
-        ];
+        let mut docker_args = vec!["exec".to_string()];
+        self.append_exec_user_arg(&mut docker_args);
 
         if let Some(parsed_working_dir) = parsed_working_dir {
             docker_args.push("-w".to_string());
@@ -797,12 +1082,11 @@ impl RemoteConnection for DockerExecConnection {
 
         docker_args.append(&mut inner_program);
 
-        Ok(CommandTemplate {
-            program: self.docker_cli().to_string(),
-            args: docker_args,
-            // Docker-exec pipes in environment via the "-e" argument
-            env: Default::default(),
-        })
+        Ok(host_docker_command_template(
+            self.docker_cli(),
+            &self.connection_options.host,
+            docker_args,
+        ))
     }
 
     fn build_forward_ports_command(
@@ -826,5 +1110,61 @@ impl RemoteConnection for DockerExecConnection {
 
     fn default_system_shell(&self) -> String {
         String::from("/bin/sh")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{host_docker_command_template, wsl_unc_path_to_posix};
+    use crate::{DockerHost, SshConnectionOptions};
+
+    #[test]
+    fn should_convert_wsl_unc_path_case_insensitively() {
+        let converted = wsl_unc_path_to_posix(
+            r"\\wsl.localhost\arch\home\arch\project\.devcontainer",
+            "Arch",
+        );
+
+        assert_eq!(
+            converted.as_deref(),
+            Some("/home/arch/project/.devcontainer")
+        );
+    }
+
+    #[test]
+    fn should_convert_wsl_dollar_unc_path_case_insensitively() {
+        let converted = wsl_unc_path_to_posix(r"\\wsl$\ARCH\home\arch\project", "Arch");
+
+        assert_eq!(converted.as_deref(), Some("/home/arch/project"));
+    }
+
+    #[test]
+    fn should_build_ssh_docker_command_template() {
+        let template = host_docker_command_template(
+            "docker",
+            &DockerHost::Ssh(SshConnectionOptions {
+                host: "ssh.example.com".into(),
+                username: Some("arch".to_string()),
+                port: Some(2222),
+                args: Some(vec!["-J".to_string(), "jumpbox".to_string()]),
+                ..Default::default()
+            }),
+            vec!["exec".to_string(), "container-id".to_string()],
+        );
+
+        assert_eq!(template.program, "ssh");
+        assert_eq!(
+            template.args,
+            vec![
+                "-J".to_string(),
+                "jumpbox".to_string(),
+                "-p".to_string(),
+                "2222".to_string(),
+                "arch@ssh.example.com".to_string(),
+                "docker".to_string(),
+                "exec".to_string(),
+                "container-id".to_string(),
+            ]
+        );
     }
 }

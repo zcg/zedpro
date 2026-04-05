@@ -8,20 +8,27 @@ use askpass::EncryptedPassword;
 use editor::Editor;
 use extension_host::ExtensionStore;
 use futures::{FutureExt as _, channel::oneshot, select};
-use gpui::{AppContext, AsyncApp, PromptLevel, WindowHandle};
+use gpui::{AppContext, AsyncApp, Context, PromptLevel, WindowHandle};
 
 use project::trusted_worktrees;
 use remote::{
-    DockerConnectionOptions, Interactive, RemoteConnection, RemoteConnectionOptions,
-    SshConnectionOptions,
+    DockerConnectionOptions, DockerHost, Interactive, RemoteConnection, RemoteConnectionOptions,
+    SshConnectionOptions, WslConnectionOptions,
 };
 pub use settings::SshConnection;
-use settings::{DevContainerConnection, ExtendingVec, RegisterSetting, Settings, WslConnection};
+use settings::{
+    DevContainerConnection, DevContainerHost, ExtendingVec, RegisterSetting, RemoteProject,
+    Settings, WslConnection,
+};
 use util::paths::PathWithPosition;
+use workspace::notifications::NotificationId;
+use workspace::notifications::simple_message_notification::MessageNotification;
 use workspace::{
     AppState, MultiWorkspace, OpenOptions, SerializedWorkspaceLocation, Workspace,
     find_existing_workspace,
 };
+
+use crate::disconnected_overlay::is_pending_devcontainer_host_return;
 
 pub use remote_connection::{
     RemoteClientDelegate, RemoteConnectionModal, RemoteConnectionPrompt, SshConnectionHeader,
@@ -32,6 +39,7 @@ pub use remote_connection::{
 pub struct RemoteSettings {
     pub ssh_connections: ExtendingVec<SshConnection>,
     pub wsl_connections: ExtendingVec<WslConnection>,
+    pub dev_container_connections: ExtendingVec<DevContainerConnection>,
     /// Whether to read ~/.ssh/config for ssh connection sources.
     pub read_ssh_config: bool,
 }
@@ -43,6 +51,12 @@ impl RemoteSettings {
 
     pub fn wsl_connections(&self) -> impl Iterator<Item = WslConnection> + use<> {
         self.wsl_connections.clone().0.into_iter()
+    }
+
+    pub fn dev_container_connections(
+        &self,
+    ) -> impl Iterator<Item = DevContainerConnection> + use<> {
+        self.dev_container_connections.clone().0.into_iter()
     }
 
     pub fn fill_connection_options_from_settings(&self, options: &mut SshConnectionOptions) {
@@ -96,10 +110,32 @@ impl From<Connection> for RemoteConnectionOptions {
                     container_id: conn.container_id,
                     upload_binary_over_docker_exec: false,
                     use_podman: conn.use_podman,
+                    host: docker_host_from_devcontainer_host(conn.host),
                     remote_env: conn.remote_env,
                 })
             }
         }
+    }
+}
+
+fn docker_host_from_devcontainer_host(host: Option<DevContainerHost>) -> DockerHost {
+    match host {
+        Some(DevContainerHost::Ssh {
+            host,
+            username,
+            port,
+            args,
+        }) => DockerHost::Ssh(SshConnectionOptions {
+            host: host.into(),
+            username,
+            port,
+            args: Some(args),
+            ..Default::default()
+        }),
+        Some(DevContainerHost::Wsl { distro_name, user }) => {
+            DockerHost::Wsl(WslConnectionOptions { distro_name, user })
+        }
+        None => DockerHost::Local,
     }
 }
 
@@ -115,15 +151,161 @@ impl From<WslConnection> for Connection {
     }
 }
 
+impl From<DevContainerConnection> for Connection {
+    fn from(val: DevContainerConnection) -> Self {
+        Connection::DevContainer(val)
+    }
+}
+
 impl Settings for RemoteSettings {
     fn from_settings(content: &settings::SettingsContent) -> Self {
         let remote = &content.remote;
         Self {
             ssh_connections: remote.ssh_connections.clone().unwrap_or_default().into(),
             wsl_connections: remote.wsl_connections.clone().unwrap_or_default().into(),
+            dev_container_connections: remote
+                .dev_container_connections
+                .clone()
+                .unwrap_or_default()
+                .into(),
             read_ssh_config: remote.read_ssh_config.unwrap(),
         }
     }
+}
+
+pub(crate) fn upsert_dev_container_connection(
+    connections: &mut Vec<DevContainerConnection>,
+    connection: DevContainerConnection,
+    starting_dir: String,
+    host_starting_dir: Option<String>,
+    config_path: Option<String>,
+) {
+    if let Some(existing) = connections.iter_mut().find(|existing| {
+        existing.container_id == connection.container_id
+            && existing.use_podman == connection.use_podman
+            && existing.host == connection.host
+    }) {
+        existing.name = connection.name.clone();
+        if config_path.is_some() {
+            existing.config_path = config_path;
+        }
+        existing.projects.insert(RemoteProject {
+            paths: vec![starting_dir],
+        });
+        if let Some(host_starting_dir) = host_starting_dir {
+            let host_project = RemoteProject {
+                paths: vec![host_starting_dir],
+            };
+            existing.host_projects.insert(host_project.clone());
+            existing.last_host_project = Some(host_project);
+        }
+        return;
+    }
+
+    connections.retain(|existing| {
+        existing.container_id != connection.container_id
+            || existing.use_podman != connection.use_podman
+            || existing.host != connection.host
+    });
+
+    let mut entry = connection;
+    if config_path.is_some() {
+        entry.config_path = config_path;
+    }
+    entry.projects.insert(RemoteProject {
+        paths: vec![starting_dir],
+    });
+    if let Some(host_starting_dir) = host_starting_dir {
+        let host_project = RemoteProject {
+            paths: vec![host_starting_dir],
+        };
+        entry.host_projects.insert(host_project.clone());
+        entry.last_host_project = Some(host_project);
+    }
+    connections.insert(0, entry);
+}
+
+fn is_missing_dev_container_error(
+    connection_options: &RemoteConnectionOptions,
+    err_message: &str,
+) -> Option<DockerConnectionOptions> {
+    let RemoteConnectionOptions::Docker(options) = connection_options else {
+        return None;
+    };
+
+    if err_message.contains("No such container:") && err_message.contains(&options.container_id) {
+        Some(options.clone())
+    } else {
+        None
+    }
+}
+
+fn should_suppress_dev_container_error_during_host_return(
+    connection_options: &RemoteConnectionOptions,
+    cx: &mut AsyncApp,
+) -> Option<DockerConnectionOptions> {
+    let RemoteConnectionOptions::Docker(options) = connection_options else {
+        return None;
+    };
+
+    if cx.update(|cx| is_pending_devcontainer_host_return(options, cx)) {
+        Some(options.clone())
+    } else {
+        None
+    }
+}
+
+fn prune_missing_dev_container_connection(
+    app_state: &Arc<AppState>,
+    connection_options: &DockerConnectionOptions,
+    cx: &mut AsyncApp,
+) {
+    let fs = app_state.fs.clone();
+    let connection_options = connection_options.clone();
+    let _ = cx.update(|cx| {
+        use gpui::ReadGlobal;
+        use settings::SettingsStore;
+
+        SettingsStore::global(cx).update_settings_file(fs, move |setting, _| {
+            if let Some(connections) = setting.remote.dev_container_connections.as_mut() {
+                connections.retain(|connection| {
+                    let options: RemoteConnectionOptions =
+                        Connection::DevContainer(connection.clone()).into();
+                    !matches!(
+                        options,
+                        RemoteConnectionOptions::Docker(saved)
+                            if saved.container_id == connection_options.container_id
+                                && saved.use_podman == connection_options.use_podman
+                                && saved.host == connection_options.host
+                    )
+                });
+            }
+        });
+    });
+}
+
+fn show_missing_dev_container_notification(
+    workspace: &mut Workspace,
+    connection_options: &DockerConnectionOptions,
+    err_message: &str,
+    cx: &mut Context<Workspace>,
+) {
+    struct MissingDevContainerError;
+
+    let label = if connection_options.name.is_empty() {
+        connection_options.container_id.as_str()
+    } else {
+        connection_options.name.as_str()
+    };
+    let message = format!(
+        "Saved dev container `{label}` no longer exists and was removed from saved connections.\n{err_message}"
+    );
+    let notification_id = NotificationId::composite::<MissingDevContainerError>(
+        connection_options.container_id.clone(),
+    );
+    workspace.show_notification(notification_id, cx, |cx| {
+        cx.new(|cx| MessageNotification::new(message.clone(), cx))
+    });
 }
 
 pub async fn open_remote_project(
@@ -310,30 +492,79 @@ pub async fn open_remote_project(
                     }
                 });
                 log::error!("Failed to open project: {e:#}");
-                let response = window
-                    .update(cx, |_, window, cx| {
-                        window.prompt(
-                            PromptLevel::Critical,
-                            match connection_options {
-                                RemoteConnectionOptions::Ssh(_) => "Failed to connect over SSH",
-                                RemoteConnectionOptions::Wsl(_) => "Failed to connect to WSL",
-                                RemoteConnectionOptions::Docker(_) => {
-                                    "Failed to connect to Dev Container"
-                                }
-                                #[cfg(any(test, feature = "test-support"))]
-                                RemoteConnectionOptions::Mock(_) => {
-                                    "Failed to connect to mock server"
-                                }
-                            },
-                            Some(&format!("{e:#}")),
-                            &["Retry", "Cancel"],
+                let err_message = format!("{e:#}");
+                if let Some(connection_options) =
+                    should_suppress_dev_container_error_during_host_return(&connection_options, cx)
+                {
+                    log::info!(
+                        "suppressing dev container error while returning to host for {}: {err_message}",
+                        connection_options.container_id
+                    );
+                    if created_new_window {
+                        window
+                            .update(cx, |_, window, _| window.remove_window())
+                            .ok();
+                    }
+                    return Ok(());
+                }
+                if let Some(connection_options) =
+                    is_missing_dev_container_error(&connection_options, &err_message)
+                {
+                    prune_missing_dev_container_connection(&app_state, &connection_options, cx);
+                    initial_workspace.update(cx, |workspace, cx| {
+                        show_missing_dev_container_notification(
+                            workspace,
+                            &connection_options,
+                            &err_message,
                             cx,
-                        )
-                    })?
-                    .await;
+                        );
+                    });
+                    if created_new_window {
+                        window
+                            .update(cx, |_, window, _| window.remove_window())
+                            .ok();
+                    }
+                    return Ok(());
+                }
+                let title = match &connection_options {
+                    RemoteConnectionOptions::Ssh(_) => "Failed to connect over SSH",
+                    RemoteConnectionOptions::Wsl(_) => "Failed to connect to WSL",
+                    RemoteConnectionOptions::Docker(_) => "Failed to connect to Dev Container",
+                    #[cfg(any(test, feature = "test-support"))]
+                    RemoteConnectionOptions::Mock(_) => "Failed to connect to mock server",
+                };
+                let response = if cfg!(target_os = "windows")
+                    && matches!(connection_options, RemoteConnectionOptions::Wsl(_))
+                {
+                    initial_workspace.update(cx, |workspace, cx| {
+                        struct WslConnectError;
+                        let notification_id = NotificationId::unique::<WslConnectError>();
+                        let message = format!("{title}.\n{err_message}");
+                        workspace.show_notification(notification_id, cx, |cx| {
+                            cx.new(|cx| MessageNotification::new(message.clone(), cx))
+                        });
+                    });
+                    None
+                } else {
+                    Some(
+                        window
+                            .update(cx, |_, window, cx| {
+                                window.prompt(
+                                    PromptLevel::Critical,
+                                    title,
+                                    Some(&err_message),
+                                    &["Retry", "Cancel"],
+                                    cx,
+                                )
+                            })?
+                            .await,
+                    )
+                };
 
-                if response == Ok(0) {
-                    continue;
+                if let Some(response) = response {
+                    if response == Ok(0) {
+                        continue;
+                    }
                 }
 
                 if created_new_window {
@@ -371,29 +602,78 @@ pub async fn open_remote_project(
         match opened_items {
             Err(e) => {
                 log::error!("Failed to open project: {e:#}");
-                let response = window
-                    .update(cx, |_, window, cx| {
-                        window.prompt(
-                            PromptLevel::Critical,
-                            match connection_options {
-                                RemoteConnectionOptions::Ssh(_) => "Failed to connect over SSH",
-                                RemoteConnectionOptions::Wsl(_) => "Failed to connect to WSL",
-                                RemoteConnectionOptions::Docker(_) => {
-                                    "Failed to connect to Dev Container"
-                                }
-                                #[cfg(any(test, feature = "test-support"))]
-                                RemoteConnectionOptions::Mock(_) => {
-                                    "Failed to connect to mock server"
-                                }
-                            },
-                            Some(&format!("{e:#}")),
-                            &["Retry", "Cancel"],
+                let err_message = format!("{e:#}");
+                if let Some(connection_options) =
+                    should_suppress_dev_container_error_during_host_return(&connection_options, cx)
+                {
+                    log::info!(
+                        "suppressing dev container error while returning to host for {}: {err_message}",
+                        connection_options.container_id
+                    );
+                    if created_new_window {
+                        window
+                            .update(cx, |_, window, _| window.remove_window())
+                            .ok();
+                    }
+                    return Ok(());
+                }
+                if let Some(connection_options) =
+                    is_missing_dev_container_error(&connection_options, &err_message)
+                {
+                    prune_missing_dev_container_connection(&app_state, &connection_options, cx);
+                    initial_workspace.update(cx, |workspace, cx| {
+                        show_missing_dev_container_notification(
+                            workspace,
+                            &connection_options,
+                            &err_message,
                             cx,
-                        )
-                    })?
-                    .await;
-                if response == Ok(0) {
-                    continue;
+                        );
+                    });
+                    if created_new_window {
+                        window
+                            .update(cx, |_, window, _| window.remove_window())
+                            .ok();
+                    }
+                    return Ok(());
+                }
+                let title = match &connection_options {
+                    RemoteConnectionOptions::Ssh(_) => "Failed to connect over SSH",
+                    RemoteConnectionOptions::Wsl(_) => "Failed to connect to WSL",
+                    RemoteConnectionOptions::Docker(_) => "Failed to connect to Dev Container",
+                    #[cfg(any(test, feature = "test-support"))]
+                    RemoteConnectionOptions::Mock(_) => "Failed to connect to mock server",
+                };
+                let response = if cfg!(target_os = "windows")
+                    && matches!(connection_options, RemoteConnectionOptions::Wsl(_))
+                {
+                    initial_workspace.update(cx, |workspace, cx| {
+                        struct WslConnectError;
+                        let notification_id = NotificationId::unique::<WslConnectError>();
+                        let message = format!("{title}.\n{err_message}");
+                        workspace.show_notification(notification_id, cx, |cx| {
+                            cx.new(|cx| MessageNotification::new(message.clone(), cx))
+                        });
+                    });
+                    None
+                } else {
+                    Some(
+                        window
+                            .update(cx, |_, window, cx| {
+                                window.prompt(
+                                    PromptLevel::Critical,
+                                    title,
+                                    Some(&err_message),
+                                    &["Retry", "Cancel"],
+                                    cx,
+                                )
+                            })?
+                            .await,
+                    )
+                };
+                if let Some(response) = response {
+                    if response == Ok(0) {
+                        continue;
+                    }
                 }
 
                 if created_new_window {
@@ -731,6 +1011,92 @@ mod tests {
         assert_eq!(
             still_first_window, first_window,
             "The window handle should be the same after reuse"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_find_existing_remote_workspace_respects_open_new_workspace(
+        cx: &mut TestAppContext,
+        server_cx: &mut TestAppContext,
+    ) {
+        let app_state = init_test(cx);
+        let executor = cx.executor();
+
+        cx.update(|cx| {
+            release_channel::init(semver::Version::new(0, 0, 0), cx);
+        });
+        server_cx.update(|cx| {
+            release_channel::init(semver::Version::new(0, 0, 0), cx);
+        });
+
+        let (opts, server_session, connect_guard) = RemoteClient::fake_server(cx, server_cx);
+
+        let remote_fs = FakeFs::new(server_cx.executor());
+        remote_fs
+            .insert_tree(
+                path!("/project"),
+                json!({
+                    "src": {
+                        "main.rs": "fn main() {}",
+                        "lib.rs": "pub fn hello() {}",
+                    },
+                }),
+            )
+            .await;
+
+        server_cx.update(HeadlessProject::init);
+        let http_client = Arc::new(BlockedHttpClient);
+        let node_runtime = NodeRuntime::unavailable();
+        let languages = Arc::new(language::LanguageRegistry::new(server_cx.executor()));
+        let proxy = Arc::new(ExtensionHostProxy::new());
+
+        let _headless = server_cx.new(|cx| {
+            HeadlessProject::new(
+                HeadlessAppState {
+                    session: server_session,
+                    fs: remote_fs.clone(),
+                    http_client,
+                    node_runtime,
+                    languages,
+                    extension_host_proxy: proxy,
+                    startup_time: std::time::Instant::now(),
+                },
+                false,
+                cx,
+            )
+        });
+
+        drop(connect_guard);
+
+        let paths = vec![PathBuf::from(path!("/project"))];
+        let mut async_cx = cx.to_async();
+        open_remote_project(
+            opts.clone(),
+            paths,
+            app_state,
+            workspace::OpenOptions::default(),
+            &mut async_cx,
+        )
+        .await
+        .expect("initial open should succeed");
+
+        executor.run_until_parked();
+
+        let search_paths = vec![PathBuf::from(path!("/project/src/lib.rs"))];
+        let (found, _open_visible) = find_existing_workspace(
+            &search_paths,
+            &workspace::OpenOptions {
+                open_new_workspace: Some(true),
+                ..Default::default()
+            },
+            &SerializedWorkspaceLocation::Remote(opts),
+            &mut async_cx,
+        )
+        .await;
+
+        assert!(
+            found.is_none(),
+            "open_new_workspace should suppress remote workspace reuse"
         );
     }
 

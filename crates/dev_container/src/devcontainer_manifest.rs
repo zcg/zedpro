@@ -13,7 +13,11 @@ use util::{ResultExt, command::Command};
 use crate::{
     DevContainerConfig, DevContainerContext,
     command_json::{CommandRunner, DefaultCommandRunner},
-    devcontainer_api::{DevContainerError, DevContainerUp},
+    devcontainer_api::{
+        DevContainerBuildStep, DevContainerError, DevContainerLogStream,
+        DevContainerProgressCallback, DevContainerProgressEvent, DevContainerUp, emit_log_line,
+        emit_progress,
+    },
     devcontainer_json::{
         DevContainer, DevContainerBuildType, FeatureOptions, ForwardPort, MountDefinition,
         deserialize_devcontainer_json,
@@ -44,6 +48,7 @@ struct DevContainerManifest {
     fs: Arc<dyn Fs>,
     docker_client: Arc<dyn DockerClient>,
     command_runner: Arc<dyn CommandRunner>,
+    progress: Option<DevContainerProgressCallback>,
     raw_config: String,
     config: ConfigStatus,
     local_environment: HashMap<String, String>,
@@ -61,6 +66,7 @@ impl DevContainerManifest {
         environment: HashMap<String, String>,
         docker_client: Arc<dyn DockerClient>,
         command_runner: Arc<dyn CommandRunner>,
+        progress: Option<DevContainerProgressCallback>,
         local_config: DevContainerConfig,
         local_project_path: &Path,
     ) -> Result<Self, DevContainerError> {
@@ -90,6 +96,7 @@ impl DevContainerManifest {
             http_client: context.http_client.clone(),
             docker_client,
             command_runner,
+            progress,
             raw_config: devcontainer_contents,
             config: ConfigStatus::Deserialized(devcontainer),
             local_project_directory: local_project_path.to_path_buf(),
@@ -119,12 +126,9 @@ impl DevContainerManifest {
         let labels = vec![
             (
                 "devcontainer.local_folder",
-                (self.local_project_directory.display()).to_string(),
+                self.docker_host_workspace_folder(),
             ),
-            (
-                "devcontainer.config_file",
-                (self.config_file().display()).to_string(),
-            ),
+            ("devcontainer.config_file", self.docker_host_config_file()),
         ];
         labels
     }
@@ -150,7 +154,7 @@ impl DevContainerManifest {
             )
             .replace(
                 "${localWorkspaceFolder}",
-                &self.local_workspace_folder().replace('\\', "/"),
+                &self.docker_host_workspace_folder().replace('\\', "/"),
             );
         for (k, v) in &self.local_environment {
             let find = format!("${{localEnv:{k}}}");
@@ -167,6 +171,35 @@ impl DevContainerManifest {
         self.config = ConfigStatus::VariableParsed(parsed_config);
 
         Ok(())
+    }
+
+    fn step_started(&self, step: DevContainerBuildStep) {
+        emit_progress(
+            self.progress.as_ref(),
+            DevContainerProgressEvent::StepStarted(step),
+        );
+    }
+
+    fn step_completed(&self, step: DevContainerBuildStep) {
+        emit_progress(
+            self.progress.as_ref(),
+            DevContainerProgressEvent::StepCompleted(step),
+        );
+    }
+
+    fn step_failed(&self, step: DevContainerBuildStep, err: &DevContainerError) {
+        emit_progress(
+            self.progress.as_ref(),
+            DevContainerProgressEvent::StepFailed(step, err.to_string()),
+        );
+    }
+
+    fn log_info(&self, message: impl Into<String>) {
+        emit_log_line(
+            self.progress.as_ref(),
+            DevContainerLogStream::Info,
+            message.into(),
+        );
     }
 
     fn runtime_remote_env(
@@ -204,6 +237,18 @@ impl DevContainerManifest {
 
     fn config_file(&self) -> PathBuf {
         self.config_directory.join(&self.file_name)
+    }
+
+    fn docker_host_path(&self, path: &Path) -> String {
+        self.docker_client.format_path_for_host(path)
+    }
+
+    fn docker_host_workspace_folder(&self) -> String {
+        self.docker_host_path(&self.local_project_directory)
+    }
+
+    fn docker_host_config_file(&self) -> String {
+        self.docker_host_path(&self.config_file())
     }
 
     fn dev_container(&self) -> &DevContainer {
@@ -743,10 +788,8 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
         };
 
         let remote_user = get_remote_user_from_config(&running_container, self)?;
-        let remote_workspace_folder = get_remote_dir_from_config(
-            &running_container,
-            (&self.local_project_directory.display()).to_string(),
-        )?;
+        let remote_workspace_folder =
+            get_remote_dir_from_config(&running_container, self.docker_host_workspace_folder())?;
 
         let remote_env = self.runtime_remote_env(&running_container.config.env_as_map()?)?;
 
@@ -851,10 +894,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
             } else {
                 Some(HashMap::from([(
                     "dev_containers_feature_content_source".to_string(),
-                    features_build_info
-                        .features_content_dir
-                        .display()
-                        .to_string(),
+                    self.docker_host_path(&features_build_info.features_content_dir),
                 )]))
             };
 
@@ -870,9 +910,9 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                         labels: None,
                         build: Some(DockerComposeServiceBuild {
                             context: Some(
-                                features_build_info.empty_context_dir.display().to_string(),
+                                self.docker_host_path(&features_build_info.empty_context_dir),
                             ),
-                            dockerfile: Some(dockerfile_path.display().to_string()),
+                            dockerfile: Some(self.docker_host_path(&dockerfile_path)),
                             args: Some(build_args),
                             additional_contexts,
                         }),
@@ -939,10 +979,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                 } else {
                     Some(HashMap::from([(
                         "dev_containers_feature_content_source".to_string(),
-                        features_build_info
-                            .features_content_dir
-                            .display()
-                            .to_string(),
+                        self.docker_host_path(&features_build_info.features_content_dir),
                     )]))
                 };
 
@@ -958,9 +995,9 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                             labels: None,
                             build: Some(DockerComposeServiceBuild {
                                 context: Some(
-                                    features_build_info.empty_context_dir.display().to_string(),
+                                    self.docker_host_path(&features_build_info.empty_context_dir),
                                 ),
-                                dockerfile: Some(dockerfile_path.display().to_string()),
+                                dockerfile: Some(self.docker_host_path(&dockerfile_path)),
                                 args: Some(build_args),
                                 additional_contexts,
                             }),
@@ -1368,9 +1405,9 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
             .map(|t| t.to_string())
             .unwrap_or_else(|| format!("{}-uid", features_build_info.image_tag));
 
-        let mut command = Command::new(self.docker_client.docker_cli());
+        let mut command = self.docker_client.new_command();
         command.args(["build"]);
-        command.args(["-f", &dockerfile_path.display().to_string()]);
+        command.args(["-f", &self.docker_host_path(&dockerfile_path)]);
         command.args(["-t", &updated_image_tag]);
         command.args([
             "--build-arg",
@@ -1380,7 +1417,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
         command.args(["--build-arg", &format!("NEW_UID={}", host_uid)]);
         command.args(["--build-arg", &format!("NEW_GID={}", host_gid)]);
         command.args(["--build-arg", &format!("IMAGE_USER={}", image_user)]);
-        command.arg(features_build_info.empty_context_dir.display().to_string());
+        command.arg(self.docker_host_path(&features_build_info.empty_context_dir));
 
         let output = self
             .command_runner
@@ -1474,14 +1511,14 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                 DevContainerError::FilesystemError
             })?;
 
-        let mut command = Command::new(self.docker_client.docker_cli());
+        let mut command = self.docker_client.new_command();
         command.args([
             "build",
             "-t",
             "dev_container_feature_content_temp",
             "-f",
-            &dockerfile_path.display().to_string(),
-            &features_content_dir.display().to_string(),
+            &self.docker_host_path(&dockerfile_path),
+            &self.docker_host_path(features_content_dir),
         ]);
 
         let output = self
@@ -1521,7 +1558,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             );
             return Err(DevContainerError::DevContainerParseFailed);
         };
-        let mut command = Command::new(self.docker_client.docker_cli());
+        let mut command = self.docker_client.new_command();
 
         command.args(["buildx", "build"]);
 
@@ -1534,7 +1571,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             "--build-context",
             &format!(
                 "dev_containers_feature_content_source={}",
-                features_build_info.features_content_dir.display()
+                self.docker_host_path(&features_build_info.features_content_dir)
             ),
         ]);
 
@@ -1577,17 +1614,17 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
 
         command.args([
             "-f",
-            &features_build_info.dockerfile_path.display().to_string(),
+            &self.docker_host_path(&features_build_info.dockerfile_path),
         ]);
 
         command.args(["-t", &features_build_info.image_tag]);
 
         if dev_container.build_type() == DevContainerBuildType::Dockerfile {
-            command.arg(self.config_directory.display().to_string());
+            command.arg(self.docker_host_path(&self.config_directory));
         } else {
             // Use an empty folder as the build context to avoid pulling in unneeded files.
             // The actual feature content is supplied via the BuildKit build context above.
-            command.arg(features_build_info.empty_context_dir.display().to_string());
+            command.arg(self.docker_host_path(&features_build_info.empty_context_dir));
         }
 
         Ok(command)
@@ -1597,10 +1634,10 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         &self,
         resources: DockerComposeResources,
     ) -> Result<DockerInspect, DevContainerError> {
-        let mut command = Command::new(self.docker_client.docker_cli());
+        let mut command = self.docker_client.new_command();
         command.args(&["compose", "--project-name", &self.project_name()]);
         for docker_compose_file in resources.files {
-            command.args(&["-f", &docker_compose_file.display().to_string()]);
+            command.args(&["-f", &self.docker_host_path(&docker_compose_file)]);
         }
         command.args(&["up", "-d"]);
 
@@ -1656,6 +1693,11 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
             ));
         }
 
+        if let Some(container_id) = parse_container_id_from_run_output(&output.stdout) {
+            log::debug!("Inspecting container returned by docker run: {container_id}");
+            return self.docker_client.inspect(&container_id).await;
+        }
+
         log::debug!("Checking for container that was started");
         let Some(docker_ps) = self.check_for_existing_container().await? else {
             log::error!("Could not locate container just created");
@@ -1665,7 +1707,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
     }
 
     fn local_workspace_folder(&self) -> String {
-        self.local_project_directory.display().to_string()
+        self.docker_host_workspace_folder()
     }
     fn local_workspace_base_name(&self) -> Result<String, DevContainerError> {
         self.local_project_directory
@@ -1714,7 +1756,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         let remote_workspace_mount = self.remote_workspace_mount()?;
 
         let docker_cli = self.docker_client.docker_cli();
-        let mut command = Command::new(&docker_cli);
+        let mut command = self.docker_client.new_command();
 
         command.arg("run");
 
@@ -1786,15 +1828,37 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
     }
 
     async fn build_and_run(&mut self) -> Result<DevContainerUp, DevContainerError> {
-        self.run_initialize_commands().await?;
+        self.step_started(DevContainerBuildStep::RunInitializeCommand);
+        if let Err(err) = self.run_initialize_commands().await {
+            self.step_failed(DevContainerBuildStep::RunInitializeCommand, &err);
+            return Err(err);
+        }
+        self.step_completed(DevContainerBuildStep::RunInitializeCommand);
 
-        self.download_feature_and_dockerfile_resources().await?;
+        self.step_started(DevContainerBuildStep::BuildContainer);
+        let devcontainer_up = match async {
+            self.download_feature_and_dockerfile_resources().await?;
+            let build_resources = self.build_resources().await?;
+            self.run_dev_container(build_resources).await
+        }
+        .await
+        {
+            Ok(devcontainer_up) => {
+                self.step_completed(DevContainerBuildStep::BuildContainer);
+                devcontainer_up
+            }
+            Err(err) => {
+                self.step_failed(DevContainerBuildStep::BuildContainer, &err);
+                return Err(err);
+            }
+        };
 
-        let build_resources = self.build_resources().await?;
-
-        let devcontainer_up = self.run_dev_container(build_resources).await?;
-
-        self.run_remote_scripts(&devcontainer_up, true).await?;
+        self.step_started(DevContainerBuildStep::RunLifecycleScripts);
+        if let Err(err) = self.run_remote_scripts(&devcontainer_up, true).await {
+            self.step_failed(DevContainerBuildStep::RunLifecycleScripts, &err);
+            return Err(err);
+        }
+        self.step_completed(DevContainerBuildStep::RunLifecycleScripts);
 
         Ok(devcontainer_up)
     }
@@ -1895,11 +1959,13 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
 
         if let Some(initialize_command) = &config.initialize_command {
             log::debug!("Running initialize command");
+            self.log_info("Running initializeCommand");
             initialize_command
                 .run(&self.command_runner, &self.local_project_directory)
                 .await
         } else {
             log::warn!("No initialize command found");
+            self.log_info("No initializeCommand found; skipping");
             Ok(())
         }
     }
@@ -1907,41 +1973,96 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
     async fn check_for_existing_devcontainer(
         &self,
     ) -> Result<Option<DevContainerUp>, DevContainerError> {
-        if let Some(docker_ps) = self.check_for_existing_container().await? {
-            log::debug!("Dev container already found. Proceeding with it");
-
-            let docker_inspect = self.docker_client.inspect(&docker_ps.id).await?;
-
-            if !docker_inspect.is_running() {
-                log::debug!("Container not running. Will attempt to start, and then proceed");
-                self.docker_client.start_container(&docker_ps.id).await?;
+        self.step_started(DevContainerBuildStep::FindExistingContainer);
+        let Some(docker_ps) = (match self.check_for_existing_container().await {
+            Ok(existing) => existing,
+            Err(err) => {
+                self.step_failed(DevContainerBuildStep::FindExistingContainer, &err);
+                return Err(err);
             }
-
-            let remote_user = get_remote_user_from_config(&docker_inspect, self)?;
-
-            let remote_folder = get_remote_dir_from_config(
-                &docker_inspect,
-                (&self.local_project_directory.display()).to_string(),
-            )?;
-
-            let remote_env = self.runtime_remote_env(&docker_inspect.config.env_as_map()?)?;
-
-            let dev_container_up = DevContainerUp {
-                container_id: docker_ps.id,
-                remote_user: remote_user,
-                remote_workspace_folder: remote_folder,
-                extension_ids: self.extension_ids(),
-                remote_env,
-            };
-
-            self.run_remote_scripts(&dev_container_up, false).await?;
-
-            Ok(Some(dev_container_up))
-        } else {
+        }) else {
             log::debug!("Existing container not found.");
+            self.log_info("No existing dev container found; creating a new container");
+            self.step_completed(DevContainerBuildStep::FindExistingContainer);
 
-            Ok(None)
+            return Ok(None);
+        };
+
+        log::debug!("Dev container already found. Proceeding with it");
+        self.log_info(format!("Found existing dev container {}", docker_ps.id));
+
+        let docker_inspect = match self.docker_client.inspect(&docker_ps.id).await {
+            Ok(inspect) => inspect,
+            Err(err) => {
+                self.step_failed(DevContainerBuildStep::FindExistingContainer, &err);
+                return Err(err);
+            }
+        };
+
+        if !docker_inspect.is_running() {
+            log::debug!("Container not running. Will attempt to start, and then proceed");
+            self.log_info(format!(
+                "Existing container {} is stopped; starting it",
+                docker_ps.id
+            ));
+            if let Err(err) = self.docker_client.start_container(&docker_ps.id).await {
+                self.step_failed(DevContainerBuildStep::FindExistingContainer, &err);
+                return Err(err);
+            }
         }
+
+        let remote_user = match get_remote_user_from_config(&docker_inspect, self) {
+            Ok(remote_user) => remote_user,
+            Err(err) => {
+                self.step_failed(DevContainerBuildStep::FindExistingContainer, &err);
+                return Err(err);
+            }
+        };
+
+        let remote_folder = match get_remote_dir_from_config(
+            &docker_inspect,
+            self.docker_host_workspace_folder(),
+        ) {
+            Ok(remote_folder) => remote_folder,
+            Err(err) => {
+                self.step_failed(DevContainerBuildStep::FindExistingContainer, &err);
+                return Err(err);
+            }
+        };
+
+        let remote_env = match docker_inspect.config.env_as_map() {
+            Ok(env) => match self.runtime_remote_env(&env) {
+                Ok(remote_env) => remote_env,
+                Err(err) => {
+                    self.step_failed(DevContainerBuildStep::FindExistingContainer, &err);
+                    return Err(err);
+                }
+            },
+            Err(err) => {
+                self.step_failed(DevContainerBuildStep::FindExistingContainer, &err);
+                return Err(err);
+            }
+        };
+
+        let dev_container_up = DevContainerUp {
+            container_id: docker_ps.id,
+            remote_user: remote_user,
+            remote_workspace_folder: remote_folder,
+            extension_ids: self.extension_ids(),
+            remote_env,
+        };
+
+        self.step_completed(DevContainerBuildStep::FindExistingContainer);
+        self.step_completed(DevContainerBuildStep::RunInitializeCommand);
+        self.step_completed(DevContainerBuildStep::BuildContainer);
+        self.step_started(DevContainerBuildStep::RunLifecycleScripts);
+        if let Err(err) = self.run_remote_scripts(&dev_container_up, false).await {
+            self.step_failed(DevContainerBuildStep::RunLifecycleScripts, &err);
+            return Err(err);
+        }
+        self.step_completed(DevContainerBuildStep::RunLifecycleScripts);
+
+        Ok(Some(dev_container_up))
     }
 
     async fn check_for_existing_container(&self) -> Result<Option<DockerPs>, DevContainerError> {
@@ -1992,15 +2113,16 @@ pub(crate) async fn read_devcontainer_configuration(
     environment: HashMap<String, String>,
 ) -> Result<DevContainer, DevContainerError> {
     let docker = if context.use_podman {
-        Docker::new("podman")
+        Docker::new("podman", context.docker_host.clone())
     } else {
-        Docker::new("docker")
+        Docker::new("docker", context.docker_host.clone())
     };
     let mut dev_container = DevContainerManifest::new(
         context,
         environment,
         Arc::new(docker),
         Arc::new(DefaultCommandRunner::new()),
+        None,
         config,
         &context.project_directory.as_ref(),
     )
@@ -2014,23 +2136,52 @@ pub(crate) async fn spawn_dev_container(
     environment: HashMap<String, String>,
     config: DevContainerConfig,
     local_project_path: &Path,
+    progress: Option<DevContainerProgressCallback>,
 ) -> Result<DevContainerUp, DevContainerError> {
     let docker = if context.use_podman {
-        Docker::new("podman")
+        Docker::new_with_progress("podman", context.docker_host.clone(), progress.clone())
     } else {
-        Docker::new("docker")
+        Docker::new_with_progress("docker", context.docker_host.clone(), progress.clone())
     };
+    emit_progress(
+        progress.as_ref(),
+        DevContainerProgressEvent::StepStarted(DevContainerBuildStep::ResolveConfiguration),
+    );
     let mut devcontainer_manifest = DevContainerManifest::new(
         context,
         environment,
         Arc::new(docker),
-        Arc::new(DefaultCommandRunner::new()),
+        Arc::new(DefaultCommandRunner::with_progress(progress.clone())),
+        progress.clone(),
         config,
         local_project_path,
     )
-    .await?;
+    .await
+    .map_err(|err| {
+        emit_progress(
+            progress.as_ref(),
+            DevContainerProgressEvent::StepFailed(
+                DevContainerBuildStep::ResolveConfiguration,
+                err.to_string(),
+            ),
+        );
+        err
+    })?;
 
-    devcontainer_manifest.parse_nonremote_vars()?;
+    if let Err(err) = devcontainer_manifest.parse_nonremote_vars() {
+        emit_progress(
+            progress.as_ref(),
+            DevContainerProgressEvent::StepFailed(
+                DevContainerBuildStep::ResolveConfiguration,
+                err.to_string(),
+            ),
+        );
+        return Err(err);
+    }
+    emit_progress(
+        progress.as_ref(),
+        DevContainerProgressEvent::StepCompleted(DevContainerBuildStep::ResolveConfiguration),
+    );
 
     log::debug!("Checking for existing container");
     if let Some(devcontainer) = devcontainer_manifest
@@ -2279,6 +2430,14 @@ fn image_from_dockerfile(
     Ok(raw_contents)
 }
 
+fn parse_container_id_from_run_output(stdout: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 // Container user things
 // This should come from spec - see the docs
 fn get_remote_user_from_config(
@@ -2332,7 +2491,11 @@ fn get_container_user_from_config(
         return Ok(image_user.to_string());
     }
 
-    Err(DevContainerError::DevContainerParseFailed)
+    log::debug!(
+        "No explicit container user found in config, metadata, or image {}; defaulting to root",
+        docker_config.id
+    );
+    Ok("root".to_string())
 }
 
 #[cfg(test)]
@@ -2340,7 +2503,7 @@ mod test {
     use std::{
         collections::HashMap,
         ffi::OsStr,
-        path::PathBuf,
+        path::{Path, PathBuf},
         process::{ExitStatus, Output},
         sync::{Arc, Mutex},
     };
@@ -2364,6 +2527,7 @@ mod test {
         devcontainer_manifest::{
             ConfigStatus, DevContainerManifest, DockerBuildResources, DockerComposeResources,
             DockerInspect, extract_feature_id, find_primary_service, get_remote_user_from_config,
+            parse_container_id_from_run_output,
         },
         docker::{
             DockerClient, DockerComposeConfig, DockerComposeService, DockerComposeServiceBuild,
@@ -2411,6 +2575,20 @@ mod test {
             .expect("is valid")
             .display()
             .to_string()
+    }
+
+    #[test]
+    fn test_parse_container_id_from_run_output() {
+        let stdout = b"98c295c81b0d4fe5b437d41d53ba544a3c29002dcc31f41e22c3c32c58212ebb\n";
+        assert_eq!(
+            parse_container_id_from_run_output(stdout),
+            Some("98c295c81b0d4fe5b437d41d53ba544a3c29002dcc31f41e22c3c32c58212ebb".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_container_id_from_empty_run_output() {
+        assert_eq!(parse_container_id_from_run_output(b" \n\t\n"), None);
     }
 
     async fn init_devcontainer_config(
@@ -2473,6 +2651,7 @@ mod test {
 
         let context = DevContainerContext {
             project_directory: SanitizedPath::cast_arc(project_path),
+            docker_host: remote::DockerHost::Local,
             use_podman: false,
             fs: fs.clone(),
             http_client: http_client.clone(),
@@ -2490,6 +2669,7 @@ mod test {
             environment,
             docker_client,
             command_runner,
+            None,
             local_config,
             &PathBuf::from(TEST_PROJECT_PATH),
         )
@@ -2565,6 +2745,40 @@ mod test {
         assert!(remote_user.is_ok());
         let remote_user = remote_user.expect("ok");
         assert_eq!(&remote_user, "vsCode")
+    }
+
+    #[gpui::test]
+    async fn should_default_container_user_to_root_when_unspecified(cx: &mut TestAppContext) {
+        let (_, devcontainer_manifest) = init_default_devcontainer_manifest(
+            cx,
+            r#"
+{
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "remoteUser": "zed"
+}
+            "#,
+        )
+        .await
+        .unwrap();
+
+        let given_docker_config = DockerInspect {
+            id: "docker_id".to_string(),
+            config: DockerInspectConfig {
+                labels: DockerConfigLabels { metadata: None },
+                image_user: None,
+                env: Vec::new(),
+            },
+            mounts: None,
+            state: None,
+        };
+
+        let container_user =
+            super::get_container_user_from_config(&given_docker_config, &devcontainer_manifest)
+                .unwrap();
+
+        assert_eq!(container_user, "root".to_string());
     }
 
     #[test]
@@ -4469,6 +4683,12 @@ chmod +x ./install.sh
         }
         fn supports_compose_buildkit(&self) -> bool {
             !self.podman
+        }
+        fn new_command(&self) -> Command {
+            Command::new(self.docker_cli())
+        }
+        fn format_path_for_host(&self, path: &Path) -> String {
+            path.display().to_string()
         }
         fn docker_cli(&self) -> String {
             if self.podman {

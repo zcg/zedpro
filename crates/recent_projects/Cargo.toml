@@ -37,6 +37,7 @@ open_path_prompt.workspace = true
 ordered-float.workspace = true
 paths.workspace = true
 picker.workspace = true
+proto.workspace = true
 project.workspace = true
 release_channel.workspace = true
 remote.workspace = true

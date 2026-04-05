@@ -4,7 +4,7 @@ use std::{
 };
 
 use ::util::ResultExt;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use windows::{
     Win32::{
         Foundation::HWND,
@@ -96,28 +96,11 @@ impl WindowRenderer {
     pub(crate) fn handle_device_lost(&mut self, directx_devices: &DirectXDevices) -> Result<()> {
         let recovered_backend = directx_devices.active_backend();
         if self.active_backend() != recovered_backend {
-            let hwnd = self.hwnd();
-            let disable_direct_composition = self.disable_direct_composition()
-                || matches!(
-                    (self.active_backend(), recovered_backend),
-                    (DirectXBackend::Direct3d12, DirectXBackend::Direct3d11)
-                );
-            log::warn!(
-                "Switching window renderer from {} to {} after GPU device recovery.",
+            return Err(anyhow!(
+                "Window renderer backend mismatch after GPU device recovery: renderer={}, recovered={}",
                 self.active_backend().display_name(),
                 recovered_backend.display_name()
-            );
-            if disable_direct_composition && !self.disable_direct_composition() {
-                log::warn!(
-                    "Disabling Direct Composition while recreating the {} renderer after a {} device-loss recovery.",
-                    recovered_backend.display_name(),
-                    self.active_backend().display_name()
-                );
-            }
-            *self = Self::new(hwnd, directx_devices, disable_direct_composition)
-                .context("Recreating window renderer after GPU backend switch")?;
-            self.skip_next_draw_after_recovery();
-            return Ok(());
+            ));
         }
 
         match self {
@@ -165,20 +148,6 @@ impl WindowRenderer {
         }
     }
 
-    fn hwnd(&self) -> HWND {
-        match self {
-            Self::Direct3d11(renderer) => renderer.hwnd(),
-            Self::Direct3d12(renderer) => renderer.hwnd(),
-        }
-    }
-
-    pub(crate) fn disable_direct_composition(&self) -> bool {
-        match self {
-            Self::Direct3d11(renderer) => renderer.disable_direct_composition(),
-            Self::Direct3d12(renderer) => renderer.disable_direct_composition(),
-        }
-    }
-
     pub(crate) fn gpu_specs(&self) -> Result<GpuSpecs> {
         match self {
             Self::Direct3d11(renderer) => renderer.gpu_specs(),
@@ -190,13 +159,6 @@ impl WindowRenderer {
         match self {
             Self::Direct3d11(renderer) => renderer.mark_drawable(),
             Self::Direct3d12(renderer) => renderer.mark_drawable(),
-        }
-    }
-
-    fn skip_next_draw_after_recovery(&mut self) {
-        match self {
-            Self::Direct3d11(renderer) => renderer.skip_next_draw_after_recovery(),
-            Self::Direct3d12(renderer) => renderer.skip_next_draw_after_recovery(),
         }
     }
 }
@@ -352,14 +314,6 @@ impl DirectXRenderer {
 
     pub(crate) fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.atlas.clone()
-    }
-
-    pub(crate) fn hwnd(&self) -> HWND {
-        self.hwnd
-    }
-
-    pub(crate) fn disable_direct_composition(&self) -> bool {
-        self.direct_composition.is_none()
     }
 
     pub(crate) fn interactive_resize_mode(&self) -> InteractiveResizeMode {
@@ -940,10 +894,6 @@ impl DirectXRenderer {
 
     pub(crate) fn mark_drawable(&mut self) {
         self.skip_draws = false;
-    }
-
-    pub(crate) fn skip_next_draw_after_recovery(&mut self) {
-        self.skip_draws = true;
     }
 }
 

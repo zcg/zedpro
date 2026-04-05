@@ -29,7 +29,7 @@ use language::LanguageRegistry;
 use onboarding::{FIRST_OPEN, show_onboarding_view};
 use project_panel::ProjectPanel;
 use prompt_store::PromptBuilder;
-use remote::RemoteConnectionOptions;
+use remote::{DockerHost, RemoteConnectionOptions};
 use reqwest_client::ReqwestClient;
 
 use assets::Assets;
@@ -1552,6 +1552,59 @@ async fn restorable_workspaces(
     Some((multi_workspaces, remote_workspaces))
 }
 
+fn filter_conflicting_session_workspaces(
+    session_workspaces: Vec<SessionWorkspace>,
+) -> Vec<SessionWorkspace> {
+    let skipped_workspace_ids = session_workspaces
+        .iter()
+        .filter_map(|workspace| {
+            let SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Docker(options)) =
+                &workspace.location
+            else {
+                return None;
+            };
+
+            session_workspaces.iter().find_map(|candidate| {
+                (candidate.workspace_id != workspace.workspace_id
+                    && candidate.paths == workspace.paths
+                    && docker_host_matches_workspace(&options.host, &candidate.location))
+                .then_some(candidate)
+            })
+        })
+        .map(|candidate| candidate.workspace_id)
+        .collect::<Vec<_>>();
+
+    skipped_workspace_ids.iter().for_each(|workspace_id| {
+            log::info!(
+                "skipping dev container session restore because matching host workspace is also present: {:?}",
+                workspace_id
+            );
+        });
+
+    session_workspaces
+        .into_iter()
+        .filter(|workspace| !skipped_workspace_ids.contains(&workspace.workspace_id))
+        .collect()
+}
+
+fn docker_host_matches_workspace(
+    docker_host: &DockerHost,
+    location: &SerializedWorkspaceLocation,
+) -> bool {
+    match (docker_host, location) {
+        (DockerHost::Local, SerializedWorkspaceLocation::Local) => true,
+        (
+            DockerHost::Wsl(expected),
+            SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Wsl(actual)),
+        ) => expected == actual,
+        (
+            DockerHost::Ssh(expected),
+            SerializedWorkspaceLocation::Remote(RemoteConnectionOptions::Ssh(actual)),
+        ) => expected == actual,
+        _ => false,
+    }
+}
+
 pub(crate) async fn restorable_workspace_locations(
     cx: &mut AsyncApp,
     app_state: &Arc<AppState>,
@@ -1614,7 +1667,7 @@ pub(crate) async fn restorable_workspace_locations(
                     locations.reverse();
                 }
 
-                locations
+                locations.map(filter_conflicting_session_workspaces)
             } else {
                 None
             }

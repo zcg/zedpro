@@ -760,7 +760,7 @@ pub struct SettingsObserver {
     pending_local_settings:
         HashMap<PathTrust, BTreeMap<(WorktreeId, Arc<RelPath>), Option<String>>>,
     _trusted_worktrees_watcher: Option<Subscription>,
-    _user_settings_watcher: Option<Subscription>,
+    _user_settings_watcher: Task<()>,
     _editorconfig_watcher: Option<Subscription>,
     _global_task_config_watcher: Task<()>,
     _global_debug_config_watcher: Task<()>,
@@ -875,7 +875,7 @@ impl SettingsObserver {
             downstream_client: None,
             _trusted_worktrees_watcher,
             pending_local_settings: HashMap::default(),
-            _user_settings_watcher: None,
+            _user_settings_watcher: Task::ready(()),
             _editorconfig_watcher: Some(_editorconfig_watcher),
             project_id: REMOTE_SERVER_PROJECT_ID,
             _global_task_config_watcher: if watch_global_configs {
@@ -907,28 +907,10 @@ impl SettingsObserver {
         via_collab: bool,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut user_settings_watcher = None;
-        if cx.try_global::<SettingsStore>().is_some() {
-            if let Some(upstream_client) = upstream_client {
-                let mut user_settings = None;
-                user_settings_watcher = Some(cx.observe_global::<SettingsStore>(move |_, cx| {
-                    if let Some(new_settings) = cx.global::<SettingsStore>().raw_user_settings() {
-                        if Some(new_settings) != user_settings.as_ref() {
-                            if let Some(new_settings_string) =
-                                serde_json::to_string(new_settings).ok()
-                            {
-                                user_settings = Some(new_settings.clone());
-                                upstream_client
-                                    .send(proto::UpdateUserSettings {
-                                        project_id: REMOTE_SERVER_PROJECT_ID,
-                                        contents: new_settings_string,
-                                    })
-                                    .log_err();
-                            }
-                        }
-                    }
-                }));
-            }
+        let user_settings_watcher = if let Some(upstream_client) = upstream_client {
+            Self::subscribe_to_global_user_settings_file_changes(fs.clone(), upstream_client, cx)
+        } else {
+            Task::ready(())
         };
 
         Self {
@@ -1457,6 +1439,57 @@ impl SettingsObserver {
             }
         })
     }
+
+    fn subscribe_to_global_user_settings_file_changes(
+        fs: Arc<dyn Fs>,
+        upstream_client: AnyProtoClient,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        let (mut user_settings_file_rx, watcher_task) =
+            watch_config_file(cx.background_executor(), fs, paths::settings_file().clone());
+        let initial_user_settings_content = cx
+            .foreground_executor()
+            .block_on(user_settings_file_rx.next());
+        cx.spawn(async move |_, _cx| {
+            let _watcher_task = watcher_task;
+            let mut last_sent_user_settings = None;
+
+            if let Some(user_settings_content) = initial_user_settings_content {
+                Self::send_remote_user_settings_update(
+                    &upstream_client,
+                    &mut last_sent_user_settings,
+                    user_settings_content,
+                );
+            }
+
+            while let Some(user_settings_content) = user_settings_file_rx.next().await {
+                Self::send_remote_user_settings_update(
+                    &upstream_client,
+                    &mut last_sent_user_settings,
+                    user_settings_content,
+                );
+            }
+        })
+    }
+
+    fn send_remote_user_settings_update(
+        upstream_client: &AnyProtoClient,
+        last_sent_user_settings: &mut Option<String>,
+        user_settings_content: String,
+    ) {
+        if last_sent_user_settings.as_ref() == Some(&user_settings_content) {
+            return;
+        }
+
+        *last_sent_user_settings = Some(user_settings_content.clone());
+        upstream_client
+            .send(proto::UpdateUserSettings {
+                project_id: REMOTE_SERVER_PROJECT_ID,
+                contents: user_settings_content,
+            })
+            .log_err();
+    }
+
     fn subscribe_to_global_debug_scenarios_changes(
         fs: Arc<dyn Fs>,
         file_path: PathBuf,

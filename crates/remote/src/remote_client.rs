@@ -841,14 +841,28 @@ impl RemoteClient {
                             ProxyLaunchError::ServerNotRunning => {
                                 log::error!("failed to reconnect because server is not running");
                                 this.update(cx, |this, cx| {
-                                    this.set_state(State::ServerNotRunning, cx);
+                                    if this.state_is(|state| {
+                                        state.can_reconnect() || state.is_reconnecting()
+                                    }) {
+                                        this.set_state(State::ServerNotRunning, cx);
+                                    } else {
+                                        log::info!(
+                                            "ignoring server-not-running exit after remote client was explicitly disconnected"
+                                        );
+                                    }
                                 })?;
                             }
                         }
                     } else {
                         log::error!("proxy process terminated unexpectedly: {exit_code}");
                         this.update(cx, |this, cx| {
-                            this.reconnect(cx).ok();
+                            if this.state_is(State::can_reconnect) {
+                                this.reconnect(cx).ok();
+                            } else {
+                                log::info!(
+                                    "ignoring remote proxy exit because reconnect is no longer allowed"
+                                );
+                            }
                         })?;
                     }
                 }
@@ -858,7 +872,13 @@ impl RemoteClient {
                         error
                     );
                     this.update(cx, |this, cx| {
-                        this.reconnect(cx).ok();
+                        if this.state_is(State::can_reconnect) {
+                            this.reconnect(cx).ok();
+                        } else {
+                            log::info!(
+                                "ignoring remote io task failure because reconnect is no longer allowed"
+                            );
+                        }
                     })?;
                 }
             }

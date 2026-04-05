@@ -369,6 +369,7 @@ pub enum Event {
         paths: Vec<ProjectPath>,
         language_server_id: LanguageServerId,
     },
+    RemoteDevContainerProgress(proto::RemoteDevContainerProgress),
     RemoteIdChanged(Option<u64>),
     DisconnectedFromHost,
     DisconnectedFromRemote {
@@ -1598,6 +1599,7 @@ impl Project {
             remote_proto.add_entity_message_handler(Self::handle_update_worktree);
             remote_proto.add_entity_message_handler(Self::handle_update_project);
             remote_proto.add_entity_message_handler(Self::handle_toast);
+            remote_proto.add_entity_message_handler(Self::handle_remote_dev_container_progress);
             remote_proto.add_entity_request_handler(Self::handle_language_server_prompt_request);
             remote_proto.add_entity_message_handler(Self::handle_hide_toast);
             remote_proto.add_entity_request_handler(Self::handle_update_buffer_from_remote_server);
@@ -5095,6 +5097,17 @@ impl Project {
                 message: envelope.payload.message,
                 link: None,
             });
+            Ok(())
+        })
+    }
+
+    async fn handle_remote_dev_container_progress(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::RemoteDevContainerProgress>,
+        mut cx: AsyncApp,
+    ) -> Result<()> {
+        this.update(&mut cx, |_, cx| {
+            cx.emit(Event::RemoteDevContainerProgress(envelope.payload));
             Ok(())
         })
     }

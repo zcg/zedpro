@@ -5,10 +5,13 @@ use gpui::AppContext;
 use gpui::Entity;
 use gpui::Task;
 use gpui::WeakEntity;
+use gpui::{Action, DismissEvent, EventEmitter, FocusHandle, Focusable, RenderOnce};
 use http_client::anyhow;
 use picker::Picker;
 use picker::PickerDelegate;
 use project::ProjectEnvironment;
+use remote::{DockerHost, RemoteConnectionOptions};
+use serde::Deserialize;
 use settings::RegisterSetting;
 use settings::Settings;
 use std::collections::HashMap;
@@ -28,10 +31,6 @@ use ui::Tooltip;
 use ui::h_flex;
 use ui::rems_from_px;
 use ui::v_flex;
-use util::shell::Shell;
-
-use gpui::{Action, DismissEvent, EventEmitter, FocusHandle, Focusable, RenderOnce};
-use serde::Deserialize;
 use ui::{
     AnyElement, App, Color, CommonAnimationExt, Context, Headline, HeadlineSize, Icon, IconName,
     InteractiveElement, IntoElement, Label, ListItem, ListSeparator, ModalHeader, Navigable,
@@ -53,15 +52,16 @@ mod oci;
 
 use devcontainer_api::read_default_devcontainer_configuration;
 
-use crate::devcontainer_api::DevContainerError;
 use crate::devcontainer_api::apply_devcontainer_template;
 use crate::oci::get_deserializable_oci_blob;
 use crate::oci::get_latest_oci_manifest;
 use crate::oci::get_oci_token;
 
 pub use devcontainer_api::{
-    DevContainerConfig, find_configs_in_snapshot, find_devcontainer_configs,
-    start_dev_container_with_config,
+    DevContainerBuildStep, DevContainerConfig, DevContainerError, DevContainerLogLine,
+    DevContainerLogStream, DevContainerProgressCallback, DevContainerProgressEvent,
+    find_configs_in_snapshot, find_devcontainer_configs, start_dev_container_with_config,
+    start_dev_container_with_config_and_progress,
 };
 
 /// Converts a string to a safe environment variable name.
@@ -97,6 +97,7 @@ fn get_safe_id(input: &str) -> String {
 
 pub struct DevContainerContext {
     pub project_directory: Arc<Path>,
+    pub docker_host: DockerHost,
     pub use_podman: bool,
     pub fs: Arc<dyn Fs>,
     pub http_client: Arc<dyn HttpClient>,
@@ -105,13 +106,22 @@ pub struct DevContainerContext {
 
 impl DevContainerContext {
     pub fn from_workspace(workspace: &Workspace, cx: &App) -> Option<Self> {
-        let project_directory = workspace.project().read(cx).active_project_directory(cx)?;
+        let project = workspace.project();
+        let project = project.read(cx);
+        let project_directory = project.active_project_directory(cx)?;
+        let docker_host = match project.remote_connection_options(cx) {
+            Some(RemoteConnectionOptions::Ssh(options)) => DockerHost::Ssh(options),
+            Some(RemoteConnectionOptions::Wsl(options)) => DockerHost::Wsl(options),
+            Some(RemoteConnectionOptions::Docker(options)) => options.host,
+            _ => DockerHost::Local,
+        };
         let use_podman = DevContainerSettings::get_global(cx).use_podman;
         let http_client = cx.http_client().clone();
         let fs = workspace.app_state().fs.clone();
-        let environment = workspace.project().read(cx).environment().downgrade();
+        let environment = project.environment().downgrade();
         Some(Self {
             project_directory,
+            docker_host,
             use_podman,
             fs,
             http_client,
@@ -121,7 +131,7 @@ impl DevContainerContext {
 
     pub async fn environment(&self, cx: &mut impl AppContext) -> HashMap<String, String> {
         let Ok(task) = self.environment.update(cx, |this, cx| {
-            this.local_directory_environment(&Shell::System, self.project_directory.clone(), cx)
+            this.directory_environment(self.project_directory.clone(), cx)
         }) else {
             return HashMap::default();
         };

@@ -47,7 +47,6 @@ pub(crate) enum DirectXBackend {
 
 #[derive(Clone, Debug)]
 pub(crate) struct DirectXBackendProbe {
-    pub(crate) preferred: DirectXBackend,
     pub(crate) d3d11_feature_level: D3D_FEATURE_LEVEL,
     pub(crate) d3d12_feature_level: Option<D3D_FEATURE_LEVEL>,
     pub(crate) d3d12_probe_error: Option<String>,
@@ -57,13 +56,11 @@ impl DirectXBackendProbe {
     fn detect(adapter: &IDXGIAdapter1, d3d11_feature_level: D3D_FEATURE_LEVEL) -> Self {
         match probe_d3d12_feature_level(adapter) {
             Ok(feature_level) => Self {
-                preferred: DirectXBackend::Direct3d12,
                 d3d11_feature_level,
                 d3d12_feature_level: Some(feature_level),
                 d3d12_probe_error: None,
             },
             Err(error) => Self {
-                preferred: DirectXBackend::Direct3d11,
                 d3d11_feature_level,
                 d3d12_feature_level: None,
                 d3d12_probe_error: Some(format!("{error:#}")),
@@ -74,7 +71,7 @@ impl DirectXBackendProbe {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum DirectXBackendRequest {
-    Auto,
+    Automatic,
     Direct3d11,
     Direct3d12,
 }
@@ -82,21 +79,20 @@ pub(crate) enum DirectXBackendRequest {
 impl DirectXBackendRequest {
     fn from_env() -> (Self, Option<String>) {
         let Ok(value) = std::env::var(DIRECTX_BACKEND_ENV) else {
-            return (Self::Auto, None);
+            return (Self::Automatic, None);
         };
 
         let normalized = value.trim().to_ascii_lowercase();
         let request = match normalized.as_str() {
-            "" | "auto" => Self::Auto,
             "11" | "d3d11" | "direct3d11" | "directx11" | "dx11" => Self::Direct3d11,
             "12" | "d3d12" | "direct3d12" | "directx12" | "dx12" => Self::Direct3d12,
             _ => {
                 log::warn!(
-                    "Ignoring unsupported value {:?} for {}. Supported values are: auto, 11, 12.",
+                    "Ignoring unsupported value {:?} for {}. Supported values are: 11, 12. Probing the adapter and preferring Direct3D 12 when available, otherwise Direct3D 11.",
                     value,
                     DIRECTX_BACKEND_ENV
                 );
-                Self::Auto
+                Self::Automatic
             }
         };
         (request, Some(value))
@@ -104,7 +100,7 @@ impl DirectXBackendRequest {
 
     pub(crate) fn display_name(self) -> &'static str {
         match self {
-            Self::Auto => "auto",
+            Self::Automatic => "Auto",
             Self::Direct3d11 => "Direct3D 11",
             Self::Direct3d12 => "Direct3D 12",
         }
@@ -114,7 +110,8 @@ impl DirectXBackendRequest {
 #[derive(Clone)]
 pub(crate) struct DirectXDevices {
     /// 当前实际启用的后端。
-    /// 它会综合环境变量、硬件探测结果以及平台初始化阶段的回退结果更新。
+    /// 无显式配置时会在启动探测阶段优先选 Direct3D 12，否则退到 Direct3D 11。
+    /// 一旦选定，不会在启动完成后或恢复阶段跨后端切换。
     active_backend: DirectXBackend,
     pub(crate) backend_probe: DirectXBackendProbe,
     pub(crate) adapter: IDXGIAdapter1,
@@ -144,17 +141,22 @@ impl DirectXDevices {
             .transpose()?;
 
         let active_backend = match backend_request {
-            DirectXBackendRequest::Auto => backend_probe.preferred,
+            DirectXBackendRequest::Automatic => {
+                if d3d12_device.is_some() {
+                    DirectXBackend::Direct3d12
+                } else {
+                    DirectXBackend::Direct3d11
+                }
+            }
             DirectXBackendRequest::Direct3d11 => DirectXBackend::Direct3d11,
             DirectXBackendRequest::Direct3d12 => {
                 if d3d12_device.is_some() {
                     DirectXBackend::Direct3d12
                 } else {
-                    log::warn!(
-                        "{} requested Direct3D 12, but the current adapter does not expose a usable D3D12 device. Falling back to Direct3D 11.",
+                    anyhow::bail!(
+                        "{} requested Direct3D 12, but the current adapter does not expose a usable D3D12 device.",
                         DIRECTX_BACKEND_ENV
                     );
-                    DirectXBackend::Direct3d11
                 }
             }
         };
@@ -167,6 +169,17 @@ impl DirectXDevices {
                     display_feature_level(d3d12_feature_level),
                     d3d11_feature_level
                 );
+            }
+            (DirectXBackend::Direct3d11, None)
+                if backend_request == DirectXBackendRequest::Automatic =>
+            {
+                log::info!(
+                    "Direct3D backend probe: adapter does not expose a usable Direct3D 12 device, selecting Direct3D 11 with feature level {}.",
+                    d3d11_feature_level
+                );
+                if let Some(error) = &backend_probe.d3d12_probe_error {
+                    log::info!("Direct3D 12 probe failed on current adapter: {error}");
+                }
             }
             (DirectXBackend::Direct3d11, Some(d3d12_feature_level)) => {
                 log::info!(
@@ -202,10 +215,6 @@ impl DirectXDevices {
 
     pub(crate) fn active_backend(&self) -> DirectXBackend {
         self.active_backend
-    }
-
-    pub(crate) fn preferred_backend(&self) -> DirectXBackend {
-        self.backend_probe.preferred
     }
 
     pub(crate) fn d3d12_device(&self) -> Option<&ID3D12Device> {

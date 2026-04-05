@@ -6432,6 +6432,27 @@ impl Workspace {
         self.serialize_workspace_internal(window, cx)
     }
 
+    pub fn detach_from_session(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        self.session_id.take();
+        self._schedule_serialize_workspace.take();
+        self._serialize_workspace_task.take();
+
+        if let Some(workspace_id) = self.database_id() {
+            let db = WorkspaceDb::global(cx);
+            cx.background_spawn(async move {
+                db.set_session_binding(workspace_id, None, None)
+                    .await
+                    .log_err();
+            })
+        } else {
+            Task::ready(())
+        }
+    }
+
     fn force_remove_pane(
         &mut self,
         pane: &Entity<Pane>,

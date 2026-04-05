@@ -1207,9 +1207,27 @@ mod test {
             ]))
         );
 
+        let raw = "{\"formatter\": {\"language_server\": {\"name\": \"oxc\"}}}";
+        let settings: LanguageSettingsContent = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            settings.formatter,
+            Some(FormatterList::Single(Formatter::LanguageServer(
+                LanguageServerFormatterSpecifier::Specific {
+                    name: "oxc".to_string()
+                }
+            )))
+        );
+
         assert_eq!(
             serde_json::to_string(&LanguageServerFormatterSpecifier::Current).unwrap(),
             "\"language_server\"",
+        );
+        assert_eq!(
+            serde_json::to_string(&LanguageServerFormatterSpecifier::Specific {
+                name: "oxc".to_string()
+            })
+            .unwrap(),
+            "{\"language_server\":{\"name\":\"oxc\"}}",
         );
     }
 

@@ -688,56 +688,8 @@ impl Platform for WindowsPlatform {
         ) {
             Ok(window) => window,
             Err(error) => {
-                let should_retry = self
-                    .inner
-                    .state
-                    .directx_devices
-                    .read()
-                    .as_ref()
-                    .is_some_and(|directx_devices| {
-                        directx_devices.active_backend() == DirectXBackend::Direct3d12
-                    })
-                    && should_retry_window_creation_with_d3d11(&error);
-                if !should_retry {
-                    restore_modal_parent(parent_hwnd);
-                    return Err(error);
-                }
-
-                let fallback_reason = format!("{error:#}");
-                let fallback_devices =
-                    create_window_creation_fallback_devices().with_context(|| {
-                        format!(
-                            "Recreating {} devices for window-creation fallback after a {} failure",
-                            DirectXBackend::Direct3d11.display_name(),
-                            DirectXBackend::Direct3d12.display_name(),
-                        )
-                    })?;
-                let fallback_window = WindowsWindow::new(
-                    handle,
-                    &options,
-                    self.generate_creation_info_with_devices(
-                        fallback_devices.clone(),
-                        parent_hwnd,
-                        Some(DirectXBackend::Direct3d11),
-                    ),
-                )
-                .with_context(|| {
-                    format!(
-                        "Retrying window creation after falling back to {}",
-                        DirectXBackend::Direct3d11.display_name()
-                    )
-                })
-                .map_err(|error| {
-                    restore_modal_parent(parent_hwnd);
-                    error
-                })?;
-                log::warn!(
-                    "Requested {} window creation failed; retrying only the new window with {} using freshly recreated devices: {}",
-                    DirectXBackend::Direct3d12.display_name(),
-                    DirectXBackend::Direct3d11.display_name(),
-                    fallback_reason
-                );
-                fallback_window
+                restore_modal_parent(parent_hwnd);
+                return Err(error);
             }
         };
         let handle = window.get_raw_handle();
@@ -1528,28 +1480,6 @@ fn initialize_windows_renderer_stack(
 ) -> Result<(DirectXDevices, Arc<DirectWriteTextSystem>, Option<String>)> {
     match DirectWriteTextSystem::new(&devices) {
         Ok(text_system) => Ok((devices, Arc::new(text_system), None)),
-        Err(error) if devices.active_backend() == DirectXBackend::Direct3d12 => {
-            let fallback_reason = format!("{error:#}");
-            let fallback_devices = devices.with_active_backend(DirectXBackend::Direct3d11);
-            let fallback_text_system = Arc::new(
-                DirectWriteTextSystem::new(&fallback_devices).with_context(|| {
-                    format!(
-                        "Error creating DirectWriteTextSystem after falling back to {}",
-                        DirectXBackend::Direct3d11.display_name()
-                    )
-                })?,
-            );
-            Ok((
-                fallback_devices,
-                fallback_text_system,
-                Some(format!(
-                    "Requested {} startup path failed during DirectWrite initialization and the platform fell back to {}: {}",
-                    DirectXBackend::Direct3d12.display_name(),
-                    DirectXBackend::Direct3d11.display_name(),
-                    fallback_reason
-                )),
-            ))
-        }
         Err(error) => Err(error).context("Error creating DirectWriteTextSystem"),
     }
 }
@@ -1573,11 +1503,10 @@ fn log_windows_renderer_startup(directx_devices: &DirectXDevices, startup_note: 
         };
 
     log::info!(
-        "========== Windows renderer startup: adapter=\"{}\", request={} (raw=\"{}\"), preferred={}, actual={}, {}={}, {}={} ==========",
+        "========== Windows renderer startup: adapter=\"{}\", configured={} (raw=\"{}\"), active={}, {}={}, {}={} ==========",
         adapter_name,
         request,
         request_raw,
-        directx_devices.preferred_backend().display_name(),
         directx_devices.active_backend().display_name(),
         d3d12_feature_label,
         d3d12_feature_level,
@@ -1588,25 +1517,6 @@ fn log_windows_renderer_startup(directx_devices: &DirectXDevices, startup_note: 
     if let Some(note) = startup_note {
         log::warn!("Windows renderer startup note: {note}");
     }
-}
-
-fn should_retry_window_creation_with_d3d11(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        let message = cause.to_string();
-        message.contains("Creating DirectX renderer")
-            || message.contains("Creating DirectComposition for Direct3D 12")
-            || message.contains("Creating Direct3D 12 devices")
-            || message.contains("Creating Direct3D 12 resources")
-            || message.contains("Creating Direct3D 12 swap chain")
-    })
-}
-
-fn create_window_creation_fallback_devices() -> Result<DirectXDevices> {
-    try_to_recover_from_device_lost(|| {
-        DirectXDevices::new()
-            .map(|devices| devices.with_active_backend(DirectXBackend::Direct3d11))
-            .context("Creating fresh Direct3D 11 fallback devices")
-    })
 }
 
 fn handle_gpu_device_lost(
@@ -1620,34 +1530,14 @@ fn handle_gpu_device_lost(
     // If we don't wait, the final drawing result will be blank.
     std::thread::sleep(std::time::Duration::from_millis(350));
 
-    let mut recovered_devices = try_to_recover_from_device_lost(|| {
+    let recovered_devices = try_to_recover_from_device_lost(|| {
         DirectXDevices::new().context("Failed to recreate new DirectX devices after device lost")
     })?;
 
     if let Some(text_system) = text_system.upgrade() {
-        if let Err(error) = text_system.handle_gpu_lost(&recovered_devices) {
-            if recovered_devices.active_backend() == DirectXBackend::Direct3d12 {
-                let fallback_reason = format!("{error:#}");
-                recovered_devices =
-                    recovered_devices.with_active_backend(DirectXBackend::Direct3d11);
-                text_system
-                    .handle_gpu_lost(&recovered_devices)
-                    .with_context(|| {
-                        format!(
-                            "Failed to rebuild DirectWrite after device-loss fallback to {}",
-                            DirectXBackend::Direct3d11.display_name()
-                        )
-                    })?;
-                log::warn!(
-                    "Windows renderer device-loss recovery fell back to {} after a {} recovery attempt failed: {}",
-                    DirectXBackend::Direct3d11.display_name(),
-                    DirectXBackend::Direct3d12.display_name(),
-                    fallback_reason
-                );
-            } else {
-                return Err(error).context("Updating DirectWrite text system after device lost");
-            }
-        }
+        text_system
+            .handle_gpu_lost(&recovered_devices)
+            .context("Updating DirectWrite text system after device lost")?;
     }
 
     *directx_devices = recovered_devices;

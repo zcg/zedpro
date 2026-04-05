@@ -331,14 +331,6 @@ impl DirectX12Renderer {
         self.atlas.clone()
     }
 
-    pub(crate) fn hwnd(&self) -> HWND {
-        self.hwnd
-    }
-
-    pub(crate) fn disable_direct_composition(&self) -> bool {
-        self.disable_direct_composition
-    }
-
     pub(crate) fn interactive_resize_mode(&self) -> InteractiveResizeMode {
         if self.direct_composition.is_some() {
             InteractiveResizeMode::StageDirectCompositionSwapChain
@@ -384,12 +376,7 @@ impl DirectX12Renderer {
                 self.hwnd,
             )
             .context("Recreating DirectComposition for Direct3D 12")
-            .and_then(|composition| {
-                composition
-                    .set_swap_chain(&resources.swap_chain)
-                    .context("Rebinding Direct3D 12 swap chain to DirectComposition")?;
-                Ok(composition)
-            }) {
+            {
                 Ok(composition) => Some(composition),
                 Err(error) => {
                     log::warn!(
@@ -414,7 +401,9 @@ impl DirectX12Renderer {
         self.current_frame_index = 0;
         self.path_vertex_scratch.clear();
         self.path_sprite_scratch.clear();
-        self.attach_staged_swap_chain_after_present = false;
+        // 恢复后的新 swap chain 还没有有效内容，
+        // 等首个成功 present 之后再把它绑定到 DirectComposition，避免客户区先闪成透明层。
+        self.attach_staged_swap_chain_after_present = self.direct_composition.is_some();
         Ok(())
     }
 
@@ -597,10 +586,6 @@ impl DirectX12Renderer {
 
     pub(crate) fn mark_drawable(&mut self) {
         self.skip_draws = false;
-    }
-
-    pub(crate) fn skip_next_draw_after_recovery(&mut self) {
-        self.skip_draws = true;
     }
 
     fn pre_draw(&mut self, clear_color: [f32; 4]) -> Result<()> {

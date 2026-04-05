@@ -192,6 +192,8 @@ async fn build_remote_server_from_source(
     use std::path::Path;
     use util::command::{Command, Stdio, new_command};
 
+    let workspace_root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+
     if let Ok(path) = std::env::var("ZED_COPY_REMOTE_SERVER") {
         let path = std::path::PathBuf::from(path);
         if path.exists() {
@@ -274,7 +276,7 @@ async fn build_remote_server_from_source(
         log::info!("building remote server binary from source");
         run_cmd(
             new_command("cargo")
-                .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+                .current_dir(workspace_root)
                 .args([
                     "build",
                     "--package",
@@ -320,6 +322,7 @@ async fn build_remote_server_from_source(
         log::info!("building remote binary from source for {triple} with Zig");
         run_cmd(
             new_command("cargo")
+                .current_dir(workspace_root)
                 .args([
                     "zigbuild",
                     "--package",
@@ -335,7 +338,8 @@ async fn build_remote_server_from_source(
         )
         .await?;
     };
-    let bin_path = Path::new("target")
+    let bin_path = workspace_root
+        .join("target")
         .join("remote_server")
         .join(&triple)
         .join("debug")

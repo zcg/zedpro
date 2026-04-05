@@ -2,6 +2,10 @@ use anyhow::{Context as _, Result, anyhow};
 use client::ProjectId;
 use collections::HashMap;
 use collections::HashSet;
+use dev_container::{
+    DevContainerBuildStep, DevContainerConfig, DevContainerContext, DevContainerLogStream,
+    DevContainerProgressEvent, start_dev_container_with_config_and_progress,
+};
 use language::File;
 use lsp::LanguageServerId;
 
@@ -50,6 +54,7 @@ use worktree::Worktree;
 
 pub struct HeadlessProject {
     pub fs: Arc<dyn Fs>,
+    pub http_client: Arc<dyn HttpClient>,
     pub session: AnyProtoClient,
     pub worktree_store: Entity<WorktreeStore>,
     pub buffer_store: Entity<BufferStore>,
@@ -303,6 +308,7 @@ impl HeadlessProject {
         session.add_entity_request_handler(Self::handle_find_search_candidates);
         session.add_entity_request_handler(Self::handle_open_server_settings);
         session.add_entity_request_handler(Self::handle_get_directory_environment);
+        session.add_entity_request_handler(Self::handle_start_remote_dev_container);
         session.add_entity_message_handler(Self::handle_toggle_lsp_logs);
         session.add_entity_request_handler(Self::handle_open_image_by_path);
         session.add_entity_request_handler(Self::handle_trust_worktrees);
@@ -343,6 +349,7 @@ impl HeadlessProject {
             session,
             settings_observer,
             fs,
+            http_client,
             worktree_store,
             buffer_store,
             lsp_store,
@@ -1301,6 +1308,139 @@ impl HeadlessProject {
             .into_iter()
             .collect();
         Ok(proto::DirectoryEnvironment { environment })
+    }
+
+    async fn handle_start_remote_dev_container(
+        this: Entity<Self>,
+        envelope: TypedEnvelope<proto::StartRemoteDevContainer>,
+        mut cx: AsyncApp,
+    ) -> Result<proto::RemoteDevContainerStarted> {
+        let project_directory =
+            Arc::<Path>::from(PathBuf::from(&envelope.payload.project_directory));
+        let config = envelope.payload.config.map(|config| DevContainerConfig {
+            name: config.name,
+            config_path: PathBuf::from(config.config_path),
+        });
+
+        let project_id = envelope.payload.project_id;
+        let (fs, http_client, environment, session) = this.update(&mut cx, |this, _| {
+            (
+                this.fs.clone(),
+                this.http_client.clone(),
+                this.environment.downgrade(),
+                this.session.clone(),
+            )
+        });
+
+        let context = DevContainerContext {
+            project_directory,
+            docker_host: remote::DockerHost::Local,
+            use_podman: envelope.payload.use_podman,
+            fs,
+            http_client,
+            environment,
+        };
+
+        let progress = Arc::new(move |event: DevContainerProgressEvent| {
+            session
+                .send(proto::RemoteDevContainerProgress {
+                    project_id,
+                    kind: remote_dev_container_progress_kind(&event).into(),
+                    step: remote_dev_container_progress_step(&event).into(),
+                    stream: remote_dev_container_progress_stream(&event).into(),
+                    message: remote_dev_container_progress_message(event),
+                })
+                .log_err();
+        });
+
+        let (connection, starting_dir) = start_dev_container_with_config_and_progress(
+            context,
+            config,
+            envelope.payload.environment,
+            Some(progress),
+        )
+        .await
+        .map_err(|err| anyhow!("failed to start remote dev container: {err}"))?;
+
+        Ok(proto::RemoteDevContainerStarted {
+            connection: Some(proto::RemoteDevContainerConnection {
+                name: connection.name,
+                container_id: connection.container_id,
+                remote_user: connection.remote_user,
+                extension_ids: connection.extension_ids,
+                remote_env: connection.remote_env.into_iter().collect(),
+            }),
+            starting_dir,
+        })
+    }
+}
+
+fn remote_dev_container_progress_kind(
+    event: &DevContainerProgressEvent,
+) -> proto::RemoteDevContainerProgressKind {
+    match event {
+        DevContainerProgressEvent::StepStarted(_) => {
+            proto::RemoteDevContainerProgressKind::StepStarted
+        }
+        DevContainerProgressEvent::StepCompleted(_) => {
+            proto::RemoteDevContainerProgressKind::StepCompleted
+        }
+        DevContainerProgressEvent::StepFailed(_, _) => {
+            proto::RemoteDevContainerProgressKind::StepFailed
+        }
+        DevContainerProgressEvent::LogLine(_) => proto::RemoteDevContainerProgressKind::LogLine,
+    }
+}
+
+fn remote_dev_container_progress_step(
+    event: &DevContainerProgressEvent,
+) -> proto::RemoteDevContainerBuildStep {
+    let step = match event {
+        DevContainerProgressEvent::StepStarted(step)
+        | DevContainerProgressEvent::StepCompleted(step)
+        | DevContainerProgressEvent::StepFailed(step, _) => *step,
+        DevContainerProgressEvent::LogLine(_) => DevContainerBuildStep::BuildContainer,
+    };
+
+    match step {
+        DevContainerBuildStep::CheckDocker => proto::RemoteDevContainerBuildStep::CheckDocker,
+        DevContainerBuildStep::ResolveConfiguration => {
+            proto::RemoteDevContainerBuildStep::ResolveConfiguration
+        }
+        DevContainerBuildStep::FindExistingContainer => {
+            proto::RemoteDevContainerBuildStep::FindExistingContainer
+        }
+        DevContainerBuildStep::RunInitializeCommand => {
+            proto::RemoteDevContainerBuildStep::RunInitializeCommand
+        }
+        DevContainerBuildStep::BuildContainer => proto::RemoteDevContainerBuildStep::BuildContainer,
+        DevContainerBuildStep::RunLifecycleScripts => {
+            proto::RemoteDevContainerBuildStep::RunLifecycleScripts
+        }
+        DevContainerBuildStep::ReadConfiguration => {
+            proto::RemoteDevContainerBuildStep::ReadConfiguration
+        }
+    }
+}
+
+fn remote_dev_container_progress_stream(
+    event: &DevContainerProgressEvent,
+) -> proto::RemoteDevContainerLogStream {
+    match event {
+        DevContainerProgressEvent::LogLine(line) => match line.stream {
+            DevContainerLogStream::Info => proto::RemoteDevContainerLogStream::Info,
+            DevContainerLogStream::Stdout => proto::RemoteDevContainerLogStream::Stdout,
+            DevContainerLogStream::Stderr => proto::RemoteDevContainerLogStream::Stderr,
+        },
+        _ => proto::RemoteDevContainerLogStream::Info,
+    }
+}
+
+fn remote_dev_container_progress_message(event: DevContainerProgressEvent) -> String {
+    match event {
+        DevContainerProgressEvent::StepFailed(_, message) => message,
+        DevContainerProgressEvent::LogLine(line) => line.line,
+        _ => String::new(),
     }
 }
 

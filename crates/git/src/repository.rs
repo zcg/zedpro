@@ -1340,8 +1340,21 @@ impl GitRepository for RealGitRepository {
         let repo = self.repository.clone();
         self.executor
             .spawn(async move {
+                fn is_missing_head(err: &git2::Error) -> bool {
+                    matches!(err.code(), ErrorCode::UnbornBranch | ErrorCode::NotFound)
+                }
+
                 fn logic(repo: &git2::Repository, path: &RepoPath) -> Result<Option<String>> {
-                    let head = repo.head()?.peel_to_tree()?;
+                    let head = match repo.head() {
+                        Ok(head) => head,
+                        Err(err) if is_missing_head(&err) => return Ok(None),
+                        Err(err) => return Err(err.into()),
+                    };
+                    let head = match head.peel_to_tree() {
+                        Ok(head) => head,
+                        Err(err) if is_missing_head(&err) => return Ok(None),
+                        Err(err) => return Err(err.into()),
+                    };
                     // git2 unwraps internally on empty paths or `.`
                     if path.is_empty() {
                         return Err(anyhow!("empty path has no committed text"));
@@ -3654,6 +3667,29 @@ mod tests {
         //         .ok(),
         //     None
         // );
+    }
+
+    #[gpui::test]
+    async fn test_load_committed_text_empty_repo_returns_none(cx: &mut TestAppContext) {
+        disable_git_global_config();
+        cx.executor().allow_parking();
+
+        let repo_dir = tempfile::tempdir().unwrap();
+        git2::Repository::init(repo_dir.path()).unwrap();
+        smol::fs::write(repo_dir.path().join("foo"), "foo")
+            .await
+            .unwrap();
+
+        let repo = RealGitRepository::new(
+            &repo_dir.path().join(".git"),
+            None,
+            Some("git".into()),
+            cx.executor(),
+        )
+        .unwrap();
+
+        let committed_text = repo.load_committed_text(repo_path("foo")).await;
+        assert_eq!(committed_text, None);
     }
 
     #[gpui::test]

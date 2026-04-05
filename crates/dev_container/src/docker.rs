@@ -1,11 +1,18 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use async_trait::async_trait;
+use remote::{DockerHost, SshConnectionOptions, WslConnectionOptions};
 use serde::{Deserialize, Deserializer, Serialize};
 use util::command::Command;
 
 use crate::{
-    command_json::evaluate_json_command, devcontainer_api::DevContainerError,
+    command_json::{evaluate_json_command_with_progress, run_command_with_progress},
+    devcontainer_api::{
+        DevContainerError, DevContainerLogStream, DevContainerProgressCallback, emit_log_line,
+    },
     devcontainer_json::MountDefinition,
 };
 
@@ -31,10 +38,11 @@ pub(crate) struct DockerInspect {
     pub(crate) state: Option<DockerState>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq, Default)]
 pub(crate) struct DockerConfigLabels {
     #[serde(
         rename = "devcontainer.metadata",
+        default,
         deserialize_with = "deserialize_metadata"
     )]
     pub(crate) metadata: Option<Vec<HashMap<String, serde_json_lenient::Value>>>,
@@ -43,6 +51,7 @@ pub(crate) struct DockerConfigLabels {
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct DockerInspectConfig {
+    #[serde(default)]
     pub(crate) labels: DockerConfigLabels,
     #[serde(rename = "User")]
     pub(crate) image_user: Option<String>,
@@ -123,6 +132,8 @@ pub(crate) struct DockerComposeConfig {
 
 pub(crate) struct Docker {
     docker_cli: String,
+    command_host: DockerHost,
+    progress: Option<DevContainerProgressCallback>,
 }
 
 impl DockerInspect {
@@ -132,9 +143,19 @@ impl DockerInspect {
 }
 
 impl Docker {
-    pub(crate) fn new(docker_cli: &str) -> Self {
+    pub(crate) fn new(docker_cli: &str, command_host: DockerHost) -> Self {
+        Self::new_with_progress(docker_cli, command_host, None)
+    }
+
+    pub(crate) fn new_with_progress(
+        docker_cli: &str,
+        command_host: DockerHost,
+        progress: Option<DevContainerProgressCallback>,
+    ) -> Self {
         Self {
             docker_cli: docker_cli.to_string(),
+            command_host,
+            progress,
         }
     }
 
@@ -142,15 +163,38 @@ impl Docker {
         self.docker_cli == "podman"
     }
 
+    fn log_command(&self, command: &Command) {
+        let args = command
+            .get_args()
+            .map(|arg| arg.display().to_string())
+            .collect::<Vec<_>>();
+        let line = if args.is_empty() {
+            format!("$ {}", command.get_program().display())
+        } else {
+            format!("$ {} {}", command.get_program().display(), args.join(" "))
+        };
+        emit_log_line(self.progress.as_ref(), DevContainerLogStream::Info, line);
+    }
+
+    fn build_command(&self) -> Command {
+        docker_host_command(&self.docker_cli, &self.command_host)
+    }
+
+    fn host_path(&self, path: &Path) -> String {
+        format_path_for_docker_host(path, &self.command_host)
+    }
+
     async fn pull_image(&self, image: &String) -> Result<(), DevContainerError> {
-        let mut command = Command::new(&self.docker_cli);
+        let mut command = self.build_command();
         command.args(&["pull", image]);
+        self.log_command(&command);
 
-        let output = command.output().await.map_err(|e| {
-            log::error!("Error pulling image: {e}");
-            DevContainerError::ResourceFetchFailed
-        })?;
-
+        let output = run_command_with_progress(&mut command, self.progress.as_ref())
+            .await
+            .map_err(|e| {
+                log::error!("Error pulling image: {e}");
+                DevContainerError::ResourceFetchFailed
+            })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             log::error!("Non-success result from docker pull: {stderr}");
@@ -160,7 +204,7 @@ impl Docker {
     }
 
     fn create_docker_query_containers(&self, filters: Vec<String>) -> Command {
-        let mut command = Command::new(&self.docker_cli);
+        let mut command = self.build_command();
         command.args(&["ps", "-a"]);
 
         for filter in filters {
@@ -172,16 +216,16 @@ impl Docker {
     }
 
     fn create_docker_inspect(&self, id: &str) -> Command {
-        let mut command = Command::new(&self.docker_cli);
+        let mut command = self.build_command();
         command.args(&["inspect", "--format={{json . }}", id]);
         command
     }
 
     fn create_docker_compose_config_command(&self, config_files: &Vec<PathBuf>) -> Command {
-        let mut command = Command::new(&self.docker_cli);
+        let mut command = self.build_command();
         command.arg("compose");
         for file_path in config_files {
-            command.args(&["-f", &file_path.display().to_string()]);
+            command.args(&["-f", &self.host_path(file_path)]);
         }
         command.args(&["config", "--format", "json"]);
         command
@@ -196,7 +240,8 @@ impl DockerClient for Docker {
 
         let command = self.create_docker_inspect(id);
 
-        let Some(docker_inspect): Option<DockerInspect> = evaluate_json_command(command).await?
+        let Some(docker_inspect): Option<DockerInspect> =
+            evaluate_json_command_with_progress(command, self.progress.as_ref()).await?
         else {
             log::error!("Docker inspect produced no deserializable output");
             return Err(DevContainerError::CommandFailed(self.docker_cli.clone()));
@@ -209,7 +254,7 @@ impl DockerClient for Docker {
         config_files: &Vec<PathBuf>,
     ) -> Result<Option<DockerComposeConfig>, DevContainerError> {
         let command = self.create_docker_compose_config_command(config_files);
-        evaluate_json_command(command).await
+        evaluate_json_command_with_progress(command, self.progress.as_ref()).await
     }
 
     async fn docker_compose_build(
@@ -217,21 +262,23 @@ impl DockerClient for Docker {
         config_files: &Vec<PathBuf>,
         project_name: &str,
     ) -> Result<(), DevContainerError> {
-        let mut command = Command::new(&self.docker_cli);
+        let mut command = self.build_command();
         if !self.is_podman() {
             command.env("DOCKER_BUILDKIT", "1");
         }
         command.args(&["compose", "--project-name", project_name]);
         for docker_compose_file in config_files {
-            command.args(&["-f", &docker_compose_file.display().to_string()]);
+            command.args(&["-f", &self.host_path(docker_compose_file)]);
         }
         command.arg("build");
+        self.log_command(&command);
 
-        let output = command.output().await.map_err(|e| {
-            log::error!("Error running docker compose up: {e}");
-            DevContainerError::CommandFailed(command.get_program().display().to_string())
-        })?;
-
+        let output = run_command_with_progress(&mut command, self.progress.as_ref())
+            .await
+            .map_err(|e| {
+                log::error!("Error running docker compose up: {e}");
+                DevContainerError::CommandFailed(command.get_program().display().to_string())
+            })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             log::error!("Non-success status from docker compose up: {}", stderr);
@@ -250,7 +297,7 @@ impl DockerClient for Docker {
         env: &HashMap<String, String>,
         inner_command: Command,
     ) -> Result<(), DevContainerError> {
-        let mut command = Command::new(&self.docker_cli);
+        let mut command = self.build_command();
 
         command.args(&["exec", "-w", remote_folder, "-u", user]);
 
@@ -272,11 +319,14 @@ impl DockerClient for Docker {
             .collect();
         inner_program_script.append(&mut args);
         command.args(&["-c", &inner_program_script.join(" ")]);
+        self.log_command(&command);
 
-        let output = command.output().await.map_err(|e| {
-            log::error!("Error running command {e} in container exec");
-            DevContainerError::ContainerNotValid(container_id.to_string())
-        })?;
+        let output = run_command_with_progress(&mut command, self.progress.as_ref())
+            .await
+            .map_err(|e| {
+                log::error!("Error running command {e} in container exec");
+                DevContainerError::ContainerNotValid(container_id.to_string())
+            })?;
         if !output.status.success() {
             let std_err = String::from_utf8_lossy(&output.stderr);
             log::error!("Command produced a non-successful output. StdErr: {std_err}");
@@ -287,15 +337,17 @@ impl DockerClient for Docker {
         Ok(())
     }
     async fn start_container(&self, id: &str) -> Result<(), DevContainerError> {
-        let mut command = Command::new(&self.docker_cli);
+        let mut command = self.build_command();
 
         command.args(&["start", id]);
+        self.log_command(&command);
 
-        let output = command.output().await.map_err(|e| {
-            log::error!("Error running docker start: {e}");
-            DevContainerError::CommandFailed(command.get_program().display().to_string())
-        })?;
-
+        let output = run_command_with_progress(&mut command, self.progress.as_ref())
+            .await
+            .map_err(|e| {
+                log::error!("Error running docker start: {e}");
+                DevContainerError::CommandFailed(command.get_program().display().to_string())
+            })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             log::error!("Non-success status from docker start: {stderr}");
@@ -312,11 +364,19 @@ impl DockerClient for Docker {
         filters: Vec<String>,
     ) -> Result<Option<DockerPs>, DevContainerError> {
         let command = self.create_docker_query_containers(filters);
-        evaluate_json_command(command).await
+        evaluate_json_command_with_progress(command, self.progress.as_ref()).await
     }
 
     fn docker_cli(&self) -> String {
         self.docker_cli.clone()
+    }
+
+    fn new_command(&self) -> Command {
+        self.build_command()
+    }
+
+    fn format_path_for_host(&self, path: &Path) -> String {
+        self.host_path(path)
     }
 
     fn supports_compose_buildkit(&self) -> bool {
@@ -350,9 +410,121 @@ pub(crate) trait DockerClient {
         filters: Vec<String>,
     ) -> Result<Option<DockerPs>, DevContainerError>;
     fn supports_compose_buildkit(&self) -> bool;
+    fn new_command(&self) -> Command;
+    fn format_path_for_host(&self, path: &Path) -> String;
     /// This operates as an escape hatch for more custom uses of the docker API.
     /// See DevContainerManifest::create_docker_build as an example
     fn docker_cli(&self) -> String;
+}
+
+pub(crate) fn docker_host_command(docker_cli: &str, command_host: &DockerHost) -> Command {
+    match command_host {
+        DockerHost::Local => Command::new(docker_cli),
+        DockerHost::Ssh(options) => new_ssh_docker_command(docker_cli, options),
+        DockerHost::Wsl(options) => {
+            if should_bridge_wsl_commands() {
+                new_wsl_docker_command(docker_cli, options)
+            } else {
+                Command::new(docker_cli)
+            }
+        }
+    }
+}
+
+pub(crate) fn format_path_for_docker_host(path: &Path, command_host: &DockerHost) -> String {
+    match command_host {
+        DockerHost::Local | DockerHost::Ssh(_) => path.display().to_string(),
+        DockerHost::Wsl(options) => format_path_for_wsl_host(path, options),
+    }
+}
+
+fn new_ssh_docker_command(docker_cli: &str, options: &SshConnectionOptions) -> Command {
+    let mut command = util::command::new_command("ssh");
+    command.current_dir(std::env::temp_dir());
+    command.args(options.additional_args());
+    command.arg(options.ssh_destination());
+    command.arg(docker_cli);
+    command
+}
+
+fn new_wsl_docker_command(docker_cli: &str, options: &WslConnectionOptions) -> Command {
+    let mut command = util::command::new_command("wsl.exe");
+    command.current_dir(std::env::temp_dir());
+    if let Some(user) = &options.user {
+        command.arg("--user").arg(user);
+    }
+    command
+        .arg("--distribution")
+        .arg(&options.distro_name)
+        .arg("--cd")
+        .arg("~")
+        .arg("--exec")
+        .arg(docker_cli);
+    command
+}
+
+#[inline]
+fn should_bridge_wsl_commands() -> bool {
+    cfg!(target_os = "windows")
+}
+
+fn format_path_for_wsl_host(path: &Path, options: &WslConnectionOptions) -> String {
+    let owned = path.to_string_lossy().into_owned();
+    let rewritten = owned
+        .strip_prefix(r"\\?\UNC\")
+        .map(|rest| format!(r"\\{rest}"));
+    let raw = rewritten.as_deref().unwrap_or(&owned);
+    let raw = raw.strip_prefix(r"\\?\").unwrap_or(raw);
+
+    if raw.starts_with('/') {
+        return raw.replace('\\', "/");
+    }
+
+    let raw = raw.replace('/', r"\");
+
+    if let Some(path) = wsl_unc_path_to_posix(&raw, &options.distro_name) {
+        return path;
+    }
+
+    windows_path_to_wsl_mount(&raw).unwrap_or_else(|| raw.replace('\\', "/"))
+}
+
+fn wsl_unc_path_to_posix(path: &str, distro_name: &str) -> Option<String> {
+    let unc = path.strip_prefix(r"\\")?;
+    let mut segments = unc.split('\\');
+    let host = segments.next()?;
+    let share = segments.next()?;
+
+    if !(host.eq_ignore_ascii_case("wsl$") || host.eq_ignore_ascii_case("wsl.localhost")) {
+        return None;
+    }
+    if !share.eq_ignore_ascii_case(distro_name) {
+        return None;
+    }
+
+    let remainder = segments
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+
+    if remainder.is_empty() {
+        Some("/".to_string())
+    } else {
+        Some(format!("/{remainder}"))
+    }
+}
+
+fn windows_path_to_wsl_mount(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    if bytes.len() < 3 || bytes[1] != b':' || bytes[2] != b'\\' {
+        return None;
+    }
+
+    let drive = (bytes[0] as char).to_ascii_lowercase();
+    let mut converted = format!("/mnt/{drive}");
+    converted.push('/');
+    converted.push_str(&path[3..].replace('\\', "/"));
+    Some(converted)
 }
 
 fn deserialize_metadata<'de, D>(
@@ -410,21 +582,24 @@ mod test {
     use std::{
         collections::HashMap,
         ffi::OsStr,
+        path::Path,
         process::{ExitStatus, Output},
     };
+
+    use remote::{DockerHost, SshConnectionOptions, WslConnectionOptions};
 
     use crate::{
         command_json::deserialize_json_output,
         devcontainer_json::MountDefinition,
         docker::{
             Docker, DockerComposeConfig, DockerComposeService, DockerComposeVolume, DockerInspect,
-            DockerPs, get_remote_dir_from_config,
+            DockerPs, format_path_for_docker_host, get_remote_dir_from_config,
         },
     };
 
     #[test]
     fn should_create_docker_inspect_command() {
-        let docker = Docker::new("docker");
+        let docker = Docker::new("docker", DockerHost::Local);
         let given_id = "given_docker_id";
 
         let command = docker.create_docker_inspect(given_id);
@@ -437,6 +612,96 @@ mod test {
                 OsStr::new(given_id)
             ]
         )
+    }
+
+    #[test]
+    fn should_create_ssh_docker_inspect_command() {
+        let docker = Docker::new(
+            "docker",
+            DockerHost::Ssh(SshConnectionOptions {
+                host: "ssh.example.com".into(),
+                username: Some("arch".to_string()),
+                port: Some(2222),
+                args: Some(vec!["-J".to_string(), "jumpbox".to_string()]),
+                ..Default::default()
+            }),
+        );
+
+        let command = docker.create_docker_inspect("container-id");
+
+        assert_eq!(command.get_program().to_string_lossy(), "ssh".to_string());
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![
+                OsStr::new("-J"),
+                OsStr::new("jumpbox"),
+                OsStr::new("-p"),
+                OsStr::new("2222"),
+                OsStr::new("arch@ssh.example.com"),
+                OsStr::new("docker"),
+                OsStr::new("inspect"),
+                OsStr::new("--format={{json . }}"),
+                OsStr::new("container-id"),
+            ]
+        );
+    }
+
+    #[test]
+    fn should_format_unc_wsl_path_for_wsl_docker_host() {
+        let formatted = format_path_for_docker_host(
+            Path::new(r"\\wsl.localhost\Arch\home\arch\project\.devcontainer\devcontainer.json"),
+            &DockerHost::Wsl(WslConnectionOptions {
+                distro_name: "Arch".to_string(),
+                user: None,
+            }),
+        );
+
+        assert_eq!(
+            formatted,
+            "/home/arch/project/.devcontainer/devcontainer.json"
+        );
+    }
+
+    #[test]
+    fn should_format_unc_wsl_path_for_wsl_docker_host_case_insensitively() {
+        let formatted = format_path_for_docker_host(
+            Path::new(r"\\wsl.localhost\arch\home\arch\project\.devcontainer"),
+            &DockerHost::Wsl(WslConnectionOptions {
+                distro_name: "Arch".to_string(),
+                user: None,
+            }),
+        );
+
+        assert_eq!(formatted, "/home/arch/project/.devcontainer");
+    }
+
+    #[test]
+    fn should_format_wsl_dollar_unc_path_for_wsl_docker_host() {
+        let formatted = format_path_for_docker_host(
+            Path::new(r"\\wsl$\ARCH\home\arch\project"),
+            &DockerHost::Wsl(WslConnectionOptions {
+                distro_name: "Arch".to_string(),
+                user: None,
+            }),
+        );
+
+        assert_eq!(formatted, "/home/arch/project");
+    }
+
+    #[test]
+    fn should_format_windows_drive_path_for_wsl_docker_host() {
+        let formatted = format_path_for_docker_host(
+            Path::new(r"C:\Users\zcg\AppData\Local\Temp\devcontainer-zed"),
+            &DockerHost::Wsl(WslConnectionOptions {
+                distro_name: "Arch".to_string(),
+                user: None,
+            }),
+        );
+
+        assert_eq!(
+            formatted,
+            "/mnt/c/Users/zcg/AppData/Local/Temp/devcontainer-zed"
+        );
     }
 
     #[test]
@@ -894,5 +1159,33 @@ mod test {
         };
 
         assert_eq!(docker_compose_config, expected_config);
+    }
+
+    #[test]
+    fn should_deserialize_docker_inspect_without_devcontainer_metadata() {
+        let given_config = r#"
+    {
+      "Id": "sha256:test",
+      "Config": {
+        "Labels": {
+          "org.opencontainers.image.ref.name": "rust"
+        },
+        "User": "root",
+        "Env": ["PATH=/usr/local/bin"]
+      },
+      "Mounts": [],
+      "State": {
+        "Running": true
+      }
+    }
+        "#;
+
+        let config = serde_json_lenient::from_str::<DockerInspect>(given_config).unwrap();
+
+        assert_eq!(config.id, "sha256:test");
+        assert_eq!(config.config.image_user.as_deref(), Some("root"));
+        assert!(config.config.labels.metadata.is_none());
+        assert_eq!(config.config.env, vec!["PATH=/usr/local/bin".to_string()]);
+        assert!(config.is_running());
     }
 }
