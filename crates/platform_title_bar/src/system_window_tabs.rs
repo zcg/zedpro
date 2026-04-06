@@ -228,7 +228,7 @@ impl SystemWindowTabs {
         let settings = ItemSettings::get_global(cx);
         let close_side = &settings.close_position;
         let show_close_button = &settings.show_close_button;
-        let islands_style = false;
+        let islands_style = WorkspaceSettings::get_global(cx).islands_style;
 
         let rem_size = window.rem_size();
         let width = self.measured_tab_width.max(rem_size * 10);
@@ -830,7 +830,7 @@ impl Render for SystemWindowTabs {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let workspace_settings = WorkspaceSettings::get_global(cx);
         let use_system_window_tabs = workspace_settings.use_system_window_tabs;
-        let islands_style = false;
+        let islands_style = workspace_settings.islands_style;
         let strip_background_color = if islands_style {
             workspace::material_panel_shell_color(cx.theme().colors().tab_bar_background, cx)
         } else if cfg!(target_os = "windows") {

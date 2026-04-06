@@ -256,16 +256,24 @@ impl MultiWorkspace {
     }
 
     pub fn new(workspace: Entity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut was_use_system_window_tabs =
-            WorkspaceSettings::get_global(cx).use_system_window_tabs;
+        let initial_settings = WorkspaceSettings::get_global(cx);
+        let mut was_use_system_window_tabs = initial_settings.use_system_window_tabs;
+        let mut was_islands_style = initial_settings.islands_style;
 
         let window_tab_settings_subscription = cx.observe_global::<SettingsStore>(move |_, cx| {
-            let use_system_window_tabs = WorkspaceSettings::get_global(cx).use_system_window_tabs;
-            if use_system_window_tabs == was_use_system_window_tabs {
+            let settings = WorkspaceSettings::get_global(cx);
+            let use_system_window_tabs = settings.use_system_window_tabs;
+            let islands_style = settings.islands_style;
+            let use_system_window_tabs_changed =
+                use_system_window_tabs != was_use_system_window_tabs;
+            let islands_style_changed = islands_style != was_islands_style;
+
+            if !use_system_window_tabs_changed && !islands_style_changed {
                 return;
             }
 
             was_use_system_window_tabs = use_system_window_tabs;
+            was_islands_style = islands_style;
             cx.notify();
         });
 
