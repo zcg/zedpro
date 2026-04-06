@@ -10,8 +10,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash as _, Hasher as _};
 use theme_settings::ThemeSettings;
 use ui::{
-    Color, ContextMenu, DynamicSpacing, IconButton, IconButtonShape, IconName, IconSize, Label,
-    LabelSize, Tab, h_flex, prelude::*, right_click_menu,
+    ButtonStyle, Color, ContextMenu, DynamicSpacing, IconButton, IconButtonShape, IconName,
+    IconSize, Label, LabelSize, Tab, h_flex, prelude::*, right_click_menu,
 };
 use workspace::{
     CloseWindow, ItemSettings, MultiWorkspace, Workspace, WorkspaceSettings,
@@ -1175,12 +1175,15 @@ impl Render for SystemWindowTabs {
             .child(
                 h_flex()
                     .h_full()
+                    .bg(inactive_background_color)
                     .px(DynamicSpacing::Base06.rems(cx))
                     .border_t_1()
                     .border_l_1()
                     .border_color(cx.theme().colors().border)
                     .child(
                         IconButton::new("plus", IconName::Plus)
+                            .shape(IconButtonShape::Square)
+                            .style(ButtonStyle::Transparent)
                             .icon_size(IconSize::Small)
                             .icon_color(Color::Muted)
                             .on_click(|_event, window, cx| {

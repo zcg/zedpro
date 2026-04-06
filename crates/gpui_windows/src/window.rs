@@ -1187,11 +1187,6 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn merge_all_windows(&self) {
-        if let Some(mut callback) = self.state.callbacks.merge_all_windows.take() {
-            callback();
-            self.state.callbacks.merge_all_windows.set(Some(callback));
-        }
-
         let inner = self.0.clone();
         self.0
             .executor
@@ -1200,6 +1195,10 @@ impl PlatformWindow for WindowsWindow {
                     return;
                 };
 
+                // Windows 的系统 tab 是我们自己模拟的，不存在类似 macOS 的原生 regroup 回调。
+                // 这里如果再触发 gpui 层注册的 merge 回调，会重新回到
+                // `SystemWindowTabController::merge_all_windows_and_sync_platform`，
+                // 形成控制器 -> 平台 -> 控制器 的递归链。
                 // Ensure every window uses the merged identifier, so our platform coordinator and the
                 // SystemWindowTabController converge on the same grouping.
                 for hwnd in inner.tab_coordinator.all_windows() {
@@ -1220,14 +1219,6 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn move_tab_to_new_window(&self) {
-        if let Some(mut callback) = self.state.callbacks.move_tab_to_new_window.take() {
-            callback();
-            self.state
-                .callbacks
-                .move_tab_to_new_window
-                .set(Some(callback));
-        }
-
         let inner = self.0.clone();
         self.0
             .executor
@@ -1236,6 +1227,8 @@ impl PlatformWindow for WindowsWindow {
                 else {
                     return;
                 };
+                // 同上：Windows 没有原生“把当前窗口 tab 拖成独立窗口”的系统回调。
+                // 这里的调用来自控制器发起的平台同步，不能再次回调控制器，否则会递归。
                 inner.set_tabbing_identifier(Some(new_identifier));
             })
             .detach();
