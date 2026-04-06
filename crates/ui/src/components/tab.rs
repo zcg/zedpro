@@ -33,6 +33,7 @@ pub enum TabCloseSide {
 pub struct Tab {
     div: Stateful<Div>,
     selected: bool,
+    floating: bool,
     position: TabPosition,
     close_side: TabCloseSide,
     start_slot: Option<AnyElement>,
@@ -48,6 +49,7 @@ impl Tab {
                 .id(id.clone())
                 .debug_selector(|| format!("TAB-{}", id)),
             selected: false,
+            floating: false,
             position: TabPosition::First,
             close_side: TabCloseSide::End,
             start_slot: None,
@@ -63,6 +65,11 @@ impl Tab {
 
     pub fn close_side(mut self, close_side: TabCloseSide) -> Self {
         self.close_side = close_side;
+        self
+    }
+
+    pub fn floating(mut self, floating: bool) -> Self {
+        self.floating = floating;
         self
     }
 
@@ -109,6 +116,7 @@ impl ParentElement for Tab {
 impl RenderOnce for Tab {
     #[allow(refining_impl_trait)]
     fn render(self, _: &mut Window, cx: &mut App) -> Stateful<Div> {
+        let floating = self.floating;
         let (text_color, tab_bg, _tab_hover_bg, _tab_active_bg) = match self.selected {
             false => (
                 cx.theme().colors().text_muted,
@@ -141,42 +149,68 @@ impl RenderOnce for Tab {
             }
         };
 
-        self.div
-            .h(Tab::container_height(cx))
-            .bg(tab_bg)
-            .border_color(cx.theme().colors().border)
-            .map(|this| match self.position {
-                TabPosition::First => {
-                    if self.selected {
-                        this.pl_px().border_r_1().pb_px()
-                    } else {
-                        this.pl_px().pr_px().border_b_1()
-                    }
-                }
-                TabPosition::Last => {
-                    if self.selected {
-                        this.border_l_1().border_r_1().pb_px()
-                    } else {
-                        this.pl_px().border_b_1().border_r_1()
-                    }
-                }
-                TabPosition::Middle(Ordering::Equal) => this.border_l_1().border_r_1().pb_px(),
-                TabPosition::Middle(Ordering::Less) => this.border_l_1().pr_px().border_b_1(),
-                TabPosition::Middle(Ordering::Greater) => this.border_r_1().pl_px().border_b_1(),
-            })
-            .cursor_pointer()
-            .child(
+        let tab = self.div.h(Tab::container_height(cx)).cursor_pointer();
+
+        if floating {
+            let border_color = if self.selected {
+                cx.theme().colors().border
+            } else {
+                cx.theme().colors().border_variant
+            };
+
+            tab.px(px(3.)).py(px(2.)).child(
                 h_flex()
                     .group("")
                     .relative()
-                    .h(Tab::content_height(cx))
-                    .px(DynamicSpacing::Base04.px(cx))
+                    .h_full()
+                    .px(DynamicSpacing::Base06.px(cx))
                     .gap(DynamicSpacing::Base04.rems(cx))
                     .text_color(text_color)
+                    .bg(tab_bg)
+                    .border_1()
+                    .border_color(border_color)
+                    .rounded(px(10.))
                     .child(start_slot)
                     .children(self.children)
                     .child(end_slot),
             )
+        } else {
+            tab.bg(tab_bg)
+                .border_color(cx.theme().colors().border)
+                .map(|this| match self.position {
+                    TabPosition::First => {
+                        if self.selected {
+                            this.pl_px().border_r_1().pb_px()
+                        } else {
+                            this.pl_px().pr_px().border_b_1()
+                        }
+                    }
+                    TabPosition::Last => {
+                        if self.selected {
+                            this.border_l_1().border_r_1().pb_px()
+                        } else {
+                            this.pl_px().border_b_1().border_r_1()
+                        }
+                    }
+                    TabPosition::Middle(Ordering::Equal) => this.border_l_1().border_r_1().pb_px(),
+                    TabPosition::Middle(Ordering::Less) => this.border_l_1().pr_px().border_b_1(),
+                    TabPosition::Middle(Ordering::Greater) => {
+                        this.border_r_1().pl_px().border_b_1()
+                    }
+                })
+                .child(
+                    h_flex()
+                        .group("")
+                        .relative()
+                        .h(Tab::content_height(cx))
+                        .px(DynamicSpacing::Base04.px(cx))
+                        .gap(DynamicSpacing::Base04.rems(cx))
+                        .text_color(text_color)
+                        .child(start_slot)
+                        .children(self.children)
+                        .child(end_slot),
+                )
+        }
     }
 }
 

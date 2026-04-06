@@ -8100,6 +8100,7 @@ impl Render for Workspace {
             .map(|(_, notification)| notification.entity_id())
             .collect::<Vec<_>>();
         let bottom_dock_layout = WorkspaceSettings::get_global(cx).bottom_dock_layout;
+        let islands_style = WorkspaceSettings::get_global(cx).islands_style;
 
         div()
             .relative()
@@ -8261,20 +8262,54 @@ impl Render for Workspace {
                                                                             )
                                                                         },
                                                                     )
-                                                                    .child(self.center.render(
-                                                                        self.zoomed.as_ref(),
-                                                                        &PaneRenderContext {
-                                                                            follower_states:
-                                                                                &self.follower_states,
-                                                                            active_call: self.active_call(),
-                                                                            active_pane: &self.active_pane,
-                                                                            app_state: &self.app_state,
-                                                                            project: &self.project,
-                                                                            workspace: &self.weak_self,
-                                                                        },
-                                                                        window,
-                                                                        cx,
-                                                                    ))
+                                                                    .child(if islands_style {
+                                                                        div()
+                                                                            .flex()
+                                                                            .flex_1()
+                                                                            .size_full()
+                                                                            .overflow_hidden()
+                                                                            .p(px(3.))
+                                                                            .child(
+                                                                                div()
+                                                                                    .size_full()
+                                                                                    .overflow_hidden()
+                                                                                    .rounded(px(10.))
+                                                                                    .border_1()
+                                                                                    .border_color(colors.border)
+                                                                                    .child(self.center.render(
+                                                                                        self.zoomed.as_ref(),
+                                                                                        &PaneRenderContext {
+                                                                                            follower_states:
+                                                                                                &self.follower_states,
+                                                                                            active_call: self.active_call(),
+                                                                                            active_pane: &self.active_pane,
+                                                                                            app_state: &self.app_state,
+                                                                                            project: &self.project,
+                                                                                            workspace: &self.weak_self,
+                                                                                        },
+                                                                                        window,
+                                                                                        cx,
+                                                                                    )),
+                                                                            )
+                                                                            .into_any_element()
+                                                                    } else {
+                                                                        self.center
+                                                                            .render(
+                                                                                self.zoomed.as_ref(),
+                                                                                &PaneRenderContext {
+                                                                                    follower_states:
+                                                                                        &self.follower_states,
+                                                                                    active_call: self.active_call(),
+                                                                                    active_pane: &self.active_pane,
+                                                                                    app_state: &self.app_state,
+                                                                                    project: &self.project,
+                                                                                    workspace: &self.weak_self,
+                                                                                },
+                                                                                window,
+                                                                                cx,
+                                                                            )
+                                                                            .into_any_element()
+                                                                    })
                                                                     .when_some(
                                                                         paddings.1,
                                                                         |this, p| {
@@ -8327,20 +8362,54 @@ impl Render for Workspace {
                                                                         h_flex()
                                                                             .flex_1()
                                                                             .when_some(paddings.0, |this, p| this.child(p.border_r_1()))
-                                                                            .child(self.center.render(
-                                                                                self.zoomed.as_ref(),
-                                                                                &PaneRenderContext {
-                                                                                    follower_states:
-                                                                                        &self.follower_states,
-                                                                                    active_call: self.active_call(),
-                                                                                    active_pane: &self.active_pane,
-                                                                                    app_state: &self.app_state,
-                                                                                    project: &self.project,
-                                                                                    workspace: &self.weak_self,
-                                                                                },
-                                                                                window,
-                                                                                cx,
-                                                                            ))
+                                                                            .child(if islands_style {
+                                                                                div()
+                                                                                    .flex()
+                                                                                    .flex_1()
+                                                                                    .size_full()
+                                                                                    .overflow_hidden()
+                                                                                    .p(px(3.))
+                                                                                    .child(
+                                                                                        div()
+                                                                                            .size_full()
+                                                                                            .overflow_hidden()
+                                                                                            .rounded(px(10.))
+                                                                                            .border_1()
+                                                                                            .border_color(colors.border)
+                                                                                            .child(self.center.render(
+                                                                                                self.zoomed.as_ref(),
+                                                                                                &PaneRenderContext {
+                                                                                                    follower_states:
+                                                                                                        &self.follower_states,
+                                                                                                    active_call: self.active_call(),
+                                                                                                    active_pane: &self.active_pane,
+                                                                                                    app_state: &self.app_state,
+                                                                                                    project: &self.project,
+                                                                                                    workspace: &self.weak_self,
+                                                                                                },
+                                                                                                window,
+                                                                                                cx,
+                                                                                            )),
+                                                                                    )
+                                                                                    .into_any_element()
+                                                                            } else {
+                                                                                self.center
+                                                                                    .render(
+                                                                                        self.zoomed.as_ref(),
+                                                                                        &PaneRenderContext {
+                                                                                            follower_states:
+                                                                                                &self.follower_states,
+                                                                                            active_call: self.active_call(),
+                                                                                            active_pane: &self.active_pane,
+                                                                                            app_state: &self.app_state,
+                                                                                            project: &self.project,
+                                                                                            workspace: &self.weak_self,
+                                                                                        },
+                                                                                        window,
+                                                                                        cx,
+                                                                                    )
+                                                                                    .into_any_element()
+                                                                            })
                                                                             .when_some(paddings.1, |this, p| this.child(p.border_l_1())),
                                                                     )
                                                             )
@@ -8390,20 +8459,54 @@ impl Render for Workspace {
                                                                         h_flex()
                                                                             .flex_1()
                                                                             .when_some(paddings.0, |this, p| this.child(p.border_r_1()))
-                                                                            .child(self.center.render(
-                                                                                self.zoomed.as_ref(),
-                                                                                &PaneRenderContext {
-                                                                                    follower_states:
-                                                                                        &self.follower_states,
-                                                                                    active_call: self.active_call(),
-                                                                                    active_pane: &self.active_pane,
-                                                                                    app_state: &self.app_state,
-                                                                                    project: &self.project,
-                                                                                    workspace: &self.weak_self,
-                                                                                },
-                                                                                window,
-                                                                                cx,
-                                                                            ))
+                                                                            .child(if islands_style {
+                                                                                div()
+                                                                                    .flex()
+                                                                                    .flex_1()
+                                                                                    .size_full()
+                                                                                    .overflow_hidden()
+                                                                                    .p(px(3.))
+                                                                                    .child(
+                                                                                        div()
+                                                                                            .size_full()
+                                                                                            .overflow_hidden()
+                                                                                            .rounded(px(10.))
+                                                                                            .border_1()
+                                                                                            .border_color(colors.border)
+                                                                                            .child(self.center.render(
+                                                                                                self.zoomed.as_ref(),
+                                                                                                &PaneRenderContext {
+                                                                                                    follower_states:
+                                                                                                        &self.follower_states,
+                                                                                                    active_call: self.active_call(),
+                                                                                                    active_pane: &self.active_pane,
+                                                                                                    app_state: &self.app_state,
+                                                                                                    project: &self.project,
+                                                                                                    workspace: &self.weak_self,
+                                                                                                },
+                                                                                                window,
+                                                                                                cx,
+                                                                                            )),
+                                                                                    )
+                                                                                    .into_any_element()
+                                                                            } else {
+                                                                                self.center
+                                                                                    .render(
+                                                                                        self.zoomed.as_ref(),
+                                                                                        &PaneRenderContext {
+                                                                                            follower_states:
+                                                                                                &self.follower_states,
+                                                                                            active_call: self.active_call(),
+                                                                                            active_pane: &self.active_pane,
+                                                                                            app_state: &self.app_state,
+                                                                                            project: &self.project,
+                                                                                            workspace: &self.weak_self,
+                                                                                        },
+                                                                                        window,
+                                                                                        cx,
+                                                                                    )
+                                                                                    .into_any_element()
+                                                                            })
                                                                             .when_some(paddings.1, |this, p| this.child(p.border_l_1())),
                                                                     )
                                                             )
@@ -8439,20 +8542,54 @@ impl Render for Workspace {
                                                             .when_some(paddings.0, |this, p| {
                                                                 this.child(p.border_r_1())
                                                             })
-                                                            .child(self.center.render(
-                                                                self.zoomed.as_ref(),
-                                                                &PaneRenderContext {
-                                                                    follower_states:
-                                                                        &self.follower_states,
-                                                                    active_call: self.active_call(),
-                                                                    active_pane: &self.active_pane,
-                                                                    app_state: &self.app_state,
-                                                                    project: &self.project,
-                                                                    workspace: &self.weak_self,
-                                                                },
-                                                                window,
-                                                                cx,
-                                                            ))
+                                                            .child(if islands_style {
+                                                                div()
+                                                                    .flex()
+                                                                    .flex_1()
+                                                                    .size_full()
+                                                                    .overflow_hidden()
+                                                                    .p(px(3.))
+                                                                    .child(
+                                                                        div()
+                                                                            .size_full()
+                                                                            .overflow_hidden()
+                                                                            .rounded(px(10.))
+                                                                            .border_1()
+                                                                            .border_color(colors.border)
+                                                                            .child(self.center.render(
+                                                                                self.zoomed.as_ref(),
+                                                                                &PaneRenderContext {
+                                                                                    follower_states:
+                                                                                        &self.follower_states,
+                                                                                    active_call: self.active_call(),
+                                                                                    active_pane: &self.active_pane,
+                                                                                    app_state: &self.app_state,
+                                                                                    project: &self.project,
+                                                                                    workspace: &self.weak_self,
+                                                                                },
+                                                                                window,
+                                                                                cx,
+                                                                            )),
+                                                                    )
+                                                                    .into_any_element()
+                                                            } else {
+                                                                self.center
+                                                                    .render(
+                                                                        self.zoomed.as_ref(),
+                                                                        &PaneRenderContext {
+                                                                            follower_states:
+                                                                                &self.follower_states,
+                                                                            active_call: self.active_call(),
+                                                                            active_pane: &self.active_pane,
+                                                                            app_state: &self.app_state,
+                                                                            project: &self.project,
+                                                                            workspace: &self.weak_self,
+                                                                        },
+                                                                        window,
+                                                                        cx,
+                                                                    )
+                                                                    .into_any_element()
+                                                            })
                                                             .when_some(paddings.1, |this, p| {
                                                                 this.child(p.border_l_1())
                                                             }),

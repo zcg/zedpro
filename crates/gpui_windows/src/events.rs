@@ -379,6 +379,9 @@ impl WindowsWindowInner {
         self.state.size_move_started_maximized.set(false);
         self.state.restore_from_minimized.take();
         self.state.input_handler.take();
+        if let Ok(mut renderer) = self.state.renderer.try_borrow_mut() {
+            renderer.set_interactive_resize_presenting(false);
+        }
         self.state.callbacks.clear_for_destroy();
         if was_in_size_move_loop {
             unsafe {

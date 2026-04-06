@@ -10,7 +10,7 @@ use gpui::{
     Action, AnyView, App, Axis, Context, Corner, Entity, EntityId, EventEmitter, FocusHandle,
     Focusable, IntoElement, KeyContext, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement,
     Render, SharedString, StyleRefinement, Styled, Subscription, WeakEntity, Window, deferred, div,
-    px,
+    hsla, px,
 };
 use serde::{Deserialize, Serialize};
 use settings::{Settings, SettingsStore};
@@ -1027,16 +1027,13 @@ impl Render for Dock {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dispatch_context = Self::dispatch_context();
         if let Some(entry) = self.visible_entry() {
+            let workspace_settings = WorkspaceSettings::get_global(cx);
+            let islands_style = workspace_settings.islands_style;
             let dock_background = if crate::has_custom_window_background_material(cx)
-                && entry.panel.persistent_name() == "ProjectPanel"
-            {
-                crate::material_panel_shell_color(cx.theme().colors().panel_background, cx)
-            } else if crate::has_custom_window_background_material(cx)
                 && matches!(
                     entry.panel.persistent_name(),
-                    "AgentPanel" | "GitPanel" | "DebugPanel"
-                )
-            {
+                    "ProjectPanel" | "AgentPanel" | "GitPanel" | "DebugPanel"
+                ) {
                 crate::material_panel_backdrop_color(cx.theme().colors().panel_background, cx)
             } else if crate::has_custom_window_background_material(cx) {
                 cx.theme().colors().ghost_element_background
@@ -1114,19 +1111,26 @@ impl Render for Dock {
                 .track_focus(&self.focus_handle(cx))
                 .focus_follows_mouse(self.focus_follows_mouse, cx)
                 .flex()
-                .bg(dock_background)
+                .bg(if islands_style {
+                    hsla(0., 0., 0., 0.)
+                } else {
+                    dock_background
+                })
                 .border_color(cx.theme().colors().border)
                 .overflow_hidden()
+                .relative()
+                .when(islands_style, |this| this.p(px(3.)))
                 .map(|this| match self.position().axis() {
                     // Width and height are always set on the workspace wrapper in
                     // render_dock, so fill whatever space the wrapper provides.
                     Axis::Horizontal => this.w_full().h_full().flex_row(),
                     Axis::Vertical => this.h_full().w_full().flex_col(),
                 })
-                .map(|this| match self.position() {
-                    DockPosition::Left => this.border_r_1(),
-                    DockPosition::Right => this.border_l_1(),
-                    DockPosition::Bottom => this.border_t_1(),
+                .map(|this| match (islands_style, self.position()) {
+                    (true, _) => this,
+                    (false, DockPosition::Left) => this.border_r_1(),
+                    (false, DockPosition::Right) => this.border_l_1(),
+                    (false, DockPosition::Bottom) => this.border_t_1(),
                 })
                 .child(
                     div()
@@ -1134,12 +1138,28 @@ impl Render for Dock {
                             Axis::Horizontal => this.w_full().h_full(),
                             Axis::Vertical => this.h_full().w_full(),
                         })
-                        .child(
+                        .child(if islands_style {
+                            div()
+                                .size_full()
+                                .overflow_hidden()
+                                .rounded(px(10.))
+                                .border_1()
+                                .border_color(cx.theme().colors().border)
+                                .bg(dock_background)
+                                .child(
+                                    entry
+                                        .panel
+                                        .to_any()
+                                        .cached(StyleRefinement::default().v_flex().size_full()),
+                                )
+                                .into_any_element()
+                        } else {
                             entry
                                 .panel
                                 .to_any()
-                                .cached(StyleRefinement::default().v_flex().size_full()),
-                        ),
+                                .cached(StyleRefinement::default().v_flex().size_full())
+                                .into_any_element()
+                        }),
                 )
                 .when(self.resizable(cx), |this| {
                     this.child(create_resize_handle())

@@ -140,6 +140,13 @@ impl WindowRenderer {
         }
     }
 
+    pub(crate) fn prepare_for_destroy(&mut self) -> Result<()> {
+        match self {
+            Self::Direct3d11(renderer) => renderer.prepare_for_destroy(),
+            Self::Direct3d12(renderer) => renderer.prepare_for_destroy(),
+        }
+    }
+
     pub(crate) fn check_composition_device_state(&self) -> Result<bool> {
         match self {
             Self::Direct3d11(renderer) => renderer.check_composition_device_state(),
@@ -900,6 +907,10 @@ impl DirectXRenderer {
 
     pub(crate) fn mark_drawable(&mut self) {
         self.skip_draws = false;
+    }
+
+    pub(crate) fn prepare_for_destroy(&mut self) -> Result<()> {
+        Ok(())
     }
 }
 

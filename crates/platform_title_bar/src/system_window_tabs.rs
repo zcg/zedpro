@@ -228,6 +228,7 @@ impl SystemWindowTabs {
         let settings = ItemSettings::get_global(cx);
         let close_side = &settings.close_position;
         let show_close_button = &settings.show_close_button;
+        let islands_style = false;
 
         let rem_size = window.rem_size();
         let width = self.measured_tab_width.max(rem_size * 10);
@@ -254,8 +255,9 @@ impl SystemWindowTabs {
             .relative()
             .px(DynamicSpacing::Base16.px(cx))
             .justify_center()
-            .border_l_1()
-            .border_color(cx.theme().colors().border)
+            .when(!islands_style, |this| {
+                this.border_l_1().border_color(cx.theme().colors().border)
+            })
             .cursor_pointer()
             .on_drag(
                 DraggedWindowTab {
@@ -616,7 +618,13 @@ impl SystemWindowTabs {
                 })
             });
 
-        let active_border_color = if is_active && show_active_border {
+        let active_border_color = if islands_style {
+            if is_active {
+                cx.theme().colors().border_variant
+            } else {
+                cx.theme().colors().border.opacity(0.6)
+            }
+        } else if is_active && show_active_border {
             Self::pseudo_random_active_border_color(item.id, cx)
         } else {
             cx.theme().colors().border_transparent
@@ -625,18 +633,28 @@ impl SystemWindowTabs {
             .flex_1()
             .h_full()
             .min_w(rem_size * 10)
-            .when(show_single_tab_surface, |this| {
-                this.bg(inactive_background_color)
-            })
-            .when(is_active, |this| this.bg(active_background_color))
+            .when(islands_style, |this| this.px(px(2.)).py(px(3.)))
+            .when(!islands_style, |this| this.p(px(1.)))
             // Reserve 1px inset on all sides so the top border stays visible in
             // the Windows title bar region instead of being clipped.
-            .p(px(1.))
             .child(
                 div()
                     .size_full()
                     .border_1()
                     .border_color(active_border_color)
+                    .when(islands_style, |this| {
+                        this.rounded(px(10.)).bg(if is_active {
+                            active_background_color
+                        } else {
+                            inactive_background_color
+                        })
+                    })
+                    .when(!islands_style && show_single_tab_surface, |this| {
+                        this.bg(inactive_background_color)
+                    })
+                    .when(!islands_style && is_active, |this| {
+                        this.bg(active_background_color)
+                    })
                     .child(menu),
             )
     }
@@ -810,18 +828,26 @@ impl SystemWindowTabs {
 
 impl Render for SystemWindowTabs {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let use_system_window_tabs = WorkspaceSettings::get_global(cx).use_system_window_tabs;
-        let strip_background_color = if cfg!(target_os = "windows") {
+        let workspace_settings = WorkspaceSettings::get_global(cx);
+        let use_system_window_tabs = workspace_settings.use_system_window_tabs;
+        let islands_style = false;
+        let strip_background_color = if islands_style {
+            workspace::material_panel_shell_color(cx.theme().colors().tab_bar_background, cx)
+        } else if cfg!(target_os = "windows") {
             hsla(0., 0., 0., 0.)
         } else {
             cx.theme().colors().tab_bar_background
         };
-        let active_background_color = if cfg!(target_os = "windows") {
+        let active_background_color = if islands_style {
+            workspace::material_root_surface_color(cx.theme().colors().editor_background, cx)
+        } else if cfg!(target_os = "windows") {
             cx.theme().colors().tab_active_background
         } else {
             cx.theme().colors().title_bar_background
         };
-        let inactive_background_color = if cfg!(target_os = "windows") {
+        let inactive_background_color = if islands_style {
+            workspace::material_panel_shell_color(cx.theme().colors().tab_inactive_background, cx)
+        } else if cfg!(target_os = "windows") {
             cx.theme().colors().tab_inactive_background
         } else {
             cx.theme().colors().tab_bar_background
@@ -958,7 +984,14 @@ impl Render for SystemWindowTabs {
         let tab_bar = h_flex()
             .w_full()
             .h(Tab::container_height(cx))
-            .bg(strip_background_color);
+            .bg(if islands_style {
+                hsla(0., 0., 0., 0.)
+            } else {
+                strip_background_color
+            })
+            .when(islands_style, |this| {
+                this.px(px(8.)).py(px(2.)).items_center()
+            });
 
         #[cfg(target_os = "windows")]
         let tab_bar = tab_bar.on_drag_move::<DraggedWindowTab>(cx.listener(
@@ -1094,9 +1127,19 @@ impl Render for SystemWindowTabs {
             .child(
                 h_flex()
                     .id("window tabs")
+                    .flex_1()
+                    .min_w_0()
                     .w_full()
                     .h(Tab::container_height(cx))
                     .bg(strip_background_color)
+                    .when(islands_style, |this| {
+                        this.gap_1()
+                            .items_center()
+                            .px(px(4.))
+                            .rounded(px(10.))
+                            .border_1()
+                            .border_color(cx.theme().colors().border_variant)
+                    })
                     .drag_over::<DraggedWindowTab>(move |element, _dragged_tab, _, cx| {
                         element
                             .bg(cx.theme().colors().drop_target_background)
@@ -1170,32 +1213,58 @@ impl Render for SystemWindowTabs {
                         )
                         .absolute()
                         .size_full(),
-                    ),
+                    )
+                    .when(islands_style, |this| {
+                        this.child(
+                            div()
+                                .h(Tab::content_height(cx))
+                                .flex()
+                                .items_center()
+                                .px(DynamicSpacing::Base04.rems(cx))
+                                .child(
+                                    IconButton::new("plus", IconName::Plus)
+                                        .shape(IconButtonShape::Square)
+                                        .style(ButtonStyle::Transparent)
+                                        .icon_size(IconSize::Small)
+                                        .icon_color(Color::Muted)
+                                        .on_click(|_event, window, cx| {
+                                            window.dispatch_action(
+                                                Box::new(zed_actions::OpenRecent {
+                                                    create_new_window: false,
+                                                }),
+                                                cx,
+                                            );
+                                        }),
+                                ),
+                        )
+                    }),
             )
-            .child(
-                h_flex()
-                    .h_full()
-                    .bg(inactive_background_color)
-                    .px(DynamicSpacing::Base06.rems(cx))
-                    .border_t_1()
-                    .border_l_1()
-                    .border_color(cx.theme().colors().border)
-                    .child(
-                        IconButton::new("plus", IconName::Plus)
-                            .shape(IconButtonShape::Square)
-                            .style(ButtonStyle::Transparent)
-                            .icon_size(IconSize::Small)
-                            .icon_color(Color::Muted)
-                            .on_click(|_event, window, cx| {
-                                window.dispatch_action(
-                                    Box::new(zed_actions::OpenRecent {
-                                        create_new_window: false,
-                                    }),
-                                    cx,
-                                );
-                            }),
-                    ),
-            )
+            .when(!islands_style, |this| {
+                this.child(
+                    h_flex()
+                        .h_full()
+                        .bg(inactive_background_color)
+                        .px(DynamicSpacing::Base06.rems(cx))
+                        .border_t_1()
+                        .border_l_1()
+                        .border_color(cx.theme().colors().border)
+                        .child(
+                            IconButton::new("plus", IconName::Plus)
+                                .shape(IconButtonShape::Square)
+                                .style(ButtonStyle::Transparent)
+                                .icon_size(IconSize::Small)
+                                .icon_color(Color::Muted)
+                                .on_click(|_event, window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(zed_actions::OpenRecent {
+                                            create_new_window: false,
+                                        }),
+                                        cx,
+                                    );
+                                }),
+                        ),
+                )
+            })
             .into_any_element()
     }
 }
@@ -1228,6 +1297,7 @@ impl Render for DraggedWindowTab {
             })
             .border_1()
             .border_color(cx.theme().colors().border)
+            .rounded(px(10.))
             .font(ui_font)
             .child(label)
     }

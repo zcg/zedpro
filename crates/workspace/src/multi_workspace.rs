@@ -1272,6 +1272,8 @@ impl Render for MultiWorkspace {
         let multi_workspace_enabled = self.multi_workspace_enabled(cx);
         let sidebar_side = self.sidebar_side(cx);
         let sidebar_on_right = sidebar_side == SidebarSide::Right;
+        let workspace_settings = WorkspaceSettings::get_global(cx);
+        let islands_style = workspace_settings.islands_style;
 
         let sidebar: Option<AnyElement> = if multi_workspace_enabled && self.sidebar_open() {
             self.sidebar.as_ref().map(|sidebar_handle| {
@@ -1325,7 +1327,19 @@ impl Render for MultiWorkspace {
                     .h_full()
                     .w(sidebar_width)
                     .flex_shrink_0()
-                    .child(sidebar_handle.to_any())
+                    .when(islands_style, |this| this.p(px(3.)))
+                    .child(if islands_style {
+                        div()
+                            .size_full()
+                            .overflow_hidden()
+                            .rounded(px(10.))
+                            .border_1()
+                            .border_color(cx.theme().colors().border)
+                            .child(sidebar_handle.to_any())
+                            .into_any_element()
+                    } else {
+                        sidebar_handle.to_any().into_any_element()
+                    })
                     .child(resize_handle)
                     .into_any_element()
             })
@@ -1422,7 +1436,21 @@ impl Render for MultiWorkspace {
                         .flex_1()
                         .size_full()
                         .overflow_hidden()
-                        .child(self.workspace().clone()),
+                        .when(islands_style, |this| this.p(px(3.)))
+                        .child(if islands_style {
+                            div()
+                                .flex()
+                                .flex_1()
+                                .size_full()
+                                .overflow_hidden()
+                                .rounded(px(10.))
+                                .border_1()
+                                .border_color(cx.theme().colors().border)
+                                .child(self.workspace().clone())
+                                .into_any_element()
+                        } else {
+                            self.workspace().clone().into_any_element()
+                        }),
                 )
                 .children(right_sidebar)
                 .child(self.workspace().read(cx).modal_layer.clone())

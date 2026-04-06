@@ -7,7 +7,7 @@ use gpui::*;
 use windows::Win32::{
     Foundation::*,
     Graphics::{DirectManipulation::*, Gdi::*},
-    System::Com::*,
+    System::{Com::*, Threading::GetCurrentThreadId},
     UI::{Input::Pointer::*, WindowsAndMessaging::*},
 };
 
@@ -25,6 +25,8 @@ pub(crate) struct DirectManipulationHandler {
     _event_handler: IDirectManipulationViewportEventHandler,
     _handler_cookie: u32,
     window: HWND,
+    owner_thread_id: u32,
+    shutdown: bool,
     scale_factor: Rc<Cell<f32>>,
     pending_events: Rc<RefCell<Vec<PlatformInput>>>,
 }
@@ -86,6 +88,8 @@ impl DirectManipulationHandler {
                 _event_handler: event_handler,
                 _handler_cookie: handler_cookie,
                 window,
+                owner_thread_id: GetCurrentThreadId(),
+                shutdown: false,
                 scale_factor,
                 pending_events,
             })
@@ -116,15 +120,35 @@ impl DirectManipulationHandler {
     pub fn drain_events(&self) -> Vec<PlatformInput> {
         std::mem::take(&mut *self.pending_events.borrow_mut())
     }
-}
 
-impl Drop for DirectManipulationHandler {
-    fn drop(&mut self) {
+    fn shutdown(&mut self) {
+        if self.shutdown {
+            return;
+        }
+
+        let current_thread_id = unsafe { GetCurrentThreadId() };
+        if current_thread_id != self.owner_thread_id {
+            log::warn!(
+                "Skipping DirectManipulation teardown for {:?}: owner thread={}, current thread={}",
+                self.window,
+                self.owner_thread_id,
+                current_thread_id
+            );
+            return;
+        }
+
         unsafe {
             self.viewport.Stop().log_err();
             self.viewport.Abandon().log_err();
             self.manager.Deactivate(self.window).log_err();
         }
+        self.shutdown = true;
+    }
+}
+
+impl Drop for DirectManipulationHandler {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 

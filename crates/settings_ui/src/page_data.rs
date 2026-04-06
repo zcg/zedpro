@@ -4570,6 +4570,21 @@ fn window_and_layout_page() -> SettingsPage {
             files: USER,
         }));
 
+        #[cfg(target_os = "windows")]
+        items.push(SettingsPageItem::SettingItem(SettingItem {
+            title: "Islands Style",
+            description: "(Windows only) use a roomier islands-style layout with rounded workspace surfaces and calmer visual grouping.",
+            field: Box::new(SettingField {
+                json_path: Some("islands_style"),
+                pick: |settings_content| settings_content.workspace.islands_style.as_ref(),
+                write: |settings_content, value| {
+                    settings_content.workspace.islands_style = value;
+                },
+            }),
+            metadata: None,
+            files: USER,
+        }));
+
         #[cfg(target_os = "linux")]
         items.push(SettingsPageItem::SettingItem(SettingItem {
             title: "Window Decorations",

@@ -108,6 +108,11 @@ pub struct WorkspaceSettingsContent {
     ///
     /// Default: false
     pub use_system_window_tabs: Option<bool>,
+    /// Whether to use an islands-style workspace layout with separated editor and tool window surfaces,
+    /// softer corners, and roomier spacing.
+    ///
+    /// Default: false. Windows-only.
+    pub islands_style: Option<bool>,
     /// Whether to show padding for zoomed panels.
     /// When enabled, zoomed bottom panels will have some top padding,
     /// while zoomed left/right panels will have padding to the right/left (respectively).

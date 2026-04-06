@@ -590,6 +590,23 @@ impl DirectX12Renderer {
         self.skip_draws = false;
     }
 
+    pub(crate) fn prepare_for_destroy(&mut self) -> Result<()> {
+        self.interactive_resize_presenting = false;
+        self.attach_staged_swap_chain_after_present = false;
+
+        self.resources
+            .wait_for_frame_latency(16)
+            .context("Waiting for Direct3D 12 frame latency before window destroy")?;
+        self.devices
+            .wait_for_gpu_idle()
+            .context("Waiting for Direct3D 12 GPU idle before window destroy")?;
+        self.devices
+            .release_recorded_references()
+            .context("Releasing Direct3D 12 command-list references before window destroy")?;
+        self.staged_resources = None;
+        Ok(())
+    }
+
     pub(crate) fn set_interactive_resize_presenting(&mut self, enabled: bool) {
         self.interactive_resize_presenting = enabled;
     }

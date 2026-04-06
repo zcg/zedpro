@@ -1,4 +1,4 @@
-use gpui::{AnyElement, ScrollHandle};
+use gpui::{AnyElement, ScrollHandle, hsla};
 use smallvec::SmallVec;
 
 use crate::Tab;
@@ -7,6 +7,7 @@ use crate::prelude::*;
 #[derive(IntoElement, RegisterComponent)]
 pub struct TabBar {
     id: ElementId,
+    floating_tabs: bool,
     start_children: SmallVec<[AnyElement; 2]>,
     children: SmallVec<[AnyElement; 2]>,
     end_children: SmallVec<[AnyElement; 2]>,
@@ -17,11 +18,17 @@ impl TabBar {
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
+            floating_tabs: false,
             start_children: SmallVec::new(),
             children: SmallVec::new(),
             end_children: SmallVec::new(),
             scroll_handle: None,
         }
+    }
+
+    pub fn floating_tabs(mut self, floating_tabs: bool) -> Self {
+        self.floating_tabs = floating_tabs;
+        self
     }
 
     pub fn track_scroll(mut self, scroll_handle: &ScrollHandle) -> Self {
@@ -91,15 +98,58 @@ impl ParentElement for TabBar {
 
 impl RenderOnce for TabBar {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        div()
+        let root = div()
             .id(self.id)
             .group("tab_bar")
             .flex()
             .flex_none()
             .w_full()
             .h(Tab::container_height(cx))
-            .bg(cx.theme().colors().tab_bar_background)
-            .when(!self.start_children.is_empty(), |this| {
+            .bg(if self.floating_tabs {
+                hsla(0., 0., 0., 0.)
+            } else {
+                cx.theme().colors().tab_bar_background
+            });
+
+        if self.floating_tabs {
+            root.when(!self.start_children.is_empty(), |this| {
+                this.child(
+                    h_flex()
+                        .flex_none()
+                        .gap(DynamicSpacing::Base04.rems(cx))
+                        .px(DynamicSpacing::Base04.rems(cx))
+                        .children(self.start_children),
+                )
+            })
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .h_full()
+                    .overflow_x_hidden()
+                    .child(
+                        h_flex()
+                            .id("tabs")
+                            .flex_grow()
+                            .h_full()
+                            .overflow_x_scroll()
+                            .when_some(self.scroll_handle, |cx, scroll_handle| {
+                                cx.track_scroll(&scroll_handle)
+                            })
+                            .children(self.children),
+                    ),
+            )
+            .when(!self.end_children.is_empty(), |this| {
+                this.child(
+                    h_flex()
+                        .flex_none()
+                        .gap(DynamicSpacing::Base04.rems(cx))
+                        .px(DynamicSpacing::Base04.rems(cx))
+                        .children(self.end_children),
+                )
+            })
+        } else {
+            root.when(!self.start_children.is_empty(), |this| {
                 this.child(
                     h_flex()
                         .flex_none()
@@ -149,6 +199,7 @@ impl RenderOnce for TabBar {
                         .children(self.end_children),
                 )
             })
+        }
     }
 }
 

@@ -2811,6 +2811,7 @@ impl Pane {
         };
 
         let settings = ItemSettings::get_global(cx);
+        let islands_style = WorkspaceSettings::get_global(cx).islands_style;
         let close_side = &settings.close_position;
         let show_close_button = &settings.show_close_button;
         let indicator = render_item_indicator(item.boxed_clone(), cx);
@@ -2851,6 +2852,7 @@ impl Pane {
 
         let capability = item.capability(cx);
         let tab = Tab::new(ix)
+            .floating(islands_style)
             .position(if is_first_item {
                 TabPosition::First
             } else if is_last_item {
@@ -3495,9 +3497,10 @@ impl Pane {
         window: &mut Window,
         cx: &mut Context<Pane>,
     ) -> AnyElement {
+        let islands_style = WorkspaceSettings::get_global(cx).islands_style;
         let tab_bar = self
             .configure_tab_bar_start(
-                TabBar::new("tab_bar"),
+                TabBar::new("tab_bar").floating_tabs(islands_style),
                 navigate_backward,
                 navigate_forward,
                 window,
@@ -3533,9 +3536,10 @@ impl Pane {
         window: &mut Window,
         cx: &mut Context<Pane>,
     ) -> AnyElement {
+        let islands_style = WorkspaceSettings::get_global(cx).islands_style;
         let pinned_tab_bar = self
             .configure_tab_bar_start(
-                TabBar::new("pinned_tab_bar"),
+                TabBar::new("pinned_tab_bar").floating_tabs(islands_style),
                 navigate_backward,
                 navigate_forward,
                 window,
@@ -3555,11 +3559,9 @@ impl Pane {
             .flex_none()
             .child(pinned_tab_bar)
             .child(
-                TabBar::new("unpinned_tab_bar").child(self.render_unpinned_tabs_container(
-                    unpinned_tabs,
-                    tab_count,
-                    cx,
-                )),
+                TabBar::new("unpinned_tab_bar")
+                    .floating_tabs(islands_style)
+                    .child(self.render_unpinned_tabs_container(unpinned_tabs, tab_count, cx)),
             )
             .into_any_element()
     }
@@ -4895,6 +4897,7 @@ pub fn render_item_indicator(item: Box<dyn ItemHandle>, cx: &App) -> Option<Indi
 impl Render for DraggedTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui_font = ThemeSettings::get_global(cx).ui_font.clone();
+        let islands_style = WorkspaceSettings::get_global(cx).islands_style;
         let label = self.item.tab_content(
             TabContentParams {
                 detail: Some(self.detail),
@@ -4906,6 +4909,7 @@ impl Render for DraggedTab {
             cx,
         );
         Tab::new("")
+            .floating(islands_style)
             .toggle_state(self.is_active)
             .child(label)
             .render(window, cx)

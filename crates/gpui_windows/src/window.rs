@@ -55,6 +55,7 @@ pub struct WindowsWindowState {
     pub applied_background_appearance: Cell<WindowBackgroundAppearance>,
     pub deferred_background_appearance: Cell<Option<WindowBackgroundAppearance>>,
     pub completed_first_frame: Cell<bool>,
+    pub last_draw_succeeded: Cell<bool>,
     pub scale_factor: Cell<f32>,
     pub in_size_move_loop: Cell<bool>,
     pub restore_from_minimized: Cell<Option<Box<dyn FnMut(RequestFrameOptions)>>>,
@@ -166,6 +167,7 @@ impl WindowsWindowState {
             applied_background_appearance: Cell::new(WindowBackgroundAppearance::Opaque),
             deferred_background_appearance: Cell::new(None),
             completed_first_frame: Cell::new(false),
+            last_draw_succeeded: Cell::new(false),
             scale_factor: Cell::new(scale_factor),
             in_size_move_loop: Cell::new(in_size_move_loop),
             restore_from_minimized: Cell::new(restore_from_minimized),
@@ -676,6 +678,14 @@ impl Drop for WindowsWindow {
             .executor
             .spawn(async move {
                 let handle = this.hwnd;
+                if let Ok(mut renderer) = this.state.renderer.try_borrow_mut() {
+                    if let Err(error) = renderer.prepare_for_destroy() {
+                        log::warn!(
+                            "Preparing renderer for window destroy failed for {:?}: {error:#}",
+                            handle
+                        );
+                    }
+                }
                 unsafe {
                     if IsWindow(Some(handle)).as_bool() {
                         let _ = RevokeDragDrop(handle);
@@ -987,6 +997,10 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn completed_frame(&self) {
+        if !self.state.last_draw_succeeded.get() {
+            return;
+        }
+
         if self.state.completed_first_frame.replace(true) {
             return;
         }
@@ -1081,11 +1095,26 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn draw(&self, scene: &Scene) {
-        self.state
+        let result = self
+            .state
             .renderer
             .borrow_mut()
-            .draw(scene, self.state.background_appearance.get())
-            .log_err();
+            .draw(scene, self.state.background_appearance.get());
+
+        match result {
+            Ok(()) => {
+                self.state.last_draw_succeeded.set(true);
+            }
+            Err(error) => {
+                self.state.last_draw_succeeded.set(false);
+                self.state
+                    .invalidate_devices
+                    .store(true, std::sync::atomic::Ordering::Release);
+                log::error!(
+                    "Windows renderer draw failed; scheduling device recovery on next platform tick: {error:#}"
+                );
+            }
+        }
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
