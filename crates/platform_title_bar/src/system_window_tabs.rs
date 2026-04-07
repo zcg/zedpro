@@ -2,8 +2,8 @@ use settings::{Settings, SettingsStore};
 
 use gpui::{
     AnyElement, AnyWindowHandle, App, Bounds, Context, DragMoveEvent, Hsla, InteractiveElement,
-    MouseButton, ParentElement, ScrollHandle, Styled, SystemWindowTab, SystemWindowTabController,
-    Window, WindowId, actions, canvas, div, hsla, point, size,
+    MouseButton, ParentElement, ScrollHandle, Styled, Subscription, SystemWindowTab,
+    SystemWindowTabController, Window, WindowId, actions, canvas, div, hsla, point, size,
 };
 
 use std::collections::hash_map::DefaultHasher;
@@ -47,6 +47,7 @@ pub struct SystemWindowTabs {
     tab_bar_scroll_handle: ScrollHandle,
     measured_tab_width: Pixels,
     last_dragged_tab: Option<DraggedWindowTab>,
+    _settings_subscription: Subscription,
 }
 
 impl SystemWindowTabs {
@@ -90,11 +91,32 @@ impl SystemWindowTabs {
         hsla(hue, saturation, lightness, 0.95)
     }
 
-    pub fn new() -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        let initial_settings = WorkspaceSettings::get_global(cx);
+        let mut was_use_system_window_tabs = initial_settings.use_system_window_tabs;
+        let mut was_islands_style = initial_settings.islands_style;
+        let settings_subscription = cx.observe_global::<SettingsStore>(move |_, cx| {
+            let settings = WorkspaceSettings::get_global(cx);
+            let use_system_window_tabs = settings.use_system_window_tabs;
+            let islands_style = settings.islands_style;
+            let use_system_window_tabs_changed =
+                use_system_window_tabs != was_use_system_window_tabs;
+            let islands_style_changed = islands_style != was_islands_style;
+
+            if !use_system_window_tabs_changed && !islands_style_changed {
+                return;
+            }
+
+            was_use_system_window_tabs = use_system_window_tabs;
+            was_islands_style = islands_style;
+            cx.notify();
+        });
+
         Self {
             tab_bar_scroll_handle: ScrollHandle::new(),
             measured_tab_width: px(0.),
             last_dragged_tab: None,
+            _settings_subscription: settings_subscription,
         }
     }
 
