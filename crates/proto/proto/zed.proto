@@ -478,7 +478,9 @@ message Envelope {
     GitCompareCheckpoints git_compare_checkpoints = 440;
     GitCompareCheckpointsResponse git_compare_checkpoints_response = 441;
     GitDiffCheckpoints git_diff_checkpoints = 442;
-    GitDiffCheckpointsResponse git_diff_checkpoints_response = 443; // current max
+    GitDiffCheckpointsResponse git_diff_checkpoints_response = 443;
+    GitGetHeadSha git_get_head_sha = 444;
+    GitGetHeadShaResponse git_get_head_sha_response = 445; // current max
   }
 
   reserved 87 to 88;

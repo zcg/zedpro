@@ -329,6 +329,7 @@ impl Upstream {
 pub struct CommitOptions {
     pub amend: bool,
     pub signoff: bool,
+    pub allow_empty: bool,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -715,7 +716,7 @@ pub trait GitRepository: Send + Sync {
 
     fn create_worktree(
         &self,
-        branch_name: String,
+        branch_name: Option<String>,
         path: PathBuf,
         from_commit: Option<String>,
     ) -> BoxFuture<'_, Result<()>>;
@@ -915,6 +916,12 @@ pub trait GitRepository: Send + Sync {
     ) -> BoxFuture<'_, Result<()>>;
 
     fn commit_data_reader(&self) -> Result<CommitDataReader>;
+
+    fn update_ref(&self, ref_name: String, commit: String) -> BoxFuture<'_, Result<()>>;
+
+    fn delete_ref(&self, ref_name: String) -> BoxFuture<'_, Result<()>>;
+
+    fn repair_worktrees(&self) -> BoxFuture<'_, Result<()>>;
 
     fn set_trusted(&self, trusted: bool);
     fn is_trusted(&self) -> bool;
@@ -1673,19 +1680,20 @@ impl GitRepository for RealGitRepository {
 
     fn create_worktree(
         &self,
-        branch_name: String,
+        branch_name: Option<String>,
         path: PathBuf,
         from_commit: Option<String>,
     ) -> BoxFuture<'_, Result<()>> {
         let git_binary = self.git_binary();
-        let mut args = vec![
-            OsString::from("worktree"),
-            OsString::from("add"),
-            OsString::from("-b"),
-            OsString::from(branch_name.as_str()),
-            OsString::from("--"),
-            OsString::from(path.as_os_str()),
-        ];
+        let mut args = vec![OsString::from("worktree"), OsString::from("add")];
+        if let Some(branch_name) = &branch_name {
+            args.push(OsString::from("-b"));
+            args.push(OsString::from(branch_name.as_str()));
+        } else {
+            args.push(OsString::from("--detach"));
+        }
+        args.push(OsString::from("--"));
+        args.push(OsString::from(path.as_os_str()));
         if let Some(from_commit) = from_commit {
             args.push(OsString::from(from_commit));
         } else {
@@ -2178,6 +2186,10 @@ impl GitRepository for RealGitRepository {
                 cmd.arg("--signoff");
             }
 
+            if options.allow_empty {
+                cmd.arg("--allow-empty");
+            }
+
             if let Some((name, email)) = name_and_email {
                 cmd.arg("--author").arg(&format!("{name} <{email}>"));
             }
@@ -2187,6 +2199,39 @@ impl GitRepository for RealGitRepository {
             Ok(())
         }
         .boxed()
+    }
+
+    fn update_ref(&self, ref_name: String, commit: String) -> BoxFuture<'_, Result<()>> {
+        let git_binary = self.git_binary();
+        self.executor
+            .spawn(async move {
+                let args: Vec<OsString> = vec!["update-ref".into(), ref_name.into(), commit.into()];
+                git_binary?.run(&args).await?;
+                Ok(())
+            })
+            .boxed()
+    }
+
+    fn delete_ref(&self, ref_name: String) -> BoxFuture<'_, Result<()>> {
+        let git_binary = self.git_binary();
+        self.executor
+            .spawn(async move {
+                let args: Vec<OsString> = vec!["update-ref".into(), "-d".into(), ref_name.into()];
+                git_binary?.run(&args).await?;
+                Ok(())
+            })
+            .boxed()
+    }
+
+    fn repair_worktrees(&self) -> BoxFuture<'_, Result<()>> {
+        let git_binary = self.git_binary();
+        self.executor
+            .spawn(async move {
+                let args: Vec<OsString> = vec!["worktree".into(), "repair".into()];
+                git_binary?.run(&args).await?;
+                Ok(())
+            })
+            .boxed()
     }
 
     fn push(
@@ -4045,7 +4090,7 @@ mod tests {
 
         // Create a new worktree
         repo.create_worktree(
-            "test-branch".to_string(),
+            Some("test-branch".to_string()),
             worktree_path.clone(),
             Some("HEAD".to_string()),
         )
@@ -4104,7 +4149,7 @@ mod tests {
         // Create a worktree
         let worktree_path = worktrees_dir.join("worktree-to-remove");
         repo.create_worktree(
-            "to-remove".to_string(),
+            Some("to-remove".to_string()),
             worktree_path.clone(),
             Some("HEAD".to_string()),
         )
@@ -4128,7 +4173,7 @@ mod tests {
         // Create a worktree
         let worktree_path = worktrees_dir.join("dirty-wt");
         repo.create_worktree(
-            "dirty-wt".to_string(),
+            Some("dirty-wt".to_string()),
             worktree_path.clone(),
             Some("HEAD".to_string()),
         )
@@ -4198,7 +4243,7 @@ mod tests {
         // Create a worktree
         let old_path = worktrees_dir.join("old-worktree-name");
         repo.create_worktree(
-            "old-name".to_string(),
+            Some("old-name".to_string()),
             old_path.clone(),
             Some("HEAD".to_string()),
         )

@@ -908,9 +908,8 @@ To build it, run: cargo build -p cli",
         }
 
         match open_rx
-            .try_next()
+            .try_recv()
             .ok()
-            .flatten()
             .and_then(|request| OpenRequest::parse(request, cx).log_err())
         {
             Some(request) => {
@@ -1406,20 +1405,12 @@ pub(crate) async fn restore_or_create_workspace(
         let mut restored_windows_by_id = HashMap::default();
 
         for multi_workspace in multi_workspaces {
-            let restored_window_id = multi_workspace
-                .workspaces
-                .first()
-                .and_then(|workspace| workspace.window_id);
+            let restored_window_id = multi_workspace.active_workspace.window_id;
 
             match restore_multiworkspace(multi_workspace, app_state.clone(), cx).await {
-                Ok(result) => {
+                Ok(window_handle) => {
                     if let Some(window_id) = restored_window_id {
-                        restored_windows_by_id.insert(window_id, result.window_handle.clone());
-                    }
-
-                    for error in result.errors {
-                        log::error!("Failed to restore workspace in group: {error:#}");
-                        results.push(Err(error));
+                        restored_windows_by_id.insert(window_id, window_handle);
                     }
                 }
                 Err(e) => {

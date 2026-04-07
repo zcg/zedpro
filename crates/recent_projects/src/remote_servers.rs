@@ -16,6 +16,7 @@ use dev_container::{
     find_devcontainer_configs, start_dev_container_with_config_and_progress,
 };
 use editor::{Editor, EditorEvent};
+use extension_host::ExtensionStore;
 use file_finder::OpenPathDelegate;
 use futures::{
     FutureExt, StreamExt as _,
@@ -70,7 +71,7 @@ use util::{
     shell::ShellKind,
 };
 use workspace::{
-    AppState, ModalView, MultiWorkspace, OpenOptions, Toast, Workspace,
+    AppState, DismissDecision, ModalView, MultiWorkspace, OpenOptions, Toast, Workspace,
     notifications::{DetachAndPromptErr, NotificationId},
     open_remote_project_with_existing_connection,
 };
@@ -113,6 +114,7 @@ pub struct RemoteServerProjects {
     dev_container_picker: Option<Entity<Picker<DevContainerPickerDelegate>>>,
     _subscription: Subscription,
     _project_subscription: Option<Subscription>,
+    allow_dismissal: bool,
 }
 
 const START_PROXY_TIMEOUT: Duration = Duration::from_secs(90);
@@ -1895,6 +1897,7 @@ impl RemoteServerProjects {
             dev_container_picker: None,
             _subscription,
             _project_subscription,
+            allow_dismissal: true,
         }
     }
 
@@ -3035,6 +3038,7 @@ impl RemoteServerProjects {
     }
 
     fn view_in_progress_dev_container(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.allow_dismissal = false;
         self.mode = Mode::CreateRemoteDevContainer(
             CreateRemoteDevContainer::new(DevContainerCreationProgress::Creating, cx)
                 .with_progress(DevContainerCreationProgress::Creating, window, cx),
@@ -3439,6 +3443,7 @@ impl RemoteServerProjects {
                 cx.emit(DismissEvent);
             }
             _ => {
+                self.allow_dismissal = true;
                 self.mode = Mode::default_mode(&self.ssh_config_servers, cx);
                 self.focus_handle(cx).focus(window, cx);
                 cx.notify();
@@ -5248,9 +5253,18 @@ impl RemoteServerProjects {
                 Ok((c, s)) => (c, s),
                 Err(e) => {
                     log::error!("Failed to start dev container: {:?}", e);
+                    cx.prompt(
+                        gpui::PromptLevel::Critical,
+                        "Failed to start Dev Container. See logs for details",
+                        Some(&format!("{e}")),
+                        &["Ok"],
+                    )
+                    .await
+                    .ok();
                     entity
                         .update_in(cx, |remote_server_projects, window, cx| {
                             let message = e.to_string();
+                            remote_server_projects.allow_dismissal = true;
                             match &mut remote_server_projects.mode {
                                 Mode::CreateRemoteDevContainer(state) => {
                                     if state.build_state.is_none() {
@@ -5281,6 +5295,15 @@ impl RemoteServerProjects {
                     return;
                 }
             };
+            cx.update(|_, cx| {
+                ExtensionStore::global(cx).update(cx, |this, cx| {
+                    for extension in &dev_connection.extension_ids {
+                        log::info!("Installing extension {extension} from devcontainer");
+                        this.install_latest_extension(Arc::from(extension.clone()), cx);
+                    }
+                })
+            })
+            .log_err();
             if dev_connection.host.is_none() {
                 if let Some(options) = project_connection_options.as_ref() {
                     dev_connection.host = devcontainer_host_from_remote_options(options);
@@ -5303,6 +5326,8 @@ impl RemoteServerProjects {
                         config_path.clone(),
                         cx,
                     );
+                    remote_server_projects.allow_dismissal = true;
+                    cx.emit(DismissEvent);
                 })
                 .log_err();
             let Some(app_state) = app_state.upgrade() else {
@@ -9016,7 +9041,15 @@ fn parse_port_forwards(input: &str) -> (Vec<SshPortForwardOption>, Vec<SharedStr
     (forwards, errors)
 }
 
-impl ModalView for RemoteServerProjects {}
+impl ModalView for RemoteServerProjects {
+    fn on_before_dismiss(
+        &mut self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> DismissDecision {
+        DismissDecision::Dismiss(self.allow_dismissal)
+    }
+}
 
 impl Focusable for RemoteServerProjects {
     fn focus_handle(&self, cx: &App) -> FocusHandle {

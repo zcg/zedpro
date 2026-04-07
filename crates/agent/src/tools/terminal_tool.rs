@@ -682,17 +682,17 @@ mod tests {
         );
         assert!(
             !matches!(
-                rx.try_next(),
-                Ok(Some(Ok(crate::ThreadEvent::ToolCallAuthorization(_))))
+                rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
             ),
             "invalid command should not request authorization"
         );
         assert!(
             !matches!(
-                rx.try_next(),
-                Ok(Some(Ok(crate::ThreadEvent::ToolCallUpdate(
+                rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallUpdate(
                     acp_thread::ToolCallUpdate::UpdateFields(_)
-                ))))
+                )))
             ),
             "invalid command should not emit a terminal card update"
         );
@@ -811,8 +811,8 @@ mod tests {
         );
         assert!(
             !matches!(
-                rx.try_next(),
-                Ok(Some(Ok(crate::ThreadEvent::ToolCallAuthorization(_))))
+                rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
             ),
             "hardcoded denial should not request authorization"
         );
@@ -1059,8 +1059,8 @@ mod tests {
         );
         assert!(
             !matches!(
-                rx.try_next(),
-                Ok(Some(Ok(crate::ThreadEvent::ToolCallAuthorization(_))))
+                rx.try_recv(),
+                Ok(Ok(crate::ThreadEvent::ToolCallAuthorization(_)))
             ),
             "rejected command {command:?} should not request authorization"
         );
