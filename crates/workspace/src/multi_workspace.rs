@@ -628,6 +628,7 @@ impl MultiWorkspace {
             .cloned()
             .collect();
 
+        self.project_group_keys.retain(|k| k != project_group_key);
         self.add_project_group_key(new_key);
 
         for workspace in workspaces {
@@ -691,6 +692,7 @@ impl MultiWorkspace {
             .cloned()
             .collect();
 
+        self.project_group_keys.retain(|k| k != project_group_key);
         self.add_project_group_key(new_key);
 
         for workspace in workspaces {
@@ -1536,6 +1538,7 @@ impl MultiWorkspace {
         }
 
         let app_state = removed[0].read(cx).app_state().clone();
+        let sidebar_was_open = self.sidebar_open;
 
         cx.defer(move |cx| {
             let options = (app_state.build_window_options)(None, cx);
@@ -1551,8 +1554,12 @@ impl MultiWorkspace {
 
             new_window
                 .update(cx, |mw, window, cx| {
+                    mw.open_sidebar(cx);
                     for workspace in rest {
-                        mw.activate(workspace, window, cx);
+                        mw.add(workspace, &*window, cx);
+                    }
+                    if !sidebar_was_open {
+                        mw.close_sidebar(window, cx);
                     }
                     window.activate_window();
                 })
@@ -1652,7 +1659,14 @@ impl MultiWorkspace {
         }
 
         if multi_workspace_enabled {
-            self.find_or_create_local_workspace(PathList::new(&paths), window, cx)
+            match open_mode {
+                OpenMode::Activate => {
+                    self.find_or_create_local_workspace(PathList::new(&paths), window, cx)
+                }
+                OpenMode::Add | OpenMode::NewWindow => workspace.update(cx, |workspace, cx| {
+                    workspace.open_workspace_for_paths(open_mode, paths, window, cx)
+                }),
+            }
         } else {
             cx.spawn_in(window, async move |_this, cx| {
                 let should_continue = workspace

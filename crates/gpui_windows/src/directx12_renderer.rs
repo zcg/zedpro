@@ -54,6 +54,8 @@ const RTV_DESCRIPTOR_COUNT: usize = BUFFER_COUNT + 1;
 const SRV_DESCRIPTOR_COUNT: usize = 4096;
 const DIRECT_COMPOSITION_CLEAR_ALPHA_FLOOR: f32 = 1.0 / 255.0;
 const SWAP_CHAIN_FLAGS: DXGI_SWAP_CHAIN_FLAG = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+const DIRECTX12_INTERACTIVE_RESIZE_ENV: &str = "GPUI_WINDOWS_D3D12_INTERACTIVE_RESIZE";
+const AMD_VENDOR_ID: u32 = 0x1002;
 
 pub(crate) struct DirectX12Renderer {
     hwnd: HWND,
@@ -75,6 +77,65 @@ pub(crate) struct DirectX12Renderer {
     path_sprite_scratch: Vec<PathSprite>,
     attach_staged_swap_chain_after_present: bool,
     interactive_resize_presenting: bool,
+    stage_direct_composition_resize: bool,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum DirectX12InteractiveResizeRequest {
+    Auto,
+    Deferred,
+    Staged,
+}
+
+impl DirectX12InteractiveResizeRequest {
+    fn from_env() -> Self {
+        let Ok(value) = std::env::var(DIRECTX12_INTERACTIVE_RESIZE_ENV) else {
+            return Self::Auto;
+        };
+
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Self::Auto,
+            "defer" | "deferred" => Self::Deferred,
+            "stage" | "staged" => Self::Staged,
+            _ => {
+                log::warn!(
+                    "Ignoring unsupported value {:?} for {}. Supported values are: auto, defer, stage.",
+                    value,
+                    DIRECTX12_INTERACTIVE_RESIZE_ENV
+                );
+                Self::Auto
+            }
+        }
+    }
+}
+
+fn should_stage_direct_composition_resize(
+    adapter: &IDXGIAdapter1,
+    direct_composition_enabled: bool,
+) -> bool {
+    if !direct_composition_enabled {
+        return false;
+    }
+
+    match DirectX12InteractiveResizeRequest::from_env() {
+        DirectX12InteractiveResizeRequest::Deferred => return false,
+        DirectX12InteractiveResizeRequest::Staged => return true,
+        DirectX12InteractiveResizeRequest::Auto => {}
+    }
+
+    let vendor_id = unsafe { adapter.GetDesc1() }
+        .map(|desc| desc.VendorId)
+        .unwrap_or_default();
+
+    if vendor_id == AMD_VENDOR_ID {
+        log::info!(
+            "Using deferred Direct3D 12 interactive resize on AMD. Set {}=stage to force-enable staged resize.",
+            DIRECTX12_INTERACTIVE_RESIZE_ENV
+        );
+        return false;
+    }
+
+    true
 }
 
 struct DirectX12RendererDevices {
@@ -98,6 +159,7 @@ struct DirectX12RendererResources {
     swap_chain: IDXGISwapChain3,
     frame_latency_waitable_object: HANDLE,
     frame_latency_waitable_armed: bool,
+    uses_direct_composition: bool,
     srv_descriptors: DirectX12SrvDescriptors,
     back_buffers: Vec<DirectX12BackBuffer>,
     path_intermediate_texture: ShaderTextureBinding,
@@ -304,6 +366,8 @@ impl DirectX12Renderer {
                 .context("Binding Direct3D 12 swap chain to DirectComposition")?;
             Some(composition)
         };
+        let stage_direct_composition_resize =
+            should_stage_direct_composition_resize(&devices.adapter, direct_composition.is_some());
 
         Ok(Self {
             hwnd,
@@ -326,6 +390,7 @@ impl DirectX12Renderer {
             path_sprite_scratch: Vec::new(),
             attach_staged_swap_chain_after_present: false,
             interactive_resize_presenting: false,
+            stage_direct_composition_resize,
         })
     }
 
@@ -334,7 +399,7 @@ impl DirectX12Renderer {
     }
 
     pub(crate) fn interactive_resize_mode(&self) -> InteractiveResizeMode {
-        if self.direct_composition.is_some() {
+        if self.direct_composition.is_some() && self.stage_direct_composition_resize {
             InteractiveResizeMode::StageDirectCompositionSwapChain
         } else {
             InteractiveResizeMode::DeferHwndSwapChain
@@ -388,6 +453,8 @@ impl DirectX12Renderer {
                 }
             }
         };
+        let stage_direct_composition_resize =
+            should_stage_direct_composition_resize(&devices.adapter, direct_composition.is_some());
 
         self.atlas.handle_device_lost(&devices)?;
 
@@ -403,6 +470,7 @@ impl DirectX12Renderer {
         self.current_frame_index = 0;
         self.path_vertex_scratch.clear();
         self.path_sprite_scratch.clear();
+        self.stage_direct_composition_resize = stage_direct_composition_resize;
         // 恢复后的新 swap chain 还没有有效内容，
         // 等首个成功 present 之后再把它绑定到 DirectComposition，避免客户区先闪成透明层。
         self.attach_staged_swap_chain_after_present = self.direct_composition.is_some();
@@ -503,7 +571,7 @@ impl DirectX12Renderer {
             return Ok(());
         }
 
-        if self.direct_composition.is_some() {
+        if self.direct_composition.is_some() && self.stage_direct_composition_resize {
             log::trace!(
                 "Creating staged Direct3D 12 DirectComposition resources for {}x{} during interactive resize.",
                 width,
@@ -516,16 +584,16 @@ impl DirectX12Renderer {
                     )?,
             );
         } else {
+            let reattach_direct_composition = self.direct_composition.is_some();
             self.devices.wait_for_gpu_idle()?;
             self.devices
                 .release_recorded_references()
                 .context("Releasing Direct3D 12 command-list references before resize")?;
-            log::trace!(
-                "Resizing Direct3D 12 HWND swap chain to {}x{}.",
-                width,
-                height
-            );
-            if let Err(resize_error) = self.resources.resize(&mut self.devices, width, height) {
+            log::trace!("Resizing Direct3D 12 swap chain to {}x{}.", width, height);
+            if let Err(resize_error) =
+                self.resources
+                    .resize(&mut self.devices, width, height, self.hwnd)
+            {
                 log::error!(
                     "Direct3D 12 resize failed while resizing swap chain to {}x{}: {resize_error:#}",
                     width,
@@ -536,7 +604,10 @@ impl DirectX12Renderer {
                 // referencing the back buffers. Waiting for idle and retrying once keeps the
                 // interactive resize path stable without forcing a full device recovery.
                 self.devices.wait_for_gpu_idle()?;
-                if let Err(retry_error) = self.resources.resize(&mut self.devices, width, height) {
+                if let Err(retry_error) =
+                    self.resources
+                        .resize(&mut self.devices, width, height, self.hwnd)
+                {
                     log::error!(
                         "Direct3D 12 resize retry failed while resizing swap chain to {}x{}: {retry_error:#}",
                         width,
@@ -548,12 +619,13 @@ impl DirectX12Renderer {
                         width,
                         height,
                         self.hwnd,
-                        true,
+                        self.direct_composition.is_none(),
                     )
                     .context("Recreating Direct3D 12 resources after ResizeBuffers failed")?;
                     self.resources = new_resources;
                 }
             }
+            self.attach_staged_swap_chain_after_present = reattach_direct_composition;
         }
 
         self.width = width;
@@ -1372,6 +1444,7 @@ impl DirectX12RendererResources {
             swap_chain,
             frame_latency_waitable_object,
             frame_latency_waitable_armed: false,
+            uses_direct_composition: !disable_direct_composition,
             srv_descriptors: devices.srv_descriptors.clone(),
             back_buffers,
             path_intermediate_texture,
@@ -1388,7 +1461,16 @@ impl DirectX12RendererResources {
         devices: &mut DirectX12RendererDevices,
         width: u32,
         height: u32,
+        hwnd: HWND,
     ) -> Result<()> {
+        if self.uses_direct_composition {
+            let rebuilt = Self::new(devices, width, height, hwnd, false).context(
+                "Recreating Direct3D 12 composition resources instead of resizing swap chain",
+            )?;
+            *self = rebuilt;
+            return Ok(());
+        }
+
         let old_back_buffers = std::mem::take(&mut self.back_buffers);
         drop(old_back_buffers);
         let swap_chain = self.swap_chain.clone();

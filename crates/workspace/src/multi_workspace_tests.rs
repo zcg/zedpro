@@ -5,6 +5,7 @@ use gpui::TestAppContext;
 use project::{DisableAiSettings, ProjectGroupKey};
 use serde_json::json;
 use settings::SettingsStore;
+use std::path::Path;
 
 fn init_test(cx: &mut TestAppContext) {
     cx.update(|cx| {
@@ -339,5 +340,162 @@ async fn test_project_group_keys_across_multiple_workspaces_and_worktree_changes
         assert_eq!(*keys[0], key_a);
         assert_eq!(*keys[1], key_b);
         assert_eq!(*keys[2], key_a_updated);
+    });
+}
+
+#[gpui::test]
+async fn test_remove_folder_from_project_group_replaces_old_key(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "file.txt": "" })).await;
+    let project = Project::test(fs, ["/root_a".as_ref(), "/root_b".as_ref()], cx).await;
+
+    let initial_key = project.read_with(cx, |p, cx| p.project_group_key(cx));
+    let expected_key = ProjectGroupKey::new(initial_key.host(), PathList::new(&["/root_a"]));
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+
+    multi_workspace.update(cx, |mw, cx| {
+        mw.open_sidebar(cx);
+        mw.remove_folder_from_project_group(&initial_key, Path::new("/root_b"), cx);
+    });
+    cx.run_until_parked();
+
+    multi_workspace.read_with(cx, |mw, _cx| {
+        let keys: Vec<&ProjectGroupKey> = mw.project_group_keys().collect();
+        assert_eq!(
+            keys.len(),
+            1,
+            "old group key should be removed after editing"
+        );
+        assert_eq!(*keys[0], expected_key);
+        assert_ne!(*keys[0], initial_key);
+    });
+}
+
+#[gpui::test]
+async fn test_add_folders_to_project_group_replaces_old_key(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "file.txt": "" })).await;
+    let project = Project::test(fs, ["/root_a".as_ref()], cx).await;
+
+    let initial_key = project.read_with(cx, |p, cx| p.project_group_key(cx));
+    let expected_key =
+        ProjectGroupKey::new(initial_key.host(), PathList::new(&["/root_a", "/root_b"]));
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+
+    multi_workspace.update(cx, |mw, cx| {
+        mw.open_sidebar(cx);
+        mw.add_folders_to_project_group(&initial_key, vec!["/root_b".into()], cx);
+    });
+    cx.run_until_parked();
+
+    multi_workspace.read_with(cx, |mw, _cx| {
+        let keys: Vec<&ProjectGroupKey> = mw.project_group_keys().collect();
+        assert_eq!(
+            keys.len(),
+            1,
+            "old group key should be removed after editing"
+        );
+        assert_eq!(*keys[0], expected_key);
+        assert_ne!(*keys[0], initial_key);
+    });
+}
+
+#[gpui::test]
+async fn test_open_project_add_keeps_active_workspace(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file.txt": "" })).await;
+    fs.insert_tree("/root_b", json!({ "file.txt": "" })).await;
+    cx.update(|cx| <dyn fs::Fs>::set_global(fs.clone(), cx));
+
+    let project = Project::test(fs, ["/root_a".as_ref()], cx).await;
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+
+    multi_workspace.update(cx, |mw, cx| {
+        mw.open_sidebar(cx);
+    });
+
+    let initial_workspace = multi_workspace.read_with(cx, |mw, _cx| mw.workspace().clone());
+    multi_workspace
+        .update_in(cx, |mw, window, cx| {
+            mw.open_project(vec!["/root_b".into()], OpenMode::Add, window, cx)
+        })
+        .await
+        .unwrap();
+    cx.run_until_parked();
+
+    multi_workspace.read_with(cx, |mw, cx| {
+        assert_eq!(mw.workspaces().count(), 2);
+        assert_eq!(mw.workspace(), &initial_workspace);
+        assert!(
+            mw.workspaces()
+                .any(|workspace| workspace.read(cx).root_paths(cx)
+                    == vec![Path::new("/root_b").into()]),
+            "new workspace should be added without stealing activation",
+        );
+    });
+}
+
+#[gpui::test]
+async fn test_move_project_group_to_new_window_keeps_all_workspaces(cx: &mut TestAppContext) {
+    init_test(cx);
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree("/root_a", json!({ "file.txt": "" })).await;
+
+    let project_a = Project::test(fs.clone(), ["/root_a".as_ref()], cx).await;
+    let project_b = Project::test(fs, ["/root_a".as_ref()], cx).await;
+    let group_key = project_a.read_with(cx, |p, cx| p.project_group_key(cx));
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project_a, window, cx));
+
+    multi_workspace.update(cx, |mw, cx| {
+        mw.open_sidebar(cx);
+    });
+    multi_workspace.update_in(cx, |mw, window, cx| {
+        mw.test_add_workspace(project_b, window, cx);
+    });
+    cx.run_until_parked();
+
+    multi_workspace.read_with(cx, |mw, _cx| {
+        assert_eq!(mw.workspaces().count(), 2);
+    });
+
+    multi_workspace.update_in(cx, |mw, window, cx| {
+        mw.move_project_group_to_new_window(&group_key, window, cx);
+    });
+    cx.run_until_parked();
+
+    let windows = cx.windows();
+    assert_eq!(
+        windows.len(),
+        2,
+        "moving a project group should open a new window"
+    );
+
+    let moved_multi_workspace = windows
+        .into_iter()
+        .filter_map(|window| window.downcast::<MultiWorkspace>())
+        .find_map(|window| {
+            let root = window.root(cx).ok()?;
+            (root != multi_workspace).then_some(root)
+        })
+        .expect("new multi-workspace window should exist");
+
+    moved_multi_workspace.read_with(cx, |mw, _cx| {
+        assert_eq!(
+            mw.workspaces().count(),
+            2,
+            "all workspaces in the project group should move together",
+        );
     });
 }

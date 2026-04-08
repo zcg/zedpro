@@ -222,13 +222,11 @@ impl WindowsWindowInner {
             self.state
                 .pending_device_size_during_resize
                 .set(Some(new_size));
-            self.handle_size_change(new_size, scale_factor, false);
             return Some(0);
         } else if should_defer_hwnd_swap_chain_resize {
             self.state
                 .pending_device_size_during_resize
                 .set(Some(new_size));
-            self.handle_size_change(new_size, scale_factor, false);
             return Some(0);
         } else {
             should_resize_renderer = true;
