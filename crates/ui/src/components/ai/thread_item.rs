@@ -16,11 +16,19 @@ pub enum AgentThreadStatus {
     Error,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorktreeKind {
+    #[default]
+    Main,
+    Linked,
+}
+
 #[derive(Clone)]
 pub struct ThreadItemWorktreeInfo {
     pub name: SharedString,
     pub full_path: SharedString,
     pub highlight_positions: Vec<usize>,
+    pub kind: WorktreeKind,
 }
 
 #[derive(IntoElement, RegisterComponent)]
@@ -358,7 +366,10 @@ impl RenderOnce for ThreadItem {
 
         let has_project_name = self.project_name.is_some();
         let has_project_paths = project_paths.is_some();
-        let has_worktree = !self.worktrees.is_empty();
+        let has_worktree = self
+            .worktrees
+            .iter()
+            .any(|wt| wt.kind == WorktreeKind::Linked);
         let has_timestamp = !self.timestamp.is_empty();
         let timestamp = self.timestamp;
 
@@ -445,6 +456,10 @@ impl RenderOnce for ThreadItem {
 
                     for wt in self.worktrees {
                         if seen_names.contains(&wt.name) {
+                            continue;
+                        }
+
+                        if wt.kind == WorktreeKind::Main {
                             continue;
                         }
 
@@ -623,6 +638,7 @@ impl Component for ThreadItem {
                                 name: "link-agent-panel".into(),
                                 full_path: "link-agent-panel".into(),
                                 highlight_positions: Vec::new(),
+                                kind: WorktreeKind::Linked,
                             }]),
                     )
                     .into_any_element(),
@@ -649,6 +665,7 @@ impl Component for ThreadItem {
                                 name: "my-project".into(),
                                 full_path: "my-project".into(),
                                 highlight_positions: Vec::new(),
+                                kind: WorktreeKind::Linked,
                             }])
                             .added(42)
                             .removed(17)
@@ -728,6 +745,7 @@ impl Component for ThreadItem {
                                 name: "my-project-name".into(),
                                 full_path: "my-project-name".into(),
                                 highlight_positions: vec![3, 4, 5, 6, 7, 8, 9, 10, 11],
+                                kind: WorktreeKind::Linked,
                             }]),
                     )
                     .into_any_element(),

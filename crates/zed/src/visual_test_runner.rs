@@ -2527,11 +2527,6 @@ fn run_multi_workspace_sidebar_visual_tests(
     std::fs::create_dir_all(&workspace1_dir)?;
     std::fs::create_dir_all(&workspace2_dir)?;
 
-    // Enable the agent-v2 feature flag so multi-workspace is active
-    cx.update(|cx| {
-        cx.update_flags(true, vec!["agent-v2".to_string()]);
-    });
-
     // Create both projects upfront so we can build both workspaces during
     // window creation, before the MultiWorkspace entity exists.
     // This avoids a re-entrant read panic that occurs when Workspace::new
@@ -3080,12 +3075,7 @@ fn run_start_thread_in_selector_visual_tests(
     cx: &mut VisualTestAppContext,
     update_baseline: bool,
 ) -> Result<TestResult> {
-    use agent_ui::{AgentPanel, StartThreadIn, WorktreeCreationStatus};
-
-    // Enable feature flags so the thread target selector renders
-    cx.update(|cx| {
-        cx.update_flags(true, vec!["agent-v2".to_string()]);
-    });
+    use agent_ui::{AgentPanel, NewWorktreeBranchTarget, StartThreadIn, WorktreeCreationStatus};
 
     // Create a temp directory with a real git repo so "New Worktree" is enabled
     let temp_dir = tempfile::tempdir()?;
@@ -3401,7 +3391,13 @@ edition = "2021"
 
     cx.update_window(workspace_window.into(), |_, _window, cx| {
         panel.update(cx, |panel, cx| {
-            panel.set_start_thread_in_for_tests(StartThreadIn::NewWorktree, cx);
+            panel.set_start_thread_in_for_tests(
+                StartThreadIn::NewWorktree {
+                    worktree_name: None,
+                    branch_target: NewWorktreeBranchTarget::default(),
+                },
+                cx,
+            );
         });
     })?;
     cx.run_until_parked();
@@ -3474,7 +3470,13 @@ edition = "2021"
     cx.run_until_parked();
 
     cx.update_window(workspace_window.into(), |_, window, cx| {
-        window.dispatch_action(Box::new(StartThreadIn::NewWorktree), cx);
+        window.dispatch_action(
+            Box::new(StartThreadIn::NewWorktree {
+                worktree_name: None,
+                branch_target: NewWorktreeBranchTarget::default(),
+            }),
+            cx,
+        );
     })?;
     cx.run_until_parked();
 

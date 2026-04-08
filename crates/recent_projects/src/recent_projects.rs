@@ -772,9 +772,13 @@ impl RecentProjects {
                     if let Some((workspace_id, ..)) =
                         picker.delegate.workspaces.get(hit.candidate_id)
                     {
+                        let workspace_id = *workspace_id;
+                        if picker.delegate.is_current_workspace(workspace_id, cx) {
+                            return;
+                        }
                         picker
                             .delegate
-                            .remove_sibling_workspace(*workspace_id, window, cx);
+                            .remove_sibling_workspace(workspace_id, window, cx);
                         let query = picker.query(cx);
                         picker.update_matches(query, window, cx);
                     }
@@ -987,7 +991,7 @@ impl PickerDelegate for RecentProjectsDelegate {
             .workspaces
             .iter()
             .enumerate()
-            .filter(|(_, (id, _, _, _))| self.is_sibling_workspace(*id, cx))
+            .filter(|(_, (id, _, _, _))| self.sibling_workspace_ids.contains(id))
             .map(|(id, (_, _, paths, _))| {
                 let combined_string = paths
                     .ordered_paths()
@@ -1076,7 +1080,7 @@ impl PickerDelegate for RecentProjectsDelegate {
 
             if is_empty_query {
                 for (id, (workspace_id, _, _, _)) in self.workspaces.iter().enumerate() {
-                    if self.is_sibling_workspace(*workspace_id, cx) {
+                    if self.sibling_workspace_ids.contains(workspace_id) {
                         entries.push(ProjectPickerEntry::OpenProject(StringMatch {
                             candidate_id: id,
                             score: 0.0,
@@ -1153,6 +1157,11 @@ impl PickerDelegate for RecentProjectsDelegate {
                     return;
                 };
                 let workspace_id = *workspace_id;
+
+                if self.is_current_workspace(workspace_id, cx) {
+                    cx.emit(DismissEvent);
+                    return;
+                }
 
                 if let Some(handle) = window.window_handle().downcast::<MultiWorkspace>() {
                     cx.defer(move |cx| {
@@ -1397,6 +1406,7 @@ impl PickerDelegate for RecentProjectsDelegate {
             ProjectPickerEntry::OpenProject(hit) => {
                 let (workspace_id, location, paths, _) = self.workspaces.get(hit.candidate_id)?;
                 let workspace_id = *workspace_id;
+                let is_current = self.is_current_workspace(workspace_id, cx);
                 let ordered_paths: Vec<_> = paths
                     .ordered_paths()
                     .map(|p| p.compact().to_string_lossy().to_string())
@@ -1436,6 +1446,7 @@ impl PickerDelegate for RecentProjectsDelegate {
                     prefix,
                     match_label: HighlightedMatch::join(match_labels.into_iter().flatten(), ", "),
                     paths,
+                    active: is_current,
                 };
 
                 let icon = icon_for_remote_connection(match location {
@@ -1445,20 +1456,24 @@ impl PickerDelegate for RecentProjectsDelegate {
 
                 let secondary_actions = h_flex()
                     .gap_1()
-                    .child(
-                        IconButton::new("remove_open_project", IconName::Close)
-                            .icon_size(IconSize::Small)
-                            .tooltip(Tooltip::text("Remove Project from Window"))
-                            .on_click(cx.listener(move |picker, _, window, cx| {
-                                cx.stop_propagation();
-                                window.prevent_default();
-                                picker
-                                    .delegate
-                                    .remove_sibling_workspace(workspace_id, window, cx);
-                                let query = picker.query(cx);
-                                picker.update_matches(query, window, cx);
-                            })),
-                    )
+                    .when(!is_current, |this| {
+                        this.child(
+                            IconButton::new("remove_open_project", IconName::Close)
+                                .icon_size(IconSize::Small)
+                                .tooltip(Tooltip::text("Remove Project from Window"))
+                                .on_click(cx.listener(move |picker, _, window, cx| {
+                                    cx.stop_propagation();
+                                    window.prevent_default();
+                                    picker.delegate.remove_sibling_workspace(
+                                        workspace_id,
+                                        window,
+                                        cx,
+                                    );
+                                    let query = picker.query(cx);
+                                    picker.update_matches(query, window, cx);
+                                })),
+                        )
+                    })
                     .into_any_element();
 
                 Some(
@@ -1489,7 +1504,7 @@ impl PickerDelegate for RecentProjectsDelegate {
                 )
             }
             ProjectPickerEntry::RecentProject(hit) => {
-                let popover_style = matches!(self.style, ProjectPickerStyle::Popover);
+                let _popover_style = matches!(self.style, ProjectPickerStyle::Popover);
                 let (_, location, paths, _) = self.workspaces.get(hit.candidate_id)?;
                 let is_local = matches!(location, SerializedWorkspaceLocation::Local);
                 let paths_to_add = paths.paths().to_vec();
@@ -1532,6 +1547,7 @@ impl PickerDelegate for RecentProjectsDelegate {
                     prefix,
                     match_label: HighlightedMatch::join(match_labels.into_iter().flatten(), ", "),
                     paths,
+                    active: false,
                 };
 
                 let focus_handle = self.focus_handle.clone();
@@ -1540,9 +1556,16 @@ impl PickerDelegate for RecentProjectsDelegate {
                     .gap_px()
                     .when(is_local, |this| {
                         this.child(
-                            IconButton::new("add_to_workspace", IconName::FolderPlus)
+                            IconButton::new("add_to_workspace", IconName::FolderOpenAdd)
                                 .icon_size(IconSize::Small)
-                                .tooltip(Tooltip::text("Add Project to this Workspace"))
+                                .tooltip(move |_, cx| {
+                                    Tooltip::with_meta(
+                                        "Add Project to this Workspace",
+                                        None,
+                                        "As a multi-root folder project",
+                                        cx,
+                                    )
+                                })
                                 .on_click({
                                     let paths_to_add = paths_to_add.clone();
                                     cx.listener(move |picker, _event, window, cx| {
@@ -1557,28 +1580,26 @@ impl PickerDelegate for RecentProjectsDelegate {
                                 }),
                         )
                     })
-                    .when(popover_style, |this| {
-                        this.child(
-                            IconButton::new("open_new_window", IconName::ArrowUpRight)
-                                .icon_size(IconSize::XSmall)
-                                .tooltip({
-                                    move |_, cx| {
-                                        Tooltip::for_action_in(
-                                            "Open Project in New Window",
-                                            &menu::SecondaryConfirm,
-                                            &focus_handle,
-                                            cx,
-                                        )
-                                    }
-                                })
-                                .on_click(cx.listener(move |this, _event, window, cx| {
-                                    cx.stop_propagation();
-                                    window.prevent_default();
-                                    this.delegate.set_selected_index(ix, window, cx);
-                                    this.delegate.confirm(true, window, cx);
-                                })),
-                        )
-                    })
+                    .child(
+                        IconButton::new("open_new_window", IconName::OpenNewWindow)
+                            .icon_size(IconSize::Small)
+                            .tooltip({
+                                move |_, cx| {
+                                    Tooltip::for_action_in(
+                                        "Open Project in New Window",
+                                        &menu::SecondaryConfirm,
+                                        &focus_handle,
+                                        cx,
+                                    )
+                                }
+                            })
+                            .on_click(cx.listener(move |this, _event, window, cx| {
+                                cx.stop_propagation();
+                                window.prevent_default();
+                                this.delegate.set_selected_index(ix, window, cx);
+                                this.delegate.confirm(true, window, cx);
+                            })),
+                    )
                     .child(
                         IconButton::new("delete", IconName::Close)
                             .icon_size(IconSize::Small)
@@ -1616,7 +1637,14 @@ impl PickerDelegate for RecentProjectsDelegate {
                                     }
                                     highlighted.render(window, cx)
                                 })
-                                .tooltip(Tooltip::text(tooltip_path)),
+                                .tooltip(move |_, cx| {
+                                    Tooltip::with_meta(
+                                        "Open Project in This Window",
+                                        None,
+                                        tooltip_path.clone(),
+                                        cx,
+                                    )
+                                }),
                         )
                         .end_slot(secondary_actions)
                         .show_end_slot_on_hover()
@@ -1676,6 +1704,57 @@ impl PickerDelegate for RecentProjectsDelegate {
             );
         }
 
+        let selected_entry = self.filtered_entries.get(self.selected_index);
+
+        let is_current_workspace_entry =
+            if let Some(ProjectPickerEntry::OpenProject(hit)) = selected_entry {
+                self.workspaces
+                    .get(hit.candidate_id)
+                    .map(|(id, ..)| self.is_current_workspace(*id, cx))
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+
+        let _secondary_footer_actions: Option<AnyElement> = match selected_entry {
+            Some(ProjectPickerEntry::OpenFolder { .. }) => Some(
+                Button::new("remove_selected", "Remove Folder")
+                    .key_binding(KeyBinding::for_action_in(
+                        &RemoveSelected,
+                        &focus_handle,
+                        cx,
+                    ))
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(RemoveSelected.boxed_clone(), cx)
+                    })
+                    .into_any_element(),
+            ),
+            Some(ProjectPickerEntry::OpenProject(_)) if !is_current_workspace_entry => Some(
+                Button::new("remove_selected", "Remove from Window")
+                    .key_binding(KeyBinding::for_action_in(
+                        &RemoveSelected,
+                        &focus_handle,
+                        cx,
+                    ))
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(RemoveSelected.boxed_clone(), cx)
+                    })
+                    .into_any_element(),
+            ),
+            Some(ProjectPickerEntry::RecentProject(_)) => Some(
+                Button::new("delete_recent", "Delete")
+                    .key_binding(KeyBinding::for_action_in(
+                        &RemoveSelected,
+                        &focus_handle,
+                        cx,
+                    ))
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(RemoveSelected.boxed_clone(), cx)
+                    })
+                    .into_any_element(),
+            ),
+            _ => None,
+        };
         Some(
             h_flex()
                 .flex_1()
@@ -1743,12 +1822,20 @@ impl PickerDelegate for RecentProjectsDelegate {
                         .menu({
                             let focus_handle = focus_handle.clone();
                             let create_new_window = self.create_new_window;
+                            let show_add_to_workspace = !create_new_window;
 
                             move |window, cx| {
                                 Some(ContextMenu::build(window, cx, {
                                     let focus_handle = focus_handle.clone();
                                     move |menu, _, _| {
                                         menu.context(focus_handle)
+                                            .when(show_add_to_workspace, |menu| {
+                                                menu.action(
+                                                    "Add to this Workspace",
+                                                    AddToWorkspace.boxed_clone(),
+                                                )
+                                                .separator()
+                                            })
                                             .action(
                                                 "Open Local Project",
                                                 workspace::Open { create_new_window }.boxed_clone(),

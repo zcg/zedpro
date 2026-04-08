@@ -32,10 +32,12 @@ mod workspace_settings;
 pub use crate::notifications::NotificationFrame;
 pub use dock::Panel;
 pub use multi_workspace::{
-    CloseWorkspaceSidebar, DraggedSidebar, FocusWorkspaceSidebar, MultiWorkspace,
-    MultiWorkspaceEvent, NewWorkspaceInWindow, NextWorkspace, NextWorkspaceInWindow,
-    PreviousWorkspace, PreviousWorkspaceInWindow, Sidebar, SidebarEvent, SidebarHandle,
-    SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar, sidebar_side_context_menu,
+    CloseWorkspaceSidebar, DraggedSidebar, FocusWorkspaceSidebar, MoveWorkspaceToNewWindow,
+    MultiWorkspace, MultiWorkspaceEvent, NewThread, NewWorkspaceInWindow, NextProjectGroup,
+    NextThread, NextWorkspace, NextWorkspaceInWindow, PreviousProjectGroup, PreviousThread,
+    PreviousWorkspace, PreviousWorkspaceInWindow, ShowFewerThreads, ShowMoreThreads, Sidebar,
+    SidebarEvent, SidebarHandle, SidebarRenderState, SidebarSide, ToggleWorkspaceSidebar,
+    sidebar_side_context_menu,
 };
 pub use path_list::{PathList, SerializedPathList};
 pub use toast_layer::{ToastAction, ToastLayer, ToastView};
@@ -4876,12 +4878,31 @@ impl Workspace {
             .as_ref()
             .map(|h| Target::Sidebar(h.clone()));
 
+        let sidebar_on_right = self
+            .multi_workspace
+            .as_ref()
+            .and_then(|mw| mw.upgrade())
+            .map_or(false, |mw| {
+                mw.read(cx).sidebar_side(cx) == SidebarSide::Right
+            });
+
+        let away_from_sidebar = if sidebar_on_right {
+            SplitDirection::Left
+        } else {
+            SplitDirection::Right
+        };
+
+        let (near_dock, far_dock) = if sidebar_on_right {
+            (&self.right_dock, &self.left_dock)
+        } else {
+            (&self.left_dock, &self.right_dock)
+        };
+
         let target = match (origin, direction) {
-            // From the sidebar, only Right navigates into the workspace.
-            (Origin::Sidebar, SplitDirection::Right) => try_dock(&self.left_dock)
+            (Origin::Sidebar, dir) if dir == away_from_sidebar => try_dock(near_dock)
                 .or_else(|| get_last_active_pane().map(Target::Pane))
                 .or_else(|| try_dock(&self.bottom_dock))
-                .or_else(|| try_dock(&self.right_dock)),
+                .or_else(|| try_dock(far_dock)),
 
             (Origin::Sidebar, _) => None,
 
@@ -4894,8 +4915,22 @@ impl Workspace {
                     match direction {
                         SplitDirection::Up => None,
                         SplitDirection::Down => try_dock(&self.bottom_dock),
-                        SplitDirection::Left => try_dock(&self.left_dock).or(sidebar_target),
-                        SplitDirection::Right => try_dock(&self.right_dock),
+                        SplitDirection::Left => {
+                            let dock_target = try_dock(&self.left_dock);
+                            if sidebar_on_right {
+                                dock_target
+                            } else {
+                                dock_target.or(sidebar_target)
+                            }
+                        }
+                        SplitDirection::Right => {
+                            let dock_target = try_dock(&self.right_dock);
+                            if sidebar_on_right {
+                                dock_target.or(sidebar_target)
+                            } else {
+                                dock_target
+                            }
+                        }
                     }
                 }
             }
@@ -4908,24 +4943,48 @@ impl Workspace {
                 }
             }
 
-            (Origin::LeftDock, SplitDirection::Left) => sidebar_target,
+            (Origin::LeftDock, SplitDirection::Left) => {
+                if sidebar_on_right {
+                    None
+                } else {
+                    sidebar_target
+                }
+            }
 
             (Origin::LeftDock, SplitDirection::Down)
             | (Origin::RightDock, SplitDirection::Down) => try_dock(&self.bottom_dock),
 
             (Origin::BottomDock, SplitDirection::Up) => get_last_active_pane().map(Target::Pane),
             (Origin::BottomDock, SplitDirection::Left) => {
-                try_dock(&self.left_dock).or(sidebar_target)
+                let dock_target = try_dock(&self.left_dock);
+                if sidebar_on_right {
+                    dock_target
+                } else {
+                    dock_target.or(sidebar_target)
+                }
             }
-            (Origin::BottomDock, SplitDirection::Right) => try_dock(&self.right_dock),
+            (Origin::BottomDock, SplitDirection::Right) => {
+                let dock_target = try_dock(&self.right_dock);
+                if sidebar_on_right {
+                    dock_target.or(sidebar_target)
+                } else {
+                    dock_target
+                }
+            }
 
             (Origin::RightDock, SplitDirection::Left) => {
                 if let Some(last_active_pane) = get_last_active_pane() {
                     Some(Target::Pane(last_active_pane))
                 } else {
-                    try_dock(&self.bottom_dock)
-                        .or_else(|| try_dock(&self.left_dock))
-                        .or(sidebar_target)
+                    try_dock(&self.bottom_dock).or_else(|| try_dock(&self.left_dock))
+                }
+            }
+
+            (Origin::RightDock, SplitDirection::Right) => {
+                if sidebar_on_right {
+                    sidebar_target
+                } else {
+                    None
                 }
             }
 
@@ -9322,30 +9381,35 @@ pub async fn find_existing_workspace(
     let mut open_visible = OpenVisible::All;
     let mut best_match = None;
 
-    if open_options.open_new_workspace != Some(true) {
-        cx.update(|cx| {
-            for window in workspace_windows_for_location(location, cx) {
-                if let Ok(multi_workspace) = window.read(cx) {
-                    for workspace in multi_workspace.workspaces() {
-                        let project = workspace.read(cx).project.read(cx);
-                        let m = project.visibility_for_paths(
-                            abs_paths,
-                            open_options.open_new_workspace == None,
-                            cx,
-                        );
-                        if m > best_match {
-                            existing = Some((window, workspace.clone()));
-                            best_match = m;
-                        } else if best_match.is_none()
-                            && open_options.open_new_workspace == Some(false)
-                        {
-                            existing = Some((window, workspace.clone()))
-                        }
+    cx.update(|cx| {
+        for window in workspace_windows_for_location(location, cx) {
+            if let Ok(multi_workspace) = window.read(cx) {
+                for workspace in multi_workspace.workspaces() {
+                    let project = workspace.read(cx).project.read(cx);
+                    let m = project.visibility_for_paths(
+                        abs_paths,
+                        open_options.open_new_workspace == None,
+                        cx,
+                    );
+                    if m > best_match {
+                        existing = Some((window, workspace.clone()));
+                        best_match = m;
+                    } else if best_match.is_none() && open_options.open_new_workspace == Some(false)
+                    {
+                        existing = Some((window, workspace.clone()))
                     }
                 }
             }
-        });
+        }
+    });
 
+    // With -n, only reuse a window if the path is genuinely contained
+    // within an existing worktree (don't fall back to any arbitrary window).
+    if open_options.open_new_workspace == Some(true) && best_match.is_none() {
+        existing = None;
+    }
+
+    if open_options.open_new_workspace != Some(true) {
         let all_paths_are_files = existing
             .as_ref()
             .and_then(|(_, target_workspace)| {

@@ -819,10 +819,6 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
         let git_panel = GitPanel::load(workspace_handle.clone(), cx.clone());
         let channels_panel =
             collab_ui::collab_panel::CollabPanel::load(workspace_handle.clone(), cx.clone());
-        let notification_panel = collab_ui::notification_panel::NotificationPanel::load(
-            workspace_handle.clone(),
-            cx.clone(),
-        );
         let debug_panel = DebugPanel::load(workspace_handle.clone(), cx);
 
         async fn add_panel_when_ready(
@@ -846,7 +842,6 @@ fn initialize_panels(window: &mut Window, cx: &mut Context<Workspace>) -> Task<a
             add_panel_when_ready(terminal_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(git_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(channels_panel, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(notification_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(debug_panel, workspace_handle.clone(), cx.clone()),
             initialize_agent_panel(workspace_handle, cx.clone()).map(|r| r.log_err()),
         );
@@ -1202,16 +1197,6 @@ fn register_actions(
              window: &mut Window,
              cx: &mut Context<Workspace>| {
                 workspace.toggle_panel_focus::<collab_ui::collab_panel::CollabPanel>(window, cx);
-            },
-        )
-        .register_action(
-            |workspace: &mut Workspace,
-             _: &collab_ui::notification_panel::ToggleFocus,
-             window: &mut Window,
-             cx: &mut Context<Workspace>| {
-                workspace.toggle_panel_focus::<collab_ui::notification_panel::NotificationPanel>(
-                    window, cx,
-                );
             },
         )
         .register_action(
@@ -2680,10 +2665,6 @@ mod tests {
     #[gpui::test]
     async fn test_open_paths_action(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
-        cx.update(|cx| {
-            use feature_flags::FeatureFlagAppExt as _;
-            cx.update_flags(false, vec!["agent-v2".to_string()]);
-        });
         app_state
             .fs
             .as_fake()
@@ -2850,9 +2831,26 @@ mod tests {
         .unwrap();
         assert_eq!(cx.update(|cx| cx.windows().len()), 1);
 
+        // Opening a file inside the existing worktree with -n reuses the window.
         cx.update(|cx| {
             open_paths(
                 &[PathBuf::from(path!("/root/dir/c"))],
+                app_state.clone(),
+                workspace::OpenOptions {
+                    open_new_workspace: Some(true),
+                    ..Default::default()
+                },
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+
+        // Opening a path NOT in any existing worktree with -n creates a new window.
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root/b"))],
                 app_state.clone(),
                 workspace::OpenOptions {
                     open_new_workspace: Some(true),
@@ -2916,10 +2914,26 @@ mod tests {
         .unwrap();
         assert_eq!(cx.update(|cx| cx.windows().len()), 1);
 
-        // Opening a directory with -n creates a new window.
+        // Opening a directory already in a worktree with -n reuses the window.
         cx.update(|cx| {
             open_paths(
                 &[PathBuf::from(path!("/root/dir2"))],
+                app_state.clone(),
+                workspace::OpenOptions {
+                    open_new_workspace: Some(true),
+                    ..Default::default()
+                },
+                cx,
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+
+        // Opening a directory NOT in any worktree with -n creates a new window.
+        cx.update(|cx| {
+            open_paths(
+                &[PathBuf::from(path!("/root"))],
                 app_state.clone(),
                 workspace::OpenOptions {
                     open_new_workspace: Some(true),
@@ -5130,7 +5144,6 @@ mod tests {
                 "multi_workspace",
                 "new_process_modal",
                 "notebook",
-                "notification_panel",
                 "onboarding",
                 "outline",
                 "outline_panel",
@@ -5648,10 +5661,6 @@ mod tests {
     #[gpui::test]
     async fn test_open_paths_switches_to_best_workspace(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
-        cx.update(|cx| {
-            use feature_flags::FeatureFlagAppExt as _;
-            cx.update_flags(false, vec!["agent-v2".to_string()]);
-        });
 
         app_state
             .fs
@@ -5853,10 +5862,6 @@ mod tests {
     async fn test_quit_checks_all_workspaces_for_dirty_items(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         cx.update(init);
-        cx.update(|cx| {
-            use feature_flags::FeatureFlagAppExt as _;
-            cx.update_flags(false, vec!["agent-v2".to_string()]);
-        });
 
         app_state
             .fs
@@ -6145,11 +6150,6 @@ mod tests {
         use workspace::{OpenMode, Workspace, WorkspaceId};
 
         let app_state = init_test(cx);
-
-        cx.update(|cx| {
-            use feature_flags::FeatureFlagAppExt as _;
-            cx.update_flags(false, vec!["agent-v2".to_string()]);
-        });
 
         let dir1 = path!("/dir1");
         let dir2 = path!("/dir2");

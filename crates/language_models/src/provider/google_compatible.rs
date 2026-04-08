@@ -352,8 +352,8 @@ impl LanguageModel for GoogleCompatibleLanguageModel {
         request: LanguageModelRequest,
         cx: &App,
     ) -> BoxFuture<'static, Result<u64>> {
-        let fallback_on_missing_key = count_google_tokens(request.clone(), cx);
-        let fallback_on_error = count_google_tokens(request.clone(), cx);
+        let fallback_on_missing_key = count_google_tokens(request.clone());
+        let fallback_on_error = count_google_tokens(request.clone());
         let request_for_api = into_google(
             request,
             self.model.request_id().to_string(),
@@ -375,7 +375,7 @@ impl LanguageModel for GoogleCompatibleLanguageModel {
 
         async move {
             let Some(api_key) = api_key else {
-                return fallback_on_missing_key.await;
+                return fallback_on_missing_key;
             };
 
             let response = google_ai::count_tokens_with_options(
@@ -396,7 +396,7 @@ impl LanguageModel for GoogleCompatibleLanguageModel {
                         log::warn!(
                             "gemini-compatible count_tokens failed, fallback to estimator: {error:#}"
                         );
-                        fallback_on_error.await
+                        fallback_on_error
                     } else {
                         Err(anyhow!(
                             "{provider_name}: failed to count tokens: {error:#}"

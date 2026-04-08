@@ -411,7 +411,7 @@ impl LanguageModel for OpenAiCompatibleLanguageModel {
                 self.model.capabilities.parallel_tool_calls,
                 self.model.capabilities.prompt_cache_key,
                 self.max_output_tokens(),
-                self.model.reasoning_effort.clone(),
+                self.model.reasoning_effort,
             );
             let completions = self.stream_completion(request, bypass_rate_limit, cx);
             async move {
@@ -426,7 +426,7 @@ impl LanguageModel for OpenAiCompatibleLanguageModel {
                 self.model.capabilities.parallel_tool_calls,
                 self.model.capabilities.prompt_cache_key,
                 self.max_output_tokens(),
-                self.model.reasoning_effort.clone(),
+                self.model.reasoning_effort,
             );
             let completions = self.stream_response(request, bypass_rate_limit, cx);
             async move {

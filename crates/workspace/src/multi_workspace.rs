@@ -1,5 +1,4 @@
 use anyhow::Result;
-use feature_flags::{AgentV2FeatureFlag, FeatureFlagAppExt};
 use gpui::PathPromptOptions;
 #[cfg(target_os = "windows")]
 use gpui::SystemWindowTabController;
@@ -18,7 +17,7 @@ use std::sync::Arc;
 use ui::prelude::*;
 use util::ResultExt;
 use util::path_list::PathList;
-use zed_actions::agents_sidebar::{MoveWorkspaceToNewWindow, ToggleThreadSwitcher};
+use zed_actions::agents_sidebar::ToggleThreadSwitcher;
 
 use agent_settings::AgentSettings;
 use settings::SidebarDockPosition;
@@ -52,6 +51,22 @@ actions!(
         NextWorkspace,
         /// Switches to the previous workspace.
         PreviousWorkspace,
+        /// Activates the next project group in the sidebar.
+        NextProjectGroup,
+        /// Activates the previous project group in the sidebar.
+        PreviousProjectGroup,
+        /// Activates the next thread in sidebar order.
+        NextThread,
+        /// Activates the previous thread in sidebar order.
+        PreviousThread,
+        /// Expands the thread list for the current project to show more threads.
+        ShowMoreThreads,
+        /// Collapses the thread list for the current project to show fewer threads.
+        ShowFewerThreads,
+        /// Creates a new thread in the current workspace.
+        NewThread,
+        /// Moves the current workspace's project group to a new window.
+        MoveWorkspaceToNewWindow,
     ]
 );
 
@@ -125,6 +140,21 @@ pub trait Sidebar: Focusable + Render + EventEmitter<SidebarEvent> + Sized {
     ) {
     }
 
+    /// Activates the next or previous project group.
+    fn cycle_project_group(
+        &mut self,
+        _forward: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) {
+    }
+
+    /// Activates the next or previous thread in sidebar order.
+    fn cycle_thread(&mut self, _forward: bool, _window: &mut Window, _cx: &mut Context<Self>) {}
+
+    /// Moves the active workspace's project group to a new window.
+    fn move_workspace_to_new_window(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+
     /// Return an opaque JSON blob of sidebar-specific state to persist.
     fn serialized_state(&self, _cx: &App) -> Option<String> {
         None
@@ -150,6 +180,9 @@ pub trait SidebarHandle: 'static + Send + Sync {
     fn to_any(&self) -> AnyView;
     fn entity_id(&self) -> EntityId;
     fn toggle_thread_switcher(&self, select_last: bool, window: &mut Window, cx: &mut App);
+    fn cycle_project_group(&self, forward: bool, window: &mut Window, cx: &mut App);
+    fn cycle_thread(&self, forward: bool, window: &mut Window, cx: &mut App);
+    fn move_workspace_to_new_window(&self, window: &mut Window, cx: &mut App);
 
     fn is_threads_list_view_active(&self, cx: &App) -> bool;
 
@@ -206,6 +239,33 @@ impl<T: Sidebar> SidebarHandle for Entity<T> {
         window.defer(cx, move |window, cx| {
             entity.update(cx, |this, cx| {
                 this.toggle_thread_switcher(select_last, window, cx);
+            });
+        });
+    }
+
+    fn cycle_project_group(&self, forward: bool, window: &mut Window, cx: &mut App) {
+        let entity = self.clone();
+        window.defer(cx, move |window, cx| {
+            entity.update(cx, |this, cx| {
+                this.cycle_project_group(forward, window, cx);
+            });
+        });
+    }
+
+    fn cycle_thread(&self, forward: bool, window: &mut Window, cx: &mut App) {
+        let entity = self.clone();
+        window.defer(cx, move |window, cx| {
+            entity.update(cx, |this, cx| {
+                this.cycle_thread(forward, window, cx);
+            });
+        });
+    }
+
+    fn move_workspace_to_new_window(&self, window: &mut Window, cx: &mut App) {
+        let entity = self.clone();
+        window.defer(cx, move |window, cx| {
+            entity.update(cx, |this, cx| {
+                this.move_workspace_to_new_window(window, cx);
             });
         });
     }
@@ -288,6 +348,7 @@ pub struct MultiWorkspace {
     _serialize_task: Option<Task<()>>,
     _create_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
+    previous_focus_handle: Option<FocusHandle>,
 }
 
 impl EventEmitter<MultiWorkspaceEvent> for MultiWorkspace {}
@@ -372,6 +433,7 @@ impl MultiWorkspace {
                 window_tab_settings_subscription,
                 settings_subscription,
             ],
+            previous_focus_handle: None,
         }
     }
 
@@ -415,7 +477,7 @@ impl MultiWorkspace {
     }
 
     pub fn multi_workspace_enabled(&self, cx: &App) -> bool {
-        cx.has_flag::<AgentV2FeatureFlag>() && !DisableAiSettings::get_global(cx).disable_ai
+        !DisableAiSettings::get_global(cx).disable_ai
     }
 
     pub fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -426,6 +488,7 @@ impl MultiWorkspace {
         if self.sidebar_open() {
             self.close_sidebar(window, cx);
         } else {
+            self.previous_focus_handle = window.focused(cx);
             self.open_sidebar(cx);
             if let Some(sidebar) = &self.sidebar {
                 sidebar.prepare_for_focus(window, cx);
@@ -456,14 +519,16 @@ impl MultiWorkspace {
                 .is_some_and(|s| s.focus_handle(cx).contains_focused(window, cx));
 
             if sidebar_is_focused {
-                let pane = self.workspace().read(cx).active_pane().clone();
-                let pane_focus = pane.read(cx).focus_handle(cx);
-                window.focus(&pane_focus, cx);
-            } else if let Some(sidebar) = &self.sidebar {
-                sidebar.prepare_for_focus(window, cx);
-                sidebar.focus(window, cx);
+                self.restore_previous_focus(false, window, cx);
+            } else {
+                self.previous_focus_handle = window.focused(cx);
+                if let Some(sidebar) = &self.sidebar {
+                    sidebar.prepare_for_focus(window, cx);
+                    sidebar.focus(window, cx);
+                }
             }
         } else {
+            self.previous_focus_handle = window.focused(cx);
             self.open_sidebar(cx);
             if let Some(sidebar) = &self.sidebar {
                 sidebar.prepare_for_focus(window, cx);
@@ -496,11 +561,24 @@ impl MultiWorkspace {
                 workspace.set_sidebar_focus_handle(None);
             });
         }
-        let pane = self.workspace().read(cx).active_pane().clone();
-        let pane_focus = pane.read(cx).focus_handle(cx);
-        window.focus(&pane_focus, cx);
+        self.restore_previous_focus(true, window, cx);
         self.serialize(cx);
         cx.notify();
+    }
+
+    fn restore_previous_focus(&mut self, clear: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let focus_handle = if clear {
+            self.previous_focus_handle.take()
+        } else {
+            self.previous_focus_handle.clone()
+        };
+
+        if let Some(previous_focus) = focus_handle {
+            previous_focus.focus(window, cx);
+        } else {
+            let pane = self.workspace().read(cx).active_pane().clone();
+            window.focus(&pane.read(cx).focus_handle(cx), cx);
+        }
     }
 
     pub fn close_window(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
@@ -847,6 +925,19 @@ impl MultiWorkspace {
         self.serialize(cx);
         self.focus_active_workspace(window, cx);
         cx.notify();
+    }
+
+    /// Promotes the currently active workspace to persistent if it is
+    /// transient, so it is retained across workspace switches even when
+    /// the sidebar is closed. No-op if the workspace is already persistent.
+    pub fn retain_active_workspace(&mut self, cx: &mut Context<Self>) {
+        if let ActiveWorkspace::Transient(workspace) = &self.active_workspace {
+            let workspace = workspace.clone();
+            let index = self.promote_transient(workspace, cx);
+            self.active_workspace = ActiveWorkspace::Persistent(index);
+            self.serialize(cx);
+            cx.notify();
+        }
     }
 
     /// Promotes a former transient workspace into the persistent list.
@@ -1567,16 +1658,6 @@ impl MultiWorkspace {
         });
     }
 
-    fn move_active_workspace_to_new_window(
-        &mut self,
-        _: &MoveWorkspaceToNewWindow,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let workspace = self.workspace().clone();
-        self.move_workspace_to_new_window(&workspace, window, cx);
-    }
-
     pub fn open_project(
         &mut self,
         paths: Vec<PathBuf>,
@@ -1821,11 +1902,43 @@ impl Render for MultiWorkspace {
                     ))
                     .on_action(cx.listener(Self::next_workspace))
                     .on_action(cx.listener(Self::previous_workspace))
-                    .on_action(cx.listener(Self::move_active_workspace_to_new_window))
                     .on_action(cx.listener(
                         |this: &mut Self, action: &ToggleThreadSwitcher, window, cx| {
                             if let Some(sidebar) = &this.sidebar {
                                 sidebar.toggle_thread_switcher(action.select_last, window, cx);
+                            }
+                        },
+                    ))
+                    .on_action(
+                        cx.listener(|this: &mut Self, _: &NextProjectGroup, window, cx| {
+                            if let Some(sidebar) = &this.sidebar {
+                                sidebar.cycle_project_group(true, window, cx);
+                            }
+                        }),
+                    )
+                    .on_action(cx.listener(
+                        |this: &mut Self, _: &PreviousProjectGroup, window, cx| {
+                            if let Some(sidebar) = &this.sidebar {
+                                sidebar.cycle_project_group(false, window, cx);
+                            }
+                        },
+                    ))
+                    .on_action(cx.listener(|this: &mut Self, _: &NextThread, window, cx| {
+                        if let Some(sidebar) = &this.sidebar {
+                            sidebar.cycle_thread(true, window, cx);
+                        }
+                    }))
+                    .on_action(
+                        cx.listener(|this: &mut Self, _: &PreviousThread, window, cx| {
+                            if let Some(sidebar) = &this.sidebar {
+                                sidebar.cycle_thread(false, window, cx);
+                            }
+                        }),
+                    )
+                    .on_action(cx.listener(
+                        |this: &mut Self, _: &MoveWorkspaceToNewWindow, window, cx| {
+                            if let Some(sidebar) = &this.sidebar {
+                                sidebar.move_workspace_to_new_window(window, cx);
                             }
                         },
                     ))
