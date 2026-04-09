@@ -222,6 +222,11 @@ impl WindowsWindowInner {
             self.state
                 .pending_device_size_during_resize
                 .set(Some(new_size));
+            // Keep the deferred swap-chain resize, but update layout and force one draw so the
+            // restored window does not show newly exposed blank client-area while the drag
+            // continues.
+            self.handle_size_change(new_size, scale_factor, false);
+            self.draw_window(handle, true, true);
             return Some(0);
         } else if should_defer_hwnd_swap_chain_resize {
             self.state
