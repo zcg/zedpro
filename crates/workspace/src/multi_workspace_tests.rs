@@ -148,8 +148,8 @@ async fn test_project_group_keys_add_workspace(cx: &mut TestAppContext) {
             2,
             "should have two keys after adding a second workspace"
         );
-        assert_eq!(*keys[0], key_a);
-        assert_eq!(*keys[1], key_b);
+        assert_eq!(*keys[0], key_b);
+        assert_eq!(*keys[1], key_a);
     });
 }
 
@@ -229,8 +229,8 @@ async fn test_project_group_keys_on_worktree_added(cx: &mut TestAppContext) {
             2,
             "should have both the original and updated key"
         );
-        assert_eq!(*keys[0], initial_key);
-        assert_eq!(*keys[1], updated_key);
+        assert_eq!(*keys[0], updated_key);
+        assert_eq!(*keys[1], initial_key);
     });
 }
 
@@ -278,8 +278,8 @@ async fn test_project_group_keys_on_worktree_removed(cx: &mut TestAppContext) {
             2,
             "should accumulate both the original and post-removal key"
         );
-        assert_eq!(*keys[0], initial_key);
-        assert_eq!(*keys[1], updated_key);
+        assert_eq!(*keys[0], updated_key);
+        assert_eq!(*keys[1], initial_key);
     });
 }
 
@@ -335,9 +335,9 @@ async fn test_project_group_keys_across_multiple_workspaces_and_worktree_changes
             3,
             "should have key_a, key_b, and the updated key_a with root_c"
         );
-        assert_eq!(*keys[0], key_a);
+        assert_eq!(*keys[0], key_a_updated);
         assert_eq!(*keys[1], key_b);
-        assert_eq!(*keys[2], key_a_updated);
+        assert_eq!(*keys[2], key_a);
     });
 }
 

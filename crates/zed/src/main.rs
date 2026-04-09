@@ -7,7 +7,7 @@ mod zed;
 use agent::{SharedThread, ThreadStore};
 use agent_client_protocol;
 use agent_ui::AgentPanel;
-use anyhow::{Context as _, Error, Result};
+use anyhow::{Context as _, Result};
 use clap::Parser;
 use cli::FORCE_CLI_MODE_ENV_VAR_NAME;
 use client::{Client, ProxySettings, RefreshLlmTokenListener, UserStore, parse_zed_link};
@@ -1400,7 +1400,7 @@ pub(crate) async fn restore_or_create_workspace(
     let kvp = cx.update(|cx| KeyValueStore::global(cx));
     if let Some((multi_workspaces, remote_workspaces)) = restorable_workspaces(cx, &app_state).await
     {
-        let mut results: Vec<Result<(), Error>> = Vec::new();
+        let mut results: Vec<Result<(), anyhow::Error>> = Vec::new();
         let mut tasks = Vec::new();
         let mut restored_windows_by_id = HashMap::default();
 
@@ -1454,13 +1454,18 @@ pub(crate) async fn restore_or_create_workspace(
         }
 
         // Wait for all window groups and remote workspaces to open concurrently
-        results.extend(future::join_all(tasks).await);
+        results.extend(
+            future::join_all(tasks)
+                .await
+                .into_iter()
+                .map(|result| result.map(|_| ())),
+        );
 
         // Show notifications for any errors that occurred
         let mut error_count = 0;
         for result in results {
-            if let Err(e) = result {
-                log::error!("Failed to restore workspace: {}", e);
+            if let Err(error) = result {
+                log::error!("Failed to restore workspace: {}", error);
                 error_count += 1;
             }
         }

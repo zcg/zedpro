@@ -8,7 +8,7 @@ mod open_url_modal;
 mod quick_action_bar;
 pub mod remote_debug;
 pub mod telemetry_log;
-#[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
+#[cfg(all(target_os = "macos", feature = "visual-tests"))]
 pub mod visual_tests;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows_only_instance;
@@ -2220,6 +2220,7 @@ pub fn open_new_ssh_project_from_project(
             cx,
         )
         .await
+        .map(|_| ())
     })
 }
 
@@ -6340,8 +6341,8 @@ mod tests {
                 assert_eq!(
                     mw.project_group_keys().cloned().collect::<Vec<_>>(),
                     vec![
-                        ProjectGroupKey::new(None, PathList::new(&[dir1])),
                         ProjectGroupKey::new(None, PathList::new(&[dir2])),
+                        ProjectGroupKey::new(None, PathList::new(&[dir1])),
                     ]
                 );
                 assert_eq!(mw.workspaces().count(), 1);

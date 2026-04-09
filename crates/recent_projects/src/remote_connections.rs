@@ -314,7 +314,7 @@ pub async fn open_remote_project(
     app_state: Arc<AppState>,
     open_options: workspace::OpenOptions,
     cx: &mut AsyncApp,
-) -> Result<()> {
+) -> Result<WindowHandle<MultiWorkspace>> {
     let created_new_window = open_options.requesting_window.is_none();
 
     let (existing, open_visible) = find_existing_workspace(
@@ -375,7 +375,7 @@ pub async fn open_remote_project(
                 .collect::<Vec<_>>();
             navigate_to_positions(&existing_window, items, &paths_with_positions, cx);
 
-            return Ok(());
+            return Ok(existing_window);
         }
         // If the remote connection is dead (e.g. server not running after failed reconnect),
         // fall through to establish a fresh connection instead of showing an error.
@@ -505,7 +505,7 @@ pub async fn open_remote_project(
                             .update(cx, |_, window, _| window.remove_window())
                             .ok();
                     }
-                    return Ok(());
+                    return Ok(window);
                 }
                 if let Some(connection_options) =
                     is_missing_dev_container_error(&connection_options, &err_message)
@@ -524,7 +524,7 @@ pub async fn open_remote_project(
                             .update(cx, |_, window, _| window.remove_window())
                             .ok();
                     }
-                    return Ok(());
+                    return Ok(window);
                 }
                 let title = match &connection_options {
                     RemoteConnectionOptions::Ssh(_) => "Failed to connect over SSH",
@@ -572,7 +572,7 @@ pub async fn open_remote_project(
                         .update(cx, |_, window, _| window.remove_window())
                         .ok();
                 }
-                return Ok(());
+                return Ok(window);
             }
         };
 
@@ -615,7 +615,7 @@ pub async fn open_remote_project(
                             .update(cx, |_, window, _| window.remove_window())
                             .ok();
                     }
-                    return Ok(());
+                    return Ok(window);
                 }
                 if let Some(connection_options) =
                     is_missing_dev_container_error(&connection_options, &err_message)
@@ -634,7 +634,7 @@ pub async fn open_remote_project(
                             .update(cx, |_, window, _| window.remove_window())
                             .ok();
                     }
-                    return Ok(());
+                    return Ok(window);
                 }
                 let title = match &connection_options {
                     RemoteConnectionOptions::Ssh(_) => "Failed to connect over SSH",
@@ -716,7 +716,7 @@ pub async fn open_remote_project(
             });
         })
         .ok();
-    Ok(())
+    Ok(window)
 }
 
 pub fn navigate_to_positions(
